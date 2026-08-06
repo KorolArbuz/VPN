@@ -16,6 +16,7 @@ struct VPNDashboardView: View {
             ScrollView {
                 VStack(spacing: 16) {
                     connectionStatus
+                    demoModeNotice
                     currentConnectionCard
                     connectedMetrics
                 }
@@ -25,7 +26,7 @@ struct VPNDashboardView: View {
                 .frame(maxWidth: .infinity)
             }
             .background(Color(.systemBackground))
-            .navigationTitle("Universal VPN")
+            .navigationTitle("SecureLink")
             .navigationBarTitleDisplayMode(.inline)
             .sheet(isPresented: $isConnectionSheetPresented) {
                 ConnectionSelectionView(viewModel: viewModel)
@@ -90,9 +91,7 @@ struct VPNDashboardView: View {
         } label: {
             VStack(alignment: .leading, spacing: 14) {
                 HStack(alignment: .top, spacing: 12) {
-                    Text(flagText)
-                        .font(.largeTitle)
-                        .frame(width: 44, alignment: .leading)
+                    connectionBadge
 
                     VStack(alignment: .leading, spacing: 5) {
                         Text("Current Connection")
@@ -146,6 +145,17 @@ struct VPNDashboardView: View {
         .accessibilityLabel("Current connection. Tap to change server, protocol, or profile.")
     }
 
+    private var demoModeNotice: some View {
+        Label("Demo Mode — traffic is not routed through a VPN core.", systemImage: "info.circle")
+            .font(.footnote)
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .accessibilityLabel("Demo Mode. Traffic is not routed through a VPN core.")
+    }
+
     @ViewBuilder
     private var connectedMetrics: some View {
         if viewModel.connectionState == .connected {
@@ -186,7 +196,7 @@ struct VPNDashboardView: View {
 
     private var primaryConnectionTitle: String {
         if let profile = viewModel.selectedProfile {
-            return profile.serverAddress.isEmpty ? "Incomplete Profile" : profile.serverAddress
+            return profile.name
         }
 
         return viewModel.selectedServer?.country ?? "No server selected"
@@ -198,7 +208,7 @@ struct VPNDashboardView: View {
             if profile.isComplete == false {
                 return "Missing \(profile.missingRequiredFields.joined(separator: ", "))"
             }
-            return "\(profile.protocolType.displayName) \(port)"
+            return "\(profile.serverAddress)\(port) • \(profile.source.displayName)"
         }
 
         guard let server = viewModel.selectedServer else {
@@ -217,6 +227,10 @@ struct VPNDashboardView: View {
     }
 
     private var pingText: String {
+        if viewModel.selectedProfile != nil {
+            return "Not tested"
+        }
+
         guard let server = viewModel.selectedServer else {
             return "--"
         }
@@ -225,6 +239,10 @@ struct VPNDashboardView: View {
     }
 
     private var loadText: String {
+        if viewModel.selectedProfile != nil {
+            return "Unknown"
+        }
+
         guard let server = viewModel.selectedServer else {
             return "--"
         }
@@ -249,17 +267,28 @@ struct VPNDashboardView: View {
         return "Session " + connectionTime.formatted(.number.precision(.fractionLength(2))) + " s"
     }
 
-    private var flagText: String {
-        if viewModel.selectedProfile != nil {
-            return "VPN"
-        }
+    private var connectionBadge: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color(.tertiarySystemFill))
+                .frame(width: 44, height: 44)
 
-        guard let countryCode = viewModel.selectedServer?.countryCode else {
-            return "--"
+            if let selectedProfile = viewModel.selectedProfile {
+                Text(protocolBadgeText(for: selectedProfile.protocolType))
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(.tint)
+            } else if let countryCode = viewModel.selectedServer?.countryCode {
+                Text(flagEmoji(for: countryCode))
+                    .font(.title2)
+            } else {
+                Image(systemName: "shield")
+                    .font(.title3.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
         }
-
-        return flagEmoji(for: countryCode)
+        .accessibilityHidden(true)
     }
+
 
     private var isInFlight: Bool {
         switch viewModel.connectionState {
@@ -287,6 +316,27 @@ struct VPNDashboardView: View {
         let base: UInt32 = 127_397
         let scalars = countryCode.uppercased().unicodeScalars.compactMap { UnicodeScalar(base + $0.value) }
         return String(String.UnicodeScalarView(scalars))
+    }
+
+    private func protocolBadgeText(for vpnProtocol: VPNProtocol) -> String {
+        switch vpnProtocol {
+        case .vless:
+            "VL"
+        case .trojan:
+            "TR"
+        case .hysteria2:
+            "HY2"
+        case .shadowsocks:
+            "SS"
+        case .vmess:
+            "VM"
+        case .tuic:
+            "TC"
+        case .wireGuard:
+            "WG"
+        case .ikev2:
+            "IK"
+        }
     }
 }
 

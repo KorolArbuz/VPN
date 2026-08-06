@@ -16,7 +16,7 @@ nonisolated struct VLESSLinkParser {
         let port = try ParserSupport.requiredPort(from: components, defaultPort: 443)
         let query = ParserSupport.queryDictionary(from: components)
 
-        guard let user = components.user, user.isEmpty == false else {
+        guard let user = ParserSupport.decodedUser(from: components), user.isEmpty == false else {
             throw VPNImportError.missingRequiredComponent("user id")
         }
 
@@ -35,7 +35,7 @@ nonisolated struct VLESSLinkParser {
             serverName: query["sni"] ?? query["host"],
             allowInsecure: query["allowInsecure"] == "1",
             fingerprint: query["fp"],
-            publicKeyReference: query["pbk"] == nil ? nil : try await credentialStore.store(query["pbk"] ?? "", label: "Reality public key"),
+            publicKeyReference: try await storeOptional(query["pbk"], label: "Reality public key"),
             shortID: query["sid"]
         )
         let profile = VPNProfile.draft(
@@ -58,5 +58,13 @@ nonisolated struct VLESSLinkParser {
             sanitizedSummary: SecretMasker.sanitizedQuerySummary(from: components.queryItems ?? [])
                 .merging(["credential": SecretMasker.masked(user), "host": host, "port": "\(port)"]) { current, _ in current }
         )
+    }
+
+    private func storeOptional(_ value: String?, label: String) async throws -> String? {
+        guard let value, value.isEmpty == false else {
+            return nil
+        }
+
+        return try await credentialStore.store(value, label: label)
     }
 }

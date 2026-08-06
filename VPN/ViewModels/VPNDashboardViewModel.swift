@@ -19,14 +19,17 @@ final class VPNDashboardViewModel {
     private let subscriptionRepository: SubscriptionRepository
     private let subscriptionUpdater: SubscriptionUpdating
     private let importer: VPNProfileImporting
+    private let credentialStore: CredentialStoring
+    private let activeProfileStore: ActiveProfileStoring
 
     private var activeOperationID: UUID?
     private var stateObservationTask: Task<Void, Never>?
+    private var saveOperationID: UUID?
 
     var connectionState: VPNConnectionState = .disconnected
     var selectedServer: VPNServer?
     var selectedProtocol: VPNProtocolSelection = .automatic
-    var selectedProfile: VPNProfile?
+    var activeProfileID: UUID?
     var effectiveProtocol: VPNProtocol?
     var servers: [VPNServer] = []
     var profiles: [VPNProfile] = []
@@ -36,16 +39,20 @@ final class VPNDashboardViewModel {
     var importResult: VPNImportResult?
     var importErrorMessage: String?
     var subscriptionPreviewProfiles: [VPNProfile] = []
+    var profileSaveState: ProfileSaveState = .idle
+    var profileSaveMessage: String?
 
     init(
         serverProvider: ServerProviding = MockServerProvider(),
         serverProber: ServerProbing = MockServerProber(),
         connectionManager: VPNConnectionManaging = MockVPNConnectionManager(),
         serverSelector: ServerSelecting = MockServerSelector(),
-        profileRepository: VPNProfileRepository = InMemoryVPNProfileRepository(),
+        profileRepository: VPNProfileRepository = FileVPNProfileRepository(),
         subscriptionRepository: SubscriptionRepository = InMemorySubscriptionRepository(),
         subscriptionUpdater: SubscriptionUpdating = MockSubscriptionUpdater(),
-        importer: VPNProfileImporting = VPNLinkParser()
+        credentialStore: CredentialStoring = KeychainCredentialStore(),
+        activeProfileStore: ActiveProfileStoring = UserDefaultsActiveProfileStore(),
+        importer: VPNProfileImporting? = nil
     ) {
         self.serverProvider = serverProvider
         self.serverProber = serverProber
@@ -54,8 +61,26 @@ final class VPNDashboardViewModel {
         self.profileRepository = profileRepository
         self.subscriptionRepository = subscriptionRepository
         self.subscriptionUpdater = subscriptionUpdater
-        self.importer = importer
+        self.credentialStore = credentialStore
+        self.activeProfileStore = activeProfileStore
+        self.importer = importer ?? VPNLinkParser(credentialStore: credentialStore)
         observeConnectionState()
+    }
+
+    var selectedProfile: VPNProfile? {
+        guard let activeProfileID else {
+            return nil
+        }
+
+        return profiles.first { $0.id == activeProfileID }
+    }
+
+    var isSavingProfile: Bool {
+        if case .saving = profileSaveState {
+            return true
+        }
+
+        return false
     }
 
     var canToggleConnection: Bool {
@@ -97,6 +122,8 @@ final class VPNDashboardViewModel {
             servers = fetchedServers
 
             profiles = try await profileRepository.profiles()
+            activeProfileID = await activeProfileStore.activeProfileID()
+            clearMissingOrInvalidActiveProfileIfNeeded()
             guard isCurrentOperation(operationID) else { return }
             subscriptions = try await subscriptionRepository.subscriptions()
 
@@ -123,7 +150,7 @@ final class VPNDashboardViewModel {
 
     func selectServer(_ server: VPNServer) {
         selectedServer = server
-        selectedProfile = nil
+        setActiveProfileID(nil)
         refreshEffectiveProtocol()
 
         if server.isAvailable == false {
@@ -134,22 +161,27 @@ final class VPNDashboardViewModel {
     }
 
     func selectProfile(_ profile: VPNProfile) {
-        selectedProfile = profile
+        guard profile.isComplete else {
+            errorMessage = "Profile is incomplete. Missing: \(profile.missingRequiredFields.joined(separator: ", "))."
+            return
+        }
+
+        guard profile.isEnabled else {
+            errorMessage = "Profile is disabled."
+            return
+        }
+
+        setActiveProfileID(profile.id)
         selectedProtocol = .manual(profile.protocolType)
         effectiveProtocol = profile.protocolType
-
-        if profile.isComplete == false {
-            errorMessage = "Profile is incomplete. Missing: \(profile.missingRequiredFields.joined(separator: ", "))."
-        } else if profile.isEnabled == false {
-            errorMessage = "Profile is disabled."
-        } else {
-            errorMessage = nil
-        }
+        connectionState = connectionState == .connected ? .disconnected : connectionState
+        currentMetrics = nil
+        errorMessage = nil
     }
 
     func selectProtocol(_ protocolSelection: VPNProtocolSelection) {
         selectedProtocol = protocolSelection
-        selectedProfile = nil
+        setActiveProfileID(nil)
         refreshEffectiveProtocol()
         validateSelectedProtocol()
     }
@@ -269,16 +301,33 @@ final class VPNDashboardViewModel {
     }
 
     func saveImportResult() async {
+        _ = await saveImportResultAndSelect()
+    }
+
+    @discardableResult
+    func saveImportResultAndSelect() async -> Bool {
         guard let importResult else {
-            return
+            return false
+        }
+
+        guard saveOperationID == nil else {
+            return false
         }
 
         do {
             switch importResult.kind {
             case .profile(let profile):
-                try await profileRepository.save(profile)
-                profiles = try await profileRepository.profiles()
-                selectedProfile = profile
+                do {
+                    return try await saveProfileAndSelect(profile)
+                } catch {
+                    if let credentialReference = profile.credentialReference {
+                        try? await credentialStore.delete(reference: credentialReference)
+                    }
+                    if let publicKeyReference = profile.tlsSettings.publicKeyReference {
+                        try? await credentialStore.delete(reference: publicKeyReference)
+                    }
+                    throw error
+                }
             case .subscription(let subscription):
                 try await subscriptionRepository.save(subscription)
                 subscriptions = try await subscriptionRepository.subscriptions()
@@ -286,26 +335,61 @@ final class VPNDashboardViewModel {
 
             self.importResult = nil
             importErrorMessage = nil
+            return true
         } catch {
             importErrorMessage = error.localizedDescription
+            return false
         }
     }
 
     func saveProfile(_ profile: VPNProfile) async {
+        _ = await saveProfileDraft(profile)
+    }
+
+    @discardableResult
+    func saveProfileDraft(_ profile: VPNProfile, credentialValue: String? = nil) async -> Bool {
+        guard saveOperationID == nil else {
+            return false
+        }
+
         do {
-            try await profileRepository.save(profile)
-            profiles = try await profileRepository.profiles()
+            var profileToSave = profile
+            var createdCredentialReference: String?
+
+            if let credentialValue, credentialValue.isEmpty == false {
+                let reference = try await credentialStore.store(credentialValue, label: "\(profile.protocolType.displayName) credential")
+                createdCredentialReference = reference
+                profileToSave.credentialReference = reference
+            }
+
+            do {
+                return try await saveProfileAndSelect(profileToSave)
+            } catch {
+                if let createdCredentialReference {
+                    try? await credentialStore.delete(reference: createdCredentialReference)
+                }
+                throw error
+            }
         } catch {
             errorMessage = error.localizedDescription
+            profileSaveState = .failed(error.localizedDescription)
+            profileSaveMessage = error.localizedDescription
+            return false
         }
     }
 
     func deleteProfile(_ profile: VPNProfile) async {
         do {
             try await profileRepository.delete(id: profile.id)
+            if let credentialReference = profile.credentialReference {
+                try await credentialStore.delete(reference: credentialReference)
+            }
+            if let publicKeyReference = profile.tlsSettings.publicKeyReference {
+                try await credentialStore.delete(reference: publicKeyReference)
+            }
             profiles = try await profileRepository.profiles()
-            if selectedProfile?.id == profile.id {
-                selectedProfile = nil
+            if activeProfileID == profile.id {
+                setActiveProfileID(nil)
             }
         } catch {
             errorMessage = error.localizedDescription
@@ -456,6 +540,72 @@ final class VPNDashboardViewModel {
                 }
             }
         }
+    }
+
+    private func saveProfileAndSelect(_ profile: VPNProfile) async throws -> Bool {
+        guard profile.isComplete else {
+            profileSaveState = .incomplete(profile.missingRequiredFields)
+            profileSaveMessage = "Profile is incomplete. Missing: \(profile.missingRequiredFields.joined(separator: ", "))."
+            return false
+        }
+
+        let operationID = UUID()
+        saveOperationID = operationID
+        profileSaveState = .saving
+        profileSaveMessage = nil
+
+        do {
+            try await profileRepository.save(profile)
+            guard saveOperationID == operationID else {
+                return false
+            }
+
+            profiles = try await profileRepository.profiles()
+            setActiveProfileID(profile.id)
+            selectedProtocol = .manual(profile.protocolType)
+            effectiveProtocol = profile.protocolType
+            currentMetrics = nil
+            if connectionState == .connected {
+                connectionState = .disconnected
+            }
+            importResult = nil
+            importErrorMessage = nil
+            profileSaveState = .saved
+            profileSaveMessage = "Profile saved"
+            saveOperationID = nil
+            return true
+        } catch {
+            guard saveOperationID == operationID else {
+                return false
+            }
+            profileSaveState = .failed(error.localizedDescription)
+            profileSaveMessage = error.localizedDescription
+            saveOperationID = nil
+            throw error
+        }
+    }
+
+    private func setActiveProfileID(_ id: UUID?) {
+        activeProfileID = id
+        Task {
+            await activeProfileStore.saveActiveProfileID(id)
+        }
+    }
+
+    private func clearMissingOrInvalidActiveProfileIfNeeded() {
+        guard let activeProfileID else {
+            return
+        }
+
+        guard let profile = profiles.first(where: { $0.id == activeProfileID }),
+              profile.isEnabled,
+              profile.isComplete else {
+            setActiveProfileID(nil)
+            return
+        }
+
+        selectedProtocol = .manual(profile.protocolType)
+        effectiveProtocol = profile.protocolType
     }
 
     private func beginOperation(state: VPNConnectionState) -> UUID? {

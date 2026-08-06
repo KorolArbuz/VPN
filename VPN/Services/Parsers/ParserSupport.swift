@@ -13,6 +13,10 @@ nonisolated enum ParserSupport {
             throw VPNImportError.malformedURL
         }
 
+        if hasMalformedPort(in: text) {
+            throw VPNImportError.invalidPort
+        }
+
         return components
     }
 
@@ -27,6 +31,10 @@ nonisolated enum ParserSupport {
     static func requiredPort(from components: URLComponents, defaultPort: Int? = nil) throws -> Int {
         if let port = components.port {
             return port
+        }
+
+        if hasExplicitInvalidPort(components) {
+            throw VPNImportError.invalidPort
         }
 
         if let defaultPort {
@@ -54,6 +62,10 @@ nonisolated enum ParserSupport {
         return fallback
     }
 
+    static func decodedUser(from components: URLComponents) -> String? {
+        components.percentEncodedUser?.removingPercentEncoding ?? components.user
+    }
+
     static func decodedBase64(_ input: String) -> Data? {
         var normalized = input
             .replacingOccurrences(of: "-", with: "+")
@@ -65,5 +77,42 @@ nonisolated enum ParserSupport {
         }
 
         return Data(base64Encoded: normalized)
+    }
+
+    private static func hasExplicitInvalidPort(_ components: URLComponents) -> Bool {
+        guard let host = components.host else {
+            return false
+        }
+
+        let marker = "\(host):"
+        guard let range = components.string?.range(of: marker) else {
+            return false
+        }
+
+        let suffix = components.string?[range.upperBound...] ?? ""
+        let portText = suffix.prefix { character in
+            character != "/" && character != "?" && character != "#"
+        }
+
+        return portText.isEmpty == false && Int(portText) == nil
+    }
+
+    private static func hasMalformedPort(in text: String) -> Bool {
+        guard let schemeRange = text.range(of: "://") else {
+            return false
+        }
+
+        let afterScheme = text[schemeRange.upperBound...]
+        let authority = afterScheme.prefix { character in
+            character != "/" && character != "?" && character != "#"
+        }
+        let hostPort = authority.split(separator: "@", omittingEmptySubsequences: false).last.map(String.init) ?? String(authority)
+
+        guard hostPort.contains("]") == false, let colonIndex = hostPort.lastIndex(of: ":") else {
+            return false
+        }
+
+        let portText = hostPort[hostPort.index(after: colonIndex)...]
+        return portText.isEmpty == false && portText.allSatisfy(\.isNumber) == false
     }
 }

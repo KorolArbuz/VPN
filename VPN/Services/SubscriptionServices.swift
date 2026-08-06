@@ -49,28 +49,10 @@ actor InMemorySubscriptionRepository: SubscriptionRepository {
 
 nonisolated struct MockSubscriptionUpdater: SubscriptionUpdating {
     func preview(_ subscription: VPNSubscription) async throws -> [VPNProfile] {
-        try await Task.sleep(for: .milliseconds(120))
-        return mockProfiles(for: subscription)
+        throw VPNImportError.invalidPayload("Subscription refresh is not available in this build.")
     }
 
     func refresh(_ subscription: VPNSubscription) async throws -> [VPNProfile] {
-        try await Task.sleep(for: .milliseconds(180))
-        return mockProfiles(for: subscription)
-    }
-
-    private func mockProfiles(for subscription: VPNSubscription) -> [VPNProfile] {
-        [
-            VPNProfile.draft(
-                name: "\(subscription.name) Demo VLESS",
-                protocolType: .vless,
-                serverAddress: "subscription-demo.example.invalid",
-                port: 443,
-                credentialReference: "mock-subscription-credential",
-                transportSettings: VPNTransportSettings(network: "tcp"),
-                tlsSettings: VPNTLSSettings(isEnabled: true, serverName: "subscription-demo.example.invalid"),
-                protocolConfiguration: .vless(VLESSProfileConfiguration(flow: nil, encryption: "none")),
-                source: .subscription
-            )
-        ]
+        throw VPNImportError.invalidPayload("Subscription refresh is not available in this build.")
     }
 }

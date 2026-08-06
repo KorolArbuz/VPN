@@ -9,6 +9,7 @@ import SwiftUI
 
 struct ProfilesView: View {
     @Bindable var viewModel: VPNDashboardViewModel
+    var onProfileSaved: () -> Void = {}
     @State private var isAddSheetPresented = false
 
     var body: some View {
@@ -70,12 +71,15 @@ struct ProfilesView: View {
                 Button {
                     isAddSheetPresented = true
                 } label: {
-                    Label("Add VPN", systemImage: "plus")
+                    Label("Add Profile", systemImage: "plus")
                 }
             }
         }
         .sheet(isPresented: $isAddSheetPresented) {
-            AddVPNSheet(viewModel: viewModel)
+            AddVPNSheet(viewModel: viewModel) {
+                isAddSheetPresented = false
+                onProfileSaved()
+            }
         }
     }
 }

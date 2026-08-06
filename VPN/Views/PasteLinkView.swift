@@ -10,29 +10,34 @@ import UIKit
 
 struct PasteLinkView: View {
     @Bindable var viewModel: VPNDashboardViewModel
+    var onProfileSaved: () -> Void = {}
     @State private var linkText = ""
+    @State private var reviewResult: VPNImportResult?
 
     var body: some View {
         Form {
-            Section("Link") {
+            Section {
+                Text("Paste a VLESS, Trojan, Hysteria, VMess, Shadowsocks or TUIC link to import a profile.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .padding(.vertical, 4)
+            }
+
+            Section {
                 TextEditor(text: $linkText)
                     .frame(minHeight: 120)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
+                    .accessibilityLabel("Profile link")
 
                 Button {
                     linkText = UIPasteboard.general.string ?? ""
                 } label: {
                     Label("Paste from Clipboard", systemImage: "doc.on.clipboard")
                 }
-
-                Button {
-                    Task {
-                        await viewModel.parseImportText(linkText)
-                    }
-                } label: {
-                    Label("Parse", systemImage: "doc.text.magnifyingglass")
-                }
+                .buttonStyle(.borderless)
+            } footer: {
+                Text("Subscription URLs can be saved for later refresh. No network request is made here.")
             }
 
             if let importErrorMessage = viewModel.importErrorMessage {
@@ -42,79 +47,189 @@ struct PasteLinkView: View {
                 }
             }
 
-            if let importResult = viewModel.importResult {
-                ImportResultPreview(importResult: importResult)
-
-                Section {
-                    Button {
-                        Task {
-                            await viewModel.saveImportResult()
-                        }
-                    } label: {
-                        Label(saveTitle(for: importResult), systemImage: "tray.and.arrow.down")
+            Section {
+                Button {
+                    Task {
+                        await viewModel.parseImportText(linkText)
+                        reviewResult = viewModel.importResult
                     }
+                } label: {
+                    Text("Continue")
+                        .frame(maxWidth: .infinity)
                 }
+                .buttonStyle(.borderedProminent)
+                .disabled(linkText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .accessibilityLabel("Continue to review profile")
             }
         }
         .navigationTitle("Paste Link")
-    }
-
-    private func saveTitle(for result: VPNImportResult) -> String {
-        switch result.kind {
-        case .profile:
-            "Save Profile"
-        case .subscription:
-            "Save Subscription"
+        .navigationDestination(item: $reviewResult) { result in
+            ReviewProfileView(importResult: result, viewModel: viewModel, onProfileSaved: onProfileSaved)
         }
     }
 }
 
-private struct ImportResultPreview: View {
+struct ReviewProfileView: View {
     let importResult: VPNImportResult
+    @Bindable var viewModel: VPNDashboardViewModel
+    var onProfileSaved: () -> Void = {}
+    var manualCredentialValue: String?
+    @State private var showAdvancedDetails = false
 
     var body: some View {
-        Section("Recognized") {
-            LabeledContent("Scheme", value: importResult.detectedScheme)
-            LabeledContent("Name", value: importResult.displayName)
-
+        Form {
             switch importResult.kind {
             case .profile(let profile):
-                LabeledContent("Protocol", value: profile.protocolType.displayName)
-                LabeledContent("Hostname", value: profile.serverAddress)
-                LabeledContent("Port", value: profile.port.map(String.init) ?? "Missing")
-                LabeledContent("Transport", value: profile.transportSettings.network ?? "Default")
-                LabeledContent("TLS", value: profile.tlsSettings.isEnabled ? tlsText(for: profile) : "Disabled")
-                LabeledContent("Credentials", value: profile.maskedCredentialText)
+                profileSections(profile)
 
-                if profile.isComplete == false {
-                    Text("Incomplete: \(profile.missingRequiredFields.joined(separator: ", "))")
+                Section {
+                    Button {
+                        Task {
+                            let didSave: Bool
+                            if case .profile(let profile) = importResult.kind, let manualCredentialValue {
+                                didSave = await viewModel.saveProfileDraft(profile, credentialValue: manualCredentialValue)
+                            } else {
+                                didSave = await viewModel.saveImportResultAndSelect()
+                            }
+                            if didSave {
+                                onProfileSaved()
+                            }
+                        }
+                    } label: {
+                        HStack {
+                            if viewModel.isSavingProfile {
+                                ProgressView()
+                                    .tint(.white)
+                            }
+                            Text(saveButtonTitle)
+                                .frame(maxWidth: .infinity)
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(profile.isComplete == false || viewModel.isSavingProfile)
+
+                    if let message = viewModel.profileSaveMessage {
+                        Text(message)
+                            .font(.footnote)
+                            .foregroundStyle(saveMessageStyle)
+                    }
+                }
+            case .subscription:
+                Section {
+                    ContentUnavailableView("Subscriptions are saved from the Add Subscription screen", systemImage: "calendar.badge.plus")
+                }
+            }
+        }
+        .navigationTitle("Review Profile")
+    }
+
+    @ViewBuilder
+    private func profileSections(_ profile: VPNProfile) -> some View {
+        Section("Profile") {
+            LabeledContent("Name", value: profile.name)
+            LabeledContent("Protocol", value: profile.protocolType.displayName)
+            LabeledContent("Validation", value: profile.isComplete ? "Ready" : "Incomplete")
+        }
+
+        Section("Server") {
+            LabeledContent("Address", value: profile.serverAddress.isEmpty ? "Missing" : profile.serverAddress)
+            LabeledContent("Port", value: profile.port.map(String.init) ?? "Missing")
+        }
+
+        Section("Transport") {
+            LabeledContent("Transport", value: profile.transportSettings.network ?? "Default")
+            if let path = profile.transportSettings.path {
+                LabeledContent("Path", value: path)
+            }
+            if let host = profile.transportSettings.host {
+                LabeledContent("Host Header", value: host)
+            }
+            if let mode = profile.metadata["mode"] {
+                LabeledContent("Mode", value: mode)
+            }
+        }
+
+        Section("Security") {
+            LabeledContent("Security", value: securityText(for: profile))
+            if let serverName = profile.tlsSettings.serverName {
+                LabeledContent("SNI", value: serverName)
+            }
+            if let fingerprint = profile.tlsSettings.fingerprint {
+                LabeledContent("Fingerprint", value: fingerprint)
+            }
+            if profile.tlsSettings.publicKeyReference != nil {
+                LabeledContent("Public Key", value: "Stored securely")
+            }
+            if let shortID = profile.tlsSettings.shortID {
+                LabeledContent("Short ID", value: SecretMasker.masked(shortID))
+            }
+        }
+
+        Section("Credentials") {
+            LabeledContent("Credential", value: profile.maskedCredentialText)
+        }
+
+        if profile.isComplete == false {
+            Section("Missing") {
+                ForEach(profile.missingRequiredFields, id: \.self) { field in
+                    Label(field, systemImage: "exclamationmark.circle")
                         .foregroundStyle(.orange)
                 }
-            case .subscription(let subscription):
-                LabeledContent("Type", value: "Subscription")
-                LabeledContent("URL", value: subscription.url.host ?? "Unknown host")
-            }
-
-            ForEach(importResult.warnings, id: \.self) { warning in
-                Label(warning, systemImage: "info.circle")
-                    .foregroundStyle(.secondary)
             }
         }
 
         if importResult.sanitizedSummary.isEmpty == false {
-            Section("Safe Summary") {
-                ForEach(importResult.sanitizedSummary.keys.sorted(), id: \.self) { key in
-                    LabeledContent(key, value: importResult.sanitizedSummary[key] ?? "")
+            Section {
+                DisclosureGroup("Advanced details", isExpanded: $showAdvancedDetails) {
+                    ForEach(importResult.sanitizedSummary.keys.sorted(), id: \.self) { key in
+                        LabeledContent(displayName(for: key), value: importResult.sanitizedSummary[key] ?? "")
+                    }
                 }
             }
         }
     }
 
-    private func tlsText(for profile: VPNProfile) -> String {
+    private var saveButtonTitle: String {
+        viewModel.isSavingProfile ? "Saving" : "Save Profile"
+    }
+
+    private var saveMessageStyle: Color {
+        switch viewModel.profileSaveState {
+        case .saved:
+            .green
+        case .failed, .incomplete, .duplicate:
+            .red
+        case .idle, .saving:
+            .secondary
+        }
+    }
+
+    private func securityText(for profile: VPNProfile) -> String {
         if profile.tlsSettings.publicKeyReference != nil {
             return "Reality"
         }
 
-        return "Enabled"
+        if profile.tlsSettings.isEnabled {
+            return "TLS"
+        }
+
+        return "None"
+    }
+
+    private func displayName(for key: String) -> String {
+        switch key {
+        case "fp":
+            "Fingerprint"
+        case "pbk":
+            "Public Key"
+        case "sid":
+            "Short ID"
+        case "type":
+            "Transport"
+        case "sni":
+            "SNI"
+        default:
+            key
+        }
     }
 }

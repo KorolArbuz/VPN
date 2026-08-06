@@ -21,25 +21,14 @@ struct AddSubscriptionView: View {
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
 
-                HStack {
-                    Button {
-                        Task {
-                            await viewModel.previewSubscription(urlText: urlText, name: name)
-                        }
-                    } label: {
-                        Label("Preview", systemImage: "eye")
+                Button {
+                    Task {
+                        await viewModel.addSubscription(name: name, urlText: urlText)
                     }
-
-                    Spacer()
-
-                    Button {
-                        Task {
-                            await viewModel.addSubscription(name: name, urlText: urlText)
-                        }
-                    } label: {
-                        Label("Save", systemImage: "tray.and.arrow.down")
-                    }
+                } label: {
+                    Label("Save Subscription", systemImage: "tray.and.arrow.down")
                 }
+                .disabled(urlText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
 
             if let importErrorMessage = viewModel.importErrorMessage {
@@ -49,27 +38,39 @@ struct AddSubscriptionView: View {
                 }
             }
 
-            Section("Mock Preview") {
-                if viewModel.subscriptionPreviewProfiles.isEmpty {
-                    Text("No preview loaded")
-                        .foregroundStyle(.secondary)
-                } else {
-                    ForEach(viewModel.subscriptionPreviewProfiles) { profile in
-                        ProfilePreviewLine(profile: profile)
-                    }
-                }
-            }
-
             Section("Saved Subscriptions") {
+                if viewModel.subscriptions.isEmpty {
+                    Text("No subscriptions saved")
+                        .foregroundStyle(.secondary)
+                }
+
                 ForEach(viewModel.subscriptions) { subscription in
                     VStack(alignment: .leading, spacing: 4) {
-                        Text(subscription.name)
-                        Text(subscription.lastUpdatedAt?.formatted(date: .abbreviated, time: .shortened) ?? "Never updated")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Text("Profiles: \(subscription.profileCount)")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                        HStack {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(subscription.name)
+                                    .font(.headline)
+                                Text(SecretMasker.sanitizedURLDisplay(subscription.url))
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(2)
+                                Text(subscription.lastUpdatedAt?.formatted(date: .abbreviated, time: .shortened) ?? "Not updated yet")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+
+                            Spacer()
+
+                            Toggle("Enabled", isOn: Binding(
+                                get: { subscription.isEnabled },
+                                set: { isEnabled in
+                                    Task {
+                                        await viewModel.setSubscriptionEnabled(subscription, isEnabled: isEnabled)
+                                    }
+                                }
+                            ))
+                            .labelsHidden()
+                        }
 
                         Button {
                             Task {
@@ -78,26 +79,18 @@ struct AddSubscriptionView: View {
                         } label: {
                             Label("Refresh", systemImage: "arrow.clockwise")
                         }
+
+                        Button(role: .destructive) {
+                            Task {
+                                await viewModel.deleteSubscription(subscription)
+                            }
+                        } label: {
+                            Label("Delete", systemImage: "trash")
+                        }
                     }
                 }
             }
         }
         .navigationTitle("Subscription")
-    }
-}
-
-private struct ProfilePreviewLine: View {
-    let profile: VPNProfile
-
-    var body: some View {
-        HStack {
-            Image(systemName: profile.protocolType.iconName)
-            VStack(alignment: .leading) {
-                Text(profile.name)
-                Text("\(profile.serverAddress):\(profile.port.map(String.init) ?? "--")")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-        }
     }
 }

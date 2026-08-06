@@ -18,6 +18,10 @@ nonisolated enum SecretMasker {
             return "None"
         }
 
+        if value.contains("-"), value.count >= 8 {
+            return "••••••••-••••"
+        }
+
         if value.count <= 4 {
             return "••••"
         }
@@ -39,6 +43,22 @@ nonisolated enum SecretMasker {
         }
 
         return summary
+    }
+
+    static func sanitizedURLDisplay(_ url: URL) -> String {
+        guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+            return url.host ?? "Subscription URL"
+        }
+
+        components.queryItems = components.queryItems?.map { item in
+            let lowercasedKey = item.name.lowercased()
+            if sensitiveQueryNames.contains(lowercasedKey) {
+                return URLQueryItem(name: item.name, value: "••••")
+            }
+            return item
+        }
+
+        return components.string ?? (url.host ?? "Subscription URL")
     }
 }
 

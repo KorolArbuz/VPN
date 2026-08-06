@@ -16,7 +16,7 @@ nonisolated struct TrojanLinkParser {
         let port = try ParserSupport.requiredPort(from: components, defaultPort: 443)
         let query = ParserSupport.queryDictionary(from: components)
 
-        guard let password = components.user, password.isEmpty == false else {
+        guard let password = ParserSupport.decodedUser(from: components), password.isEmpty == false else {
             throw VPNImportError.missingRequiredComponent("password")
         }
 
@@ -39,7 +39,8 @@ nonisolated struct TrojanLinkParser {
             kind: .profile(profile),
             detectedScheme: "trojan",
             displayName: name,
-            sanitizedSummary: ["credential": SecretMasker.masked(password), "host": host, "port": "\(port)"]
+            sanitizedSummary: SecretMasker.sanitizedQuerySummary(from: components.queryItems ?? [])
+                .merging(["credential": SecretMasker.masked(password), "host": host, "port": "\(port)"]) { current, _ in current }
         )
     }
 }

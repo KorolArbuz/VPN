@@ -14,7 +14,7 @@ nonisolated protocol VPNProfileImporting: Sendable {
 nonisolated struct VPNLinkParser: VPNProfileImporting {
     private let credentialStore: CredentialStoring
 
-    init(credentialStore: CredentialStoring = InMemoryCredentialStore()) {
+    init(credentialStore: CredentialStoring = KeychainCredentialStore()) {
         self.credentialStore = credentialStore
     }
 
@@ -35,13 +35,13 @@ nonisolated struct VPNLinkParser: VPNProfileImporting {
             return try await VLESSLinkParser(credentialStore: credentialStore).parse(trimmedText)
         case "trojan":
             return try await TrojanLinkParser(credentialStore: credentialStore).parse(trimmedText)
-        case "ss":
-            return try await ShadowsocksLinkParser(credentialStore: credentialStore).parse(trimmedText)
         case "hysteria2", "hy2":
             return try await Hysteria2LinkParser(credentialStore: credentialStore).parse(trimmedText)
         case "vmess":
             return try await VMessLinkParser(credentialStore: credentialStore).parse(trimmedText)
-        case "tuic", "wireguard", "ikev2":
+        case "ss":
+            return try await ShadowsocksLinkParser(credentialStore: credentialStore).parse(trimmedText)
+        case "tuic":
             return try await SimpleVPNLinkParser(credentialStore: credentialStore).parse(trimmedText, scheme: scheme)
         default:
             throw VPNImportError.unsupportedScheme(scheme)
