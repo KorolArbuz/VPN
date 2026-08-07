@@ -18,7 +18,11 @@ nonisolated struct SubscriptionURLParser {
         }
 
         let name = url.host ?? "Subscription"
-        let subscription = VPNSubscription(name: name, url: url)
+        let subscription = VPNSubscription(
+            name: name,
+            sanitizedHost: SecretMasker.sanitizedHost(from: url),
+            sanitizedURLDisplay: SecretMasker.sanitizedURLDisplay(url)
+        )
 
         return VPNImportResult(
             kind: .subscription(subscription),

@@ -10,6 +10,7 @@ import Security
 
 nonisolated protocol CredentialStoring: Sendable {
     func store(_ secret: String, label: String) async throws -> String
+    func secret(for reference: String) async throws -> String?
     func delete(reference: String) async throws
 }
 
@@ -22,7 +23,7 @@ actor InMemoryCredentialStore: CredentialStoring {
         return reference
     }
 
-    func secret(for reference: String) -> String? {
+    func secret(for reference: String) async throws -> String? {
         secrets[reference]
     }
 
@@ -90,6 +91,34 @@ actor KeychainCredentialStore: CredentialStoring {
         guard status == errSecSuccess || status == errSecItemNotFound else {
             throw CredentialStoreError.keychainFailed(status)
         }
+    }
+
+    func secret(for reference: String) async throws -> String? {
+        guard let account = account(from: reference) else {
+            return nil
+        }
+
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne
+        ]
+
+        var result: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        if status == errSecItemNotFound {
+            return nil
+        }
+        guard status == errSecSuccess else {
+            throw CredentialStoreError.keychainFailed(status)
+        }
+        guard let data = result as? Data else {
+            throw CredentialStoreError.encodingFailed
+        }
+
+        return String(data: data, encoding: .utf8)
     }
 
     private func account(from reference: String) -> String? {

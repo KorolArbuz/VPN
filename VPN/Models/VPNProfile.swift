@@ -24,6 +24,13 @@ nonisolated struct VPNProfile: Identifiable, Codable, Hashable, Sendable {
     var updatedAt: Date
     var isEnabled: Bool
     var metadata: [String: String]
+    var sourceSubscriptionID: UUID?
+    var externalIdentity: String?
+    var importedAt: Date?
+    var lastSeenAt: Date?
+    var customDisplayName: String?
+    var isFavorite: Bool?
+    var localNotes: String?
 
     var isComplete: Bool {
         missingRequiredFields.isEmpty
@@ -92,7 +99,14 @@ nonisolated struct VPNProfile: Identifiable, Codable, Hashable, Sendable {
             createdAt: now,
             updatedAt: now,
             isEnabled: true,
-            metadata: metadata
+            metadata: metadata,
+            sourceSubscriptionID: nil,
+            externalIdentity: nil,
+            importedAt: nil,
+            lastSeenAt: nil,
+            customDisplayName: nil,
+            isFavorite: nil,
+            localNotes: nil
         )
     }
 

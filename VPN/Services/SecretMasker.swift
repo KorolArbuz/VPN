@@ -50,6 +50,8 @@ nonisolated enum SecretMasker {
             return url.host ?? "Subscription URL"
         }
 
+        components.user = components.user == nil ? nil : "••••"
+        components.password = components.password == nil ? nil : "••••"
         components.queryItems = components.queryItems?.map { item in
             let lowercasedKey = item.name.lowercased()
             if sensitiveQueryNames.contains(lowercasedKey) {
@@ -59,6 +61,10 @@ nonisolated enum SecretMasker {
         }
 
         return components.string ?? (url.host ?? "Subscription URL")
+    }
+
+    static func sanitizedHost(from url: URL) -> String {
+        url.host ?? "Subscription"
     }
 }
 

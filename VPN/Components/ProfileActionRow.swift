@@ -51,6 +51,6 @@ struct ProfileActionRow: View {
 #Preview {
     List {
         ProfileActionRow(title: "Paste Link", subtitle: "Import a VLESS, Trojan or Hysteria link.", systemImage: "link")
-        ProfileActionRow(title: "Scan QR Code", subtitle: "Add a profile from a QR code.", systemImage: "qrcode.viewfinder", isEnabled: false)
+        ProfileActionRow(title: "Manual Setup", subtitle: "Enter server details yourself.", systemImage: "slider.horizontal.3")
     }
 }

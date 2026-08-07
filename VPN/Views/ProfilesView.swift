@@ -43,11 +43,15 @@ struct ProfilesView: View {
                         .foregroundStyle(.secondary)
                 } else {
                     ForEach(viewModel.subscriptions) { subscription in
-                        SubscriptionRow(subscription: subscription)
+                        NavigationLink {
+                            SubscriptionDetailsView(subscription: subscription, viewModel: viewModel)
+                        } label: {
+                            SubscriptionRow(subscription: subscription)
+                        }
                             .swipeActions {
                                 Button(role: .destructive) {
                                     Task {
-                                        await viewModel.deleteSubscription(subscription)
+                                        await viewModel.deleteSubscription(subscription, mode: .deleteProfiles)
                                     }
                                 } label: {
                                     Label("Delete", systemImage: "trash")
@@ -139,7 +143,7 @@ private struct SubscriptionRow: View {
                     .foregroundStyle(.secondary)
             }
 
-            Text(subscription.url.host ?? subscription.url.absoluteString)
+            Text(subscription.sanitizedHost)
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
 
@@ -154,6 +158,156 @@ private struct SubscriptionRow: View {
             }
         }
         .padding(.vertical, 4)
+    }
+}
+
+struct SubscriptionDetailsView: View {
+    let subscription: VPNSubscription
+    @Bindable var viewModel: VPNDashboardViewModel
+    @State private var editedName: String
+    @State private var missingPolicy: MissingSubscriptionProfilePolicy = .keep
+    @State private var showsDeleteConfirmation = false
+
+    init(subscription: VPNSubscription, viewModel: VPNDashboardViewModel) {
+        self.subscription = subscription
+        self.viewModel = viewModel
+        _editedName = State(initialValue: subscription.name)
+    }
+
+    var body: some View {
+        Form {
+            Section("Provider") {
+                TextField("Name", text: $editedName)
+                LabeledContent("Host", value: currentSubscription.sanitizedHost)
+                LabeledContent("URL", value: currentSubscription.sanitizedURLDisplay)
+                Toggle("Enabled", isOn: Binding(
+                    get: { currentSubscription.isEnabled },
+                    set: { isEnabled in
+                        Task { await viewModel.setSubscriptionEnabled(currentSubscription, isEnabled: isEnabled) }
+                    }
+                ))
+            }
+
+            Section("Status") {
+                LabeledContent("Profiles", value: "\(linkedProfiles.count)")
+                LabeledContent("Last Update", value: currentSubscription.lastSuccessfulRefreshAt?.formatted(date: .abbreviated, time: .shortened) ?? "Not updated yet")
+                LabeledContent("State", value: currentSubscription.refreshState.rawValue.capitalized)
+                if let lastError = currentSubscription.lastError {
+                    Label(lastError, systemImage: "exclamationmark.triangle")
+                        .foregroundStyle(.red)
+                }
+            }
+
+            Section {
+                Button {
+                    Task {
+                        await viewModel.refreshSubscription(currentSubscription)
+                    }
+                } label: {
+                    Label("Refresh", systemImage: "arrow.clockwise")
+                }
+                .disabled(viewModel.subscriptionRefreshState == .downloading || currentSubscription.isEnabled == false)
+            } footer: {
+                Text("Refresh only runs when you tap the button.")
+            }
+
+            if let plan = viewModel.subscriptionUpdatePlan, plan.subscription.id == currentSubscription.id {
+                refreshPreviewSection(plan)
+            }
+
+            Section("Profiles") {
+                if linkedProfiles.isEmpty {
+                    Text("No profiles saved from this subscription")
+                        .foregroundStyle(.secondary)
+                }
+                ForEach(linkedProfiles) { profile in
+                    Button {
+                        viewModel.selectProfile(profile)
+                    } label: {
+                        ProfileActionRow(
+                            title: profile.name,
+                            subtitle: "\(profile.protocolType.displayName) • \(profile.serverAddress):\(profile.port.map(String.init) ?? "--")",
+                            systemImage: profile.protocolType.iconName
+                        )
+                    }
+                    .disabled(profile.isComplete == false || profile.isEnabled == false)
+                }
+            }
+
+            Section("Refresh Schedule") {
+                Picker("Interval", selection: .constant("manual")) {
+                    Text("Manual only").tag("manual")
+                    Text("Daily unavailable").tag("daily")
+                    Text("Weekly unavailable").tag("weekly")
+                }
+                .disabled(true)
+            }
+
+            Section {
+                Button(role: .destructive) {
+                    showsDeleteConfirmation = true
+                } label: {
+                    Label("Delete Subscription", systemImage: "trash")
+                }
+            }
+        }
+        .navigationTitle(currentSubscription.name)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button("Save") {
+                    Task {
+                        await viewModel.renameSubscription(currentSubscription, to: editedName)
+                    }
+                }
+            }
+        }
+        .confirmationDialog("Delete Subscription", isPresented: $showsDeleteConfirmation, titleVisibility: .visible) {
+            Button("Delete subscription and profiles", role: .destructive) {
+                Task { await viewModel.deleteSubscription(currentSubscription, mode: .deleteProfiles) }
+            }
+            Button("Keep profiles as local profiles") {
+                Task { await viewModel.deleteSubscription(currentSubscription, mode: .keepProfiles) }
+            }
+            Button("Cancel", role: .cancel) {}
+        }
+    }
+
+    @ViewBuilder
+    private func refreshPreviewSection(_ plan: SubscriptionUpdatePlan) -> some View {
+        Section("Refresh Preview") {
+            LabeledContent("Added", value: "\(plan.addedCount)")
+            LabeledContent("Updated", value: "\(plan.updatedCount)")
+            LabeledContent("Unchanged", value: "\(plan.unchangedCount)")
+            LabeledContent("Missing", value: "\(plan.missingCount)")
+            LabeledContent("Invalid", value: "\(plan.invalidCount)")
+            LabeledContent("Duplicates", value: "\(plan.duplicateCount)")
+
+            Button {
+                Task {
+                    await viewModel.applySubscriptionUpdate(missingPolicy: missingPolicy)
+                }
+            } label: {
+                Label("Apply Update", systemImage: "checkmark.circle")
+            }
+        }
+
+        if plan.missingCount > 0 {
+            Section("Missing Profiles") {
+                Picker("When applying", selection: $missingPolicy) {
+                    Text("Keep Missing").tag(MissingSubscriptionProfilePolicy.keep)
+                    Text("Disable Missing").tag(MissingSubscriptionProfilePolicy.disable)
+                    Text("Remove Missing").tag(MissingSubscriptionProfilePolicy.remove)
+                }
+            }
+        }
+    }
+
+    private var currentSubscription: VPNSubscription {
+        viewModel.subscriptions.first(where: { $0.id == subscription.id }) ?? subscription
+    }
+
+    private var linkedProfiles: [VPNProfile] {
+        viewModel.profiles.filter { $0.sourceSubscriptionID == currentSubscription.id }
     }
 }
 

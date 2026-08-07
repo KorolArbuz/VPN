@@ -25,6 +25,7 @@ final class VPNDashboardViewModel {
     private var activeOperationID: UUID?
     private var stateObservationTask: Task<Void, Never>?
     private var saveOperationID: UUID?
+    private var subscriptionOperationID: UUID?
 
     var connectionState: VPNConnectionState = .disconnected
     var selectedServer: VPNServer?
@@ -39,6 +40,9 @@ final class VPNDashboardViewModel {
     var importResult: VPNImportResult?
     var importErrorMessage: String?
     var subscriptionPreviewProfiles: [VPNProfile] = []
+    var subscriptionPreview: SubscriptionPreview?
+    var subscriptionUpdatePlan: SubscriptionUpdatePlan?
+    var subscriptionRefreshState: VPNSubscriptionRefreshState = .idle
     var profileSaveState: ProfileSaveState = .idle
     var profileSaveMessage: String?
 
@@ -48,8 +52,8 @@ final class VPNDashboardViewModel {
         connectionManager: VPNConnectionManaging = MockVPNConnectionManager(),
         serverSelector: ServerSelecting = MockServerSelector(),
         profileRepository: VPNProfileRepository = FileVPNProfileRepository(),
-        subscriptionRepository: SubscriptionRepository = InMemorySubscriptionRepository(),
-        subscriptionUpdater: SubscriptionUpdating = MockSubscriptionUpdater(),
+        subscriptionRepository: SubscriptionRepository = FileSubscriptionRepository(),
+        subscriptionUpdater: SubscriptionUpdating = URLSessionSubscriptionUpdater(),
         credentialStore: CredentialStoring = KeychainCredentialStore(),
         activeProfileStore: ActiveProfileStoring = UserDefaultsActiveProfileStore(),
         importer: VPNProfileImporting? = nil
@@ -300,6 +304,35 @@ final class VPNDashboardViewModel {
         }
     }
 
+    func routeImportPayload(data: Data, title: String) async throws -> ImportPayloadRoute {
+        let router = ImportPayloadRouter(
+            importer: importer,
+            subscriptionParser: SubscriptionContentParser(linkParser: importer)
+        )
+        return try await router.route(data: data, title: title)
+    }
+
+    func routeImportPayload(text: String, title: String) async throws -> ImportPayloadRoute {
+        let router = ImportPayloadRouter(
+            importer: importer,
+            subscriptionParser: SubscriptionContentParser(linkParser: importer)
+        )
+        return try await router.route(text: text, title: title)
+    }
+
+    func routeQRCodeImageData(_ data: Data, title: String, detector: QRCodeImageDetecting = VisionQRCodeImageDetector()) async throws -> ImportPayloadRoute {
+        let router = ImportPayloadRouter(
+            importer: importer,
+            subscriptionParser: SubscriptionContentParser(linkParser: importer)
+        )
+        let processor = QRCodeImageImportProcessor(detector: detector, router: router)
+        return try await processor.process(data: data, title: title)
+    }
+
+    func qrCodePayloads(in data: Data, detector: QRCodeImageDetecting = VisionQRCodeImageDetector()) async throws -> [String] {
+        try await detector.detectPayloads(in: data)
+    }
+
     func saveImportResult() async {
         _ = await saveImportResultAndSelect()
     }
@@ -414,65 +447,198 @@ final class VPNDashboardViewModel {
         }
     }
 
-    func addSubscription(name: String, urlText: String) async {
-        do {
-            let result = try await importer.parse(urlText)
-            guard case .subscription(var subscription) = result.kind else {
-                importErrorMessage = "Enter an HTTP or HTTPS subscription URL."
-                return
-            }
+    func addSubscription(name: String, urlText: String, allowInsecureHTTP: Bool = false) async {
+        await saveSubscriptionFromURL(name: name, urlText: urlText, allowInsecureHTTP: allowInsecureHTTP)
+    }
 
-            subscription.name = name.isEmpty ? subscription.name : name
-            try await subscriptionRepository.save(subscription)
-            subscriptions = try await subscriptionRepository.subscriptions()
-            importErrorMessage = nil
+    func previewSubscription(urlText: String, name: String, allowInsecureHTTP: Bool = false) async {
+        guard subscriptionOperationID == nil else { return }
+
+        let operationID = UUID()
+        subscriptionOperationID = operationID
+        subscriptionRefreshState = .validating
+        importErrorMessage = nil
+        subscriptionPreview = nil
+        var createdReference: String?
+
+        do {
+            let (subscription, url) = try await makeSubscriptionDraft(name: name, urlText: urlText, allowInsecureHTTP: allowInsecureHTTP)
+            createdReference = subscription.credentialReference
+            guard subscriptionOperationID == operationID else { return }
+            subscriptionRefreshState = .downloading
+            let preview = try await subscriptionUpdater.preview(subscription, url: url)
+            guard subscriptionOperationID == operationID else { return }
+
+            subscriptionPreview = preview
+            subscriptionPreviewProfiles = preview.profiles.map(\.profile)
+            subscriptionRefreshState = .reviewing
         } catch {
+            if let createdReference {
+                try? await credentialStore.delete(reference: createdReference)
+            }
             importErrorMessage = error.localizedDescription
+            subscriptionRefreshState = .failed
+        }
+
+        if subscriptionOperationID == operationID {
+            subscriptionOperationID = nil
         }
     }
 
-    func previewSubscription(urlText: String, name: String) async {
+    @discardableResult
+    func saveSubscriptionPreview() async -> VPNSubscription? {
+        guard subscriptionOperationID == nil, var preview = subscriptionPreview else { return nil }
+
+        let operationID = UUID()
+        subscriptionOperationID = operationID
+        subscriptionRefreshState = .saving
+        importErrorMessage = nil
+
         do {
-            let result = try await importer.parse(urlText)
-            guard case .subscription(var subscription) = result.kind else {
-                importErrorMessage = "Enter an HTTP or HTTPS subscription URL."
-                return
+            let selectedProfiles = preview.profiles.filter { $0.isSelected && $0.state == .valid }.map(\.profile)
+            guard selectedProfiles.isEmpty == false else {
+                throw SubscriptionError.noProfilesFound
             }
 
-            subscription.name = name.isEmpty ? subscription.name : name
-            subscriptionPreviewProfiles = try await subscriptionUpdater.preview(subscription)
-            importErrorMessage = nil
+            preview.subscription.profileCount = selectedProfiles.count
+            preview.subscription.lastRefreshAt = Date()
+            preview.subscription.lastSuccessfulRefreshAt = Date()
+            preview.subscription.lastError = nil
+            preview.subscription.refreshState = .completed
+            try await subscriptionRepository.save(preview.subscription)
+            for profile in selectedProfiles {
+                try await profileRepository.save(profile)
+            }
+
+            profiles = try await profileRepository.profiles()
+            subscriptions = try await subscriptionRepository.subscriptions()
+            subscriptionPreview = nil
+            subscriptionPreviewProfiles = []
+            subscriptionRefreshState = .completed
+            subscriptionOperationID = nil
+            return preview.subscription
         } catch {
             importErrorMessage = error.localizedDescription
+            subscriptionRefreshState = .failed
+            subscriptionOperationID = nil
+            return nil
         }
     }
 
     func refreshSubscription(_ subscription: VPNSubscription) async {
+        guard subscriptionOperationID == nil else { return }
+
+        let operationID = UUID()
+        subscriptionOperationID = operationID
+        subscriptionRefreshState = .downloading
+        importErrorMessage = nil
+        subscriptionUpdatePlan = nil
+
         do {
-            let importedProfiles = try await subscriptionUpdater.refresh(subscription)
-            for profile in importedProfiles {
-                try await profileRepository.save(profile)
+            guard let reference = subscription.credentialReference,
+                  let urlText = try await credentialStore.secret(for: reference),
+                  let url = URL(string: urlText) else {
+                throw SubscriptionError.credentialsUnavailable
             }
 
+            let plan = try await subscriptionUpdater.planRefresh(subscription, existingProfiles: profiles, url: url)
+            guard subscriptionOperationID == operationID else { return }
+
+            subscriptionUpdatePlan = plan
+            subscriptionRefreshState = .reviewing
+        } catch {
             var updatedSubscription = subscription
-            updatedSubscription.lastUpdatedAt = Date()
-            updatedSubscription.profileCount = importedProfiles.count
+            updatedSubscription.lastRefreshAt = Date()
+            updatedSubscription.lastError = error.localizedDescription
+            updatedSubscription.refreshState = .failed
+            try? await subscriptionRepository.save(updatedSubscription)
+            subscriptions = (try? await subscriptionRepository.subscriptions()) ?? subscriptions
+            importErrorMessage = error.localizedDescription
+            subscriptionRefreshState = .failed
+        }
+
+        if subscriptionOperationID == operationID {
+            subscriptionOperationID = nil
+        }
+    }
+
+    func applySubscriptionUpdate(missingPolicy: MissingSubscriptionProfilePolicy = .keep) async {
+        guard subscriptionOperationID == nil, let plan = subscriptionUpdatePlan else { return }
+
+        let operationID = UUID()
+        subscriptionOperationID = operationID
+        subscriptionRefreshState = .saving
+
+        do {
+            for change in plan.changes where change.isSelected {
+                try await applySubscriptionChange(change, missingPolicy: missingPolicy)
+            }
+
+            var updatedSubscription = plan.subscription
+            updatedSubscription.lastRefreshAt = Date()
+            updatedSubscription.lastSuccessfulRefreshAt = Date()
             updatedSubscription.lastError = nil
+            updatedSubscription.refreshState = .completed
+            updatedSubscription.profileCount = (try await profileRepository.profiles()).filter { $0.sourceSubscriptionID == plan.subscription.id }.count
             try await subscriptionRepository.save(updatedSubscription)
 
             profiles = try await profileRepository.profiles()
             subscriptions = try await subscriptionRepository.subscriptions()
+            subscriptionUpdatePlan = nil
+            subscriptionRefreshState = .completed
+            importErrorMessage = nil
         } catch {
-            var updatedSubscription = subscription
-            updatedSubscription.lastError = error.localizedDescription
-            try? await subscriptionRepository.save(updatedSubscription)
-            subscriptions = (try? await subscriptionRepository.subscriptions()) ?? subscriptions
+            importErrorMessage = error.localizedDescription
+            subscriptionRefreshState = .failed
+        }
+
+        if subscriptionOperationID == operationID {
+            subscriptionOperationID = nil
         }
     }
 
-    func deleteSubscription(_ subscription: VPNSubscription) async {
+    func saveSubscriptionFromURL(name: String, urlText: String, allowInsecureHTTP: Bool = false) async {
+        var createdReference: String?
         do {
+            let (subscription, _) = try await makeSubscriptionDraft(name: name, urlText: urlText, allowInsecureHTTP: allowInsecureHTTP)
+            createdReference = subscription.credentialReference
+            try await subscriptionRepository.save(subscription)
+            subscriptions = try await subscriptionRepository.subscriptions()
+            importErrorMessage = nil
+        } catch {
+            if let createdReference {
+                try? await credentialStore.delete(reference: createdReference)
+            }
+            importErrorMessage = error.localizedDescription
+        }
+    }
+
+    func deleteSubscription(_ subscription: VPNSubscription, mode: VPNSubscriptionRemovalMode = .deleteProfiles) async {
+        do {
+            let linkedProfiles = profiles.filter { $0.sourceSubscriptionID == subscription.id }
+            for profile in linkedProfiles {
+                switch mode {
+                case .deleteProfiles:
+                    try await deleteProfileCredentials(profile)
+                    try await profileRepository.delete(id: profile.id)
+                    if activeProfileID == profile.id {
+                        setActiveProfileID(nil)
+                    }
+                case .keepProfiles:
+                    var localProfile = profile
+                    localProfile.source = .importedURL
+                    localProfile.sourceSubscriptionID = nil
+                    localProfile.externalIdentity = nil
+                    localProfile.lastSeenAt = nil
+                    try await profileRepository.save(localProfile)
+                }
+            }
+
             try await subscriptionRepository.delete(id: subscription.id)
+            if let reference = subscription.credentialReference {
+                try await credentialStore.delete(reference: reference)
+            }
+            profiles = try await profileRepository.profiles()
             subscriptions = try await subscriptionRepository.subscriptions()
         } catch {
             importErrorMessage = error.localizedDescription
@@ -485,6 +651,118 @@ final class VPNDashboardViewModel {
             subscriptions = try await subscriptionRepository.subscriptions()
         } catch {
             importErrorMessage = error.localizedDescription
+        }
+    }
+
+    func renameSubscription(_ subscription: VPNSubscription, to name: String) async {
+        do {
+            try await subscriptionRepository.rename(id: subscription.id, to: name)
+            subscriptions = try await subscriptionRepository.subscriptions()
+        } catch {
+            importErrorMessage = error.localizedDescription
+        }
+    }
+
+    func setSubscriptionPreviewSelection(id: SubscriptionProfilePreview.ID, isSelected: Bool) {
+        guard var preview = subscriptionPreview,
+              let index = preview.profiles.firstIndex(where: { $0.id == id }) else {
+            return
+        }
+        preview.profiles[index].isSelected = isSelected && preview.profiles[index].state == .valid
+        subscriptionPreview = preview
+    }
+
+    func setAllSubscriptionPreviewProfilesSelected(_ isSelected: Bool) {
+        guard var preview = subscriptionPreview else { return }
+        preview.profiles = preview.profiles.map { item in
+            var updated = item
+            updated.isSelected = isSelected && item.state == .valid
+            return updated
+        }
+        subscriptionPreview = preview
+    }
+
+    func cancelSubscriptionFlow() async {
+        if let reference = subscriptionPreview?.providerURLReference, reference.isEmpty == false {
+            try? await credentialStore.delete(reference: reference)
+        }
+        subscriptionPreview = nil
+        subscriptionUpdatePlan = nil
+        subscriptionPreviewProfiles = []
+        subscriptionRefreshState = .cancelled
+        subscriptionOperationID = nil
+    }
+
+    private func makeSubscriptionDraft(name: String, urlText: String, allowInsecureHTTP: Bool = false) async throws -> (VPNSubscription, URL) {
+        let trimmedURL = urlText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let result = try await importer.parse(trimmedURL)
+        guard case .subscription(var subscription) = result.kind, let url = URL(string: trimmedURL) else {
+            throw SubscriptionError.invalidURL
+        }
+
+        if url.scheme?.lowercased() == "http", allowInsecureHTTP == false {
+            throw SubscriptionError.invalidURL
+        }
+
+        subscription.name = name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? subscription.name : name
+        subscription.sanitizedHost = SecretMasker.sanitizedHost(from: url)
+        subscription.sanitizedURLDisplay = SecretMasker.sanitizedURLDisplay(url)
+
+        if subscription.credentialReference == nil {
+            subscription.credentialReference = try await credentialStore.store(trimmedURL, label: "Subscription URL")
+        }
+
+        return (subscription, url)
+    }
+
+    private func applySubscriptionChange(_ change: SubscriptionProfileChange, missingPolicy: MissingSubscriptionProfilePolicy) async throws {
+        switch change.kind {
+        case .added:
+            if let incomingProfile = change.incomingProfile {
+                try await profileRepository.save(incomingProfile)
+            }
+        case .updated:
+            if let incomingProfile = change.incomingProfile, let existingProfile = change.existingProfile {
+                try await profileRepository.save(mergeProviderUpdate(existing: existingProfile, incoming: incomingProfile))
+            }
+        case .missing:
+            guard let existingProfile = change.existingProfile else { return }
+            switch missingPolicy {
+            case .keep:
+                break
+            case .disable:
+                try await profileRepository.setEnabled(false, id: existingProfile.id)
+            case .remove:
+                try await deleteProfileCredentials(existingProfile)
+                try await profileRepository.delete(id: existingProfile.id)
+                if activeProfileID == existingProfile.id {
+                    setActiveProfileID(nil)
+                }
+            }
+        case .unchanged, .invalid, .duplicate:
+            break
+        }
+    }
+
+    private func mergeProviderUpdate(existing: VPNProfile, incoming: VPNProfile) -> VPNProfile {
+        var merged = incoming
+        merged.id = existing.id
+        merged.name = existing.customDisplayName ?? existing.name
+        merged.createdAt = existing.createdAt
+        merged.importedAt = existing.importedAt ?? incoming.importedAt
+        merged.customDisplayName = existing.customDisplayName
+        merged.isEnabled = existing.isEnabled
+        merged.isFavorite = existing.isFavorite
+        merged.localNotes = existing.localNotes
+        return merged
+    }
+
+    private func deleteProfileCredentials(_ profile: VPNProfile) async throws {
+        if let credentialReference = profile.credentialReference {
+            try await credentialStore.delete(reference: credentialReference)
+        }
+        if let publicKeyReference = profile.tlsSettings.publicKeyReference {
+            try await credentialStore.delete(reference: publicKeyReference)
         }
     }
 

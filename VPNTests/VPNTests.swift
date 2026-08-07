@@ -128,7 +128,7 @@ struct VPNTests {
             return
         }
 
-        #expect(subscription.url.host == "subscriptions.example.invalid")
+        #expect(subscription.sanitizedHost == "subscriptions.example.invalid")
     }
 
     @Test
@@ -156,6 +156,450 @@ struct VPNTests {
 
         #expect(profiles.count == 1)
         #expect(profiles.first?.protocolType == .hysteria2)
+    }
+
+    @Test
+    func plainVLESSURISubscription() async throws {
+        let parser = SubscriptionContentParser(linkParser: VPNLinkParser(credentialStore: InMemoryCredentialStore()))
+        let result = try await parser.parseResult(from: Data("vless://sample-user-id@sub.example.invalid:443?type=ws#One".utf8))
+
+        #expect(result.format == .singleURI)
+        #expect(result.profiles.count == 1)
+        #expect(result.profiles.first?.protocolType == .vless)
+    }
+
+    @Test
+    func mixedSubscriptionIgnoresBrokenLine() async throws {
+        let parser = SubscriptionContentParser(linkParser: VPNLinkParser(credentialStore: InMemoryCredentialStore()))
+        let content = """
+        vless://sample-user-id@one.example.invalid:443?type=ws#One
+        not-a-profile
+        trojan://sample-password@two.example.invalid:443#Two
+        hy2://sample-password@three.example.invalid:443#Three
+        """
+
+        let result = try await parser.parseResult(from: Data(content.utf8))
+
+        #expect(result.format == .plainURIList)
+        #expect(result.profiles.count == 3)
+        #expect(result.invalidEntries.isEmpty == false)
+    }
+
+    @Test
+    func urlSafeBase64WithoutPaddingSubscription() async throws {
+        let parser = SubscriptionContentParser(linkParser: VPNLinkParser(credentialStore: InMemoryCredentialStore()))
+        let content = "trojan://sample-password@safe.example.invalid:443#Safe"
+        let encoded = Data(content.utf8).base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
+
+        let result = try await parser.parseResult(from: Data(encoded.utf8))
+
+        #expect(result.format == .base64URIList)
+        #expect(result.profiles.first?.serverAddress == "safe.example.invalid")
+    }
+
+    @Test
+    func invalidBase64Subscription() async {
+        let parser = SubscriptionContentParser(linkParser: VPNLinkParser(credentialStore: InMemoryCredentialStore()))
+
+        await #expect(throws: VPNImportError.invalidBase64Payload) {
+            _ = try await parser.parseResult(from: Data("abc".utf8))
+        }
+    }
+
+    @Test
+    func invalidUTF8SubscriptionResponse() async {
+        let decoder = DefaultSubscriptionDecoder()
+
+        #expect(throws: SubscriptionError.invalidUTF8) {
+            _ = try decoder.decode(Data([0xff, 0xfe]))
+        }
+    }
+
+    @Test
+    func oversizedSubscriptionResponse() async {
+        let decoder = DefaultSubscriptionDecoder(maxDecodedSize: 4)
+
+        #expect(throws: SubscriptionError.responseTooLarge) {
+            _ = try decoder.decode(Data("too-large".utf8))
+        }
+    }
+
+    @Test
+    func subscriptionHTTPStatusErrors() async {
+        let client = StubSubscriptionClient(result: .failure(SubscriptionError.httpStatus(401)))
+        let updater = URLSessionSubscriptionUpdater(client: client, parser: SubscriptionContentParser(linkParser: VPNLinkParser(credentialStore: InMemoryCredentialStore())))
+        let subscription = makeSubscription()
+        guard let url = URL(string: "https://subscription.example.invalid/list") else {
+            Issue.record("Invalid test URL")
+            return
+        }
+
+        await #expect(throws: SubscriptionError.httpStatus(401)) {
+            _ = try await updater.preview(subscription, url: url)
+        }
+    }
+
+    @Test
+    func clashYAMLRecognizedOnly() async {
+        let parser = SubscriptionContentParser(linkParser: VPNLinkParser(credentialStore: InMemoryCredentialStore()))
+        guard let url = URL(string: "https://subscription.example.invalid/list") else {
+            Issue.record("Invalid test URL")
+            return
+        }
+
+        await #expect(throws: SubscriptionError.unsupportedFormat("Clash subscriptions are recognized but are not fully supported in this build.")) {
+            _ = try await URLSessionSubscriptionUpdater(
+                client: StubSubscriptionClient(result: .success(Data("proxies:\n  - name: demo".utf8))),
+                parser: parser
+            ).preview(makeSubscription(), url: url)
+        }
+    }
+
+    @Test
+    func stableIdentityMatchesExistingProfile() {
+        let merger = DefaultSubscriptionMerger()
+        let first = makeCompleteProfile(name: "First")
+        var second = first
+        second.name = "Renamed"
+
+        #expect(merger.stableIdentity(for: first) == merger.stableIdentity(for: second))
+    }
+
+    @Test
+    func subscriptionUpdatePlanClassifiesChanges() {
+        let planner = DefaultSubscriptionUpdatePlanner()
+        let subscription = makeSubscription()
+        let existing = makeSubscriptionProfile(name: "Existing", host: "same.example.invalid", subscriptionID: subscription.id)
+        var changed = existing
+        changed.port = 8443
+        changed.externalIdentity = existing.externalIdentity
+        let added = makeSubscriptionProfile(name: "Added", host: "new.example.invalid", subscriptionID: subscription.id)
+
+        let plan = planner.planUpdate(subscription: subscription, incoming: [changed, added], existing: [existing])
+
+        #expect(plan.updatedCount == 1)
+        #expect(plan.addedCount == 1)
+    }
+
+    @Test
+    func removedProviderProfileClassifiedAsMissing() {
+        let planner = DefaultSubscriptionUpdatePlanner()
+        let subscription = makeSubscription()
+        let existing = makeSubscriptionProfile(name: "Missing", host: "missing.example.invalid", subscriptionID: subscription.id)
+
+        let plan = planner.planUpdate(subscription: subscription, incoming: [], existing: [existing])
+
+        #expect(plan.missingCount == 1)
+    }
+
+    @Test
+    @MainActor
+    func subscriptionURLAbsentFromRepositoryJSON() async throws {
+        let fileURL = temporarySubscriptionsURL()
+        let repository = FileSubscriptionRepository(fileURL: fileURL)
+        let credentialStore = RecordingCredentialStore()
+        let viewModel = VPNDashboardViewModel(
+            profileRepository: InMemoryVPNProfileRepository(),
+            subscriptionRepository: repository,
+            subscriptionUpdater: URLSessionSubscriptionUpdater(client: StubSubscriptionClient(result: .success(Data("vless://sample-user-id@one.example.invalid:443#One".utf8)))),
+            credentialStore: credentialStore,
+            activeProfileStore: InMemoryActiveProfileStore()
+        )
+
+        await viewModel.addSubscription(name: "Provider", urlText: "https://subscription.example.invalid/list?token=sample-token")
+
+        let json = String(data: try Data(contentsOf: fileURL), encoding: .utf8) ?? ""
+        #expect(json.contains("sample-token") == false)
+        #expect(json.contains("credentialReference"))
+    }
+
+    @Test
+    @MainActor
+    func subscriptionPreviewAndSaveCreatesProfiles() async {
+        let viewModel = VPNDashboardViewModel(
+            profileRepository: InMemoryVPNProfileRepository(),
+            subscriptionRepository: InMemorySubscriptionRepository(),
+            subscriptionUpdater: URLSessionSubscriptionUpdater(client: StubSubscriptionClient(result: .success(Data("trojan://sample-password@sub.example.invalid:443#Sub".utf8)))),
+            credentialStore: InMemoryCredentialStore(),
+            activeProfileStore: InMemoryActiveProfileStore()
+        )
+
+        await viewModel.previewSubscription(urlText: "https://subscription.example.invalid/list", name: "Provider")
+        let saved = await viewModel.saveSubscriptionPreview()
+
+        #expect(saved != nil)
+        #expect(viewModel.subscriptions.count == 1)
+        #expect(viewModel.profiles.count == 1)
+        #expect(viewModel.profiles.first?.source == .subscription)
+    }
+
+    @Test
+    @MainActor
+    func repeatedRefreshDoesNotCreateDuplicates() async {
+        let repository = InMemoryVPNProfileRepository()
+        let subscriptionRepository = InMemorySubscriptionRepository()
+        let viewModel = VPNDashboardViewModel(
+            profileRepository: repository,
+            subscriptionRepository: subscriptionRepository,
+            subscriptionUpdater: URLSessionSubscriptionUpdater(client: StubSubscriptionClient(result: .success(Data("vless://sample-user-id@dup.example.invalid:443#Dup".utf8)))),
+            credentialStore: InMemoryCredentialStore(),
+            activeProfileStore: InMemoryActiveProfileStore()
+        )
+
+        await viewModel.previewSubscription(urlText: "https://subscription.example.invalid/list", name: "Provider")
+        guard let subscription = await viewModel.saveSubscriptionPreview() else {
+            Issue.record("Subscription was not saved")
+            return
+        }
+        await viewModel.refreshSubscription(subscription)
+        await viewModel.applySubscriptionUpdate()
+
+        #expect((try? await repository.profiles().count) == 1)
+    }
+
+    @Test
+    func scanQRCodeRouteOpensScanner() {
+        #expect(AddProfileRoute.scanQRCode.destinationKind == .scanner)
+    }
+
+    @Test
+    func chooseQRImageRouteOpensImagePicker() {
+        #expect(AddProfileRoute.chooseQRImage.destinationKind == .imagePicker)
+    }
+
+    @Test
+    func qrRoutesAreDistinct() {
+        #expect(AddProfileRoute.scanQRCode.destinationKind != AddProfileRoute.chooseQRImage.destinationKind)
+    }
+
+    @Test
+    func simulatorFallbackBelongsOnlyToScannerRoute() {
+        #expect(AddProfileNavigationPolicy.destinationKind(for: .scanQRCode, isLiveScannerAvailable: false) == .scannerFallback)
+        #expect(AddProfileNavigationPolicy.destinationKind(for: .chooseQRImage, isLiveScannerAvailable: false) == .imagePicker)
+    }
+
+    @Test
+    func cancelledQRImageSelectionProducesNoErrorRoute() async throws {
+        let processor = QRCodeImageImportProcessor(
+            detector: RecordingQRCodeDetector(payload: "vless://sample-user-id@qr.example.invalid:443#QR"),
+            router: ImportPayloadRouter(
+                importer: VPNLinkParser(credentialStore: InMemoryCredentialStore()),
+                subscriptionParser: SubscriptionContentParser(linkParser: VPNLinkParser(credentialStore: InMemoryCredentialStore()))
+            )
+        )
+
+        let route = try await processor.processOptionalData(nil, title: "Cancelled")
+
+        #expect(route == nil)
+    }
+
+    @Test
+    func selectedQRImageDataIsPassedToDetector() async throws {
+        let detector = RecordingQRCodeDetector(payload: "trojan://sample-password@qr.example.invalid:443#QR")
+        let processor = QRCodeImageImportProcessor(
+            detector: detector,
+            router: ImportPayloadRouter(
+                importer: VPNLinkParser(credentialStore: InMemoryCredentialStore()),
+                subscriptionParser: SubscriptionContentParser(linkParser: VPNLinkParser(credentialStore: InMemoryCredentialStore()))
+            )
+        )
+        let data = Data("fake-image-data".utf8)
+
+        _ = try await processor.process(data: data, title: "QR")
+
+        #expect(await detector.lastDataCount == data.count)
+    }
+
+    @Test
+    func qrPayloadUsesReviewProfilePipeline() async throws {
+        let processor = QRCodeImageImportProcessor(
+            detector: RecordingQRCodeDetector(payload: "hy2://sample-password@qr.example.invalid:443#QR"),
+            router: ImportPayloadRouter(
+                importer: VPNLinkParser(credentialStore: InMemoryCredentialStore()),
+                subscriptionParser: SubscriptionContentParser(linkParser: VPNLinkParser(credentialStore: InMemoryCredentialStore()))
+            )
+        )
+
+        let route = try await processor.process(data: Data("fake-image-data".utf8), title: "QR")
+
+        guard case .single(let result) = route,
+              case .profile(let profile) = result.kind else {
+            Issue.record("Expected single profile review route")
+            return
+        }
+        #expect(profile.protocolType == .hysteria2)
+        #expect(profile.serverAddress == "qr.example.invalid")
+    }
+
+    @Test
+    func qrVisionErrorCompletesOnce() async {
+        let detector = FailingQRCodeDetector(error: QRCodeImageImportError.recognitionUnavailable)
+        let processor = QRCodeImageImportProcessor(
+            detector: detector,
+            router: ImportPayloadRouter(
+                importer: VPNLinkParser(credentialStore: InMemoryCredentialStore()),
+                subscriptionParser: SubscriptionContentParser(linkParser: VPNLinkParser(credentialStore: InMemoryCredentialStore()))
+            )
+        )
+
+        await #expect(throws: QRCodeImageImportError.recognitionUnavailable) {
+            _ = try await processor.payloads(in: Data("image".utf8))
+        }
+        #expect(await detector.callCount == 1)
+    }
+
+    @Test
+    func invalidQRImageDoesNotCrash() async {
+        let processor = QRCodeImageImportProcessor(
+            detector: FailingQRCodeDetector(error: QRCodeImageImportError.invalidImage),
+            router: ImportPayloadRouter(
+                importer: VPNLinkParser(credentialStore: InMemoryCredentialStore()),
+                subscriptionParser: SubscriptionContentParser(linkParser: VPNLinkParser(credentialStore: InMemoryCredentialStore()))
+            )
+        )
+
+        await #expect(throws: QRCodeImageImportError.invalidImage) {
+            _ = try await processor.payloads(in: Data("not-image".utf8))
+        }
+    }
+
+    @Test
+    func noQRCodeReturnsTypedError() async {
+        let processor = QRCodeImageImportProcessor(
+            detector: FailingQRCodeDetector(error: QRCodeImageImportError.noQRCodeFound),
+            router: ImportPayloadRouter(
+                importer: VPNLinkParser(credentialStore: InMemoryCredentialStore()),
+                subscriptionParser: SubscriptionContentParser(linkParser: VPNLinkParser(credentialStore: InMemoryCredentialStore()))
+            )
+        )
+
+        await #expect(throws: QRCodeImageImportError.noQRCodeFound) {
+            _ = try await processor.payloads(in: Data("image".utf8))
+        }
+    }
+
+    @Test
+    func oneQRCodeReturnedOnce() async throws {
+        let detector = RecordingQRCodeDetector(payloads: ["vless://sample-user-id@one.example.invalid:443#One"])
+        let processor = QRCodeImageImportProcessor(
+            detector: detector,
+            router: ImportPayloadRouter(
+                importer: VPNLinkParser(credentialStore: InMemoryCredentialStore()),
+                subscriptionParser: SubscriptionContentParser(linkParser: VPNLinkParser(credentialStore: InMemoryCredentialStore()))
+            )
+        )
+
+        let payloads = try await processor.payloads(in: Data("image".utf8))
+
+        #expect(payloads.count == 1)
+        #expect(await detector.callCount == 1)
+    }
+
+    @Test
+    func multipleQRCodesReturnedAsArray() async throws {
+        let detector = RecordingQRCodeDetector(payloads: [
+            "vless://sample-user-id@one.example.invalid:443#One",
+            "trojan://sample-password@two.example.invalid:443#Two"
+        ])
+        let processor = QRCodeImageImportProcessor(
+            detector: detector,
+            router: ImportPayloadRouter(
+                importer: VPNLinkParser(credentialStore: InMemoryCredentialStore()),
+                subscriptionParser: SubscriptionContentParser(linkParser: VPNLinkParser(credentialStore: InMemoryCredentialStore()))
+            )
+        )
+
+        let payloads = try await processor.payloads(in: Data("image".utf8))
+
+        #expect(payloads.count == 2)
+    }
+
+    @Test
+    func repeatedQRImageSelectionCancelsStaleProcessing() async {
+        let detector = DelayedQRCodeDetector()
+        let coordinator = QRImageImportCoordinator(processor: QRCodeImageImportProcessor(
+            detector: detector,
+            router: ImportPayloadRouter(
+                importer: VPNLinkParser(credentialStore: InMemoryCredentialStore()),
+                subscriptionParser: SubscriptionContentParser(linkParser: VPNLinkParser(credentialStore: InMemoryCredentialStore()))
+            )
+        ))
+
+        async let first: ImportPayloadRoute? = coordinator.start(data: Data("first".utf8), title: "First")
+        async let second: ImportPayloadRoute? = coordinator.start(data: Data("second".utf8), title: "Second")
+        let results = await (first, second)
+
+        #expect(results.0 == nil || results.1 != nil)
+        #expect(await detector.callCount >= 1)
+    }
+
+    @Test
+    func staleQRResultDoesNotOpenReviewProfile() async {
+        let coordinator = QRImageImportCoordinator(processor: QRCodeImageImportProcessor(
+            detector: FailingQRCodeDetector(error: CancellationError()),
+            router: ImportPayloadRouter(
+                importer: VPNLinkParser(credentialStore: InMemoryCredentialStore()),
+                subscriptionParser: SubscriptionContentParser(linkParser: VPNLinkParser(credentialStore: InMemoryCredentialStore()))
+            )
+        ))
+
+        let route = await coordinator.start(data: Data("stale".utf8), title: "Stale")
+
+        #expect(route == nil)
+    }
+
+    @Test
+    func simultaneousDoubleQRProcessingKeepsSingleActiveResult() async {
+        let coordinator = QRImageImportCoordinator(processor: QRCodeImageImportProcessor(
+            detector: RecordingQRCodeDetector(payload: "vless://sample-user-id@single.example.invalid:443#Single"),
+            router: ImportPayloadRouter(
+                importer: VPNLinkParser(credentialStore: InMemoryCredentialStore()),
+                subscriptionParser: SubscriptionContentParser(linkParser: VPNLinkParser(credentialStore: InMemoryCredentialStore()))
+            )
+        ))
+
+        async let first: ImportPayloadRoute? = coordinator.start(data: Data("one".utf8), title: "One")
+        async let second: ImportPayloadRoute? = coordinator.start(data: Data("two".utf8), title: "Two")
+        let pair = await (first, second)
+        let results = [pair.0, pair.1].compactMap { $0 }
+
+        #expect(results.count <= 1)
+    }
+
+    @Test
+    func qrProcessingErrorResetsIsProcessing() async {
+        let coordinator = QRImageImportCoordinator(processor: QRCodeImageImportProcessor(
+            detector: FailingQRCodeDetector(error: QRCodeImageImportError.noQRCodeFound),
+            router: ImportPayloadRouter(
+                importer: VPNLinkParser(credentialStore: InMemoryCredentialStore()),
+                subscriptionParser: SubscriptionContentParser(linkParser: VPNLinkParser(credentialStore: InMemoryCredentialStore()))
+            )
+        ))
+
+        _ = await coordinator.start(data: Data("image".utf8), title: "Image")
+
+        #expect(await coordinator.isProcessing == false)
+        #expect(await coordinator.errorMessage?.contains("No QR") == true)
+    }
+
+    @Test
+    func qrErrorsDoNotExposeRawPayload() async {
+        let secretPayload = "vless://sample-secret-user-id@secret.example.invalid:443?token=sample-token#Secret"
+        let coordinator = QRImageImportCoordinator(processor: QRCodeImageImportProcessor(
+            detector: RecordingQRCodeDetector(payload: secretPayload),
+            router: ImportPayloadRouter(
+                importer: FailingImporter(),
+                subscriptionParser: SubscriptionContentParser(linkParser: FailingImporter())
+            )
+        ))
+
+        _ = await coordinator.start(data: Data("image".utf8), title: "Image")
+
+        #expect(await coordinator.errorMessage?.contains("sample-token") != true)
+        #expect(await coordinator.errorMessage?.contains("sample-secret-user-id") != true)
     }
 
     @Test
@@ -457,7 +901,7 @@ struct VPNTests {
 
         try await store.delete(reference: reference)
 
-        let secret = await store.secret(for: reference)
+        let secret = try await store.secret(for: reference)
         #expect(secret == nil)
     }
 
@@ -699,11 +1143,98 @@ struct VPNTests {
             .appendingPathComponent("VPNTests-\(UUID().uuidString)", isDirectory: true)
             .appendingPathComponent("profiles.json")
     }
+
+    private func temporarySubscriptionsURL() -> URL {
+        FileManager.default.temporaryDirectory
+            .appendingPathComponent("VPNTests-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("subscriptions.json")
+    }
+
+    private func makeSubscription() -> VPNSubscription {
+        VPNSubscription(
+            name: "Provider",
+            sanitizedHost: "subscription.example.invalid",
+            sanitizedURLDisplay: "https://subscription.example.invalid/list",
+            credentialReference: "test-subscription-url"
+        )
+    }
+
+    private func makeSubscriptionProfile(name: String, host: String, subscriptionID: UUID) -> VPNProfile {
+        let merger = DefaultSubscriptionMerger()
+        let profile = VPNProfile.draft(
+            name: name,
+            protocolType: .vless,
+            serverAddress: host,
+            port: 443,
+            credentialReference: "test-reference",
+            protocolConfiguration: .vless(VLESSProfileConfiguration(flow: nil, encryption: "none")),
+            source: .subscription
+        )
+        return merger.makeSubscriptionProfile(profile, subscriptionID: subscriptionID, now: Date())
+    }
 }
 
 private nonisolated enum TestError: Error {
     case expectedProfile
     case forcedFailure
+}
+
+private nonisolated struct StubSubscriptionClient: SubscriptionClient {
+    let result: Result<Data, Error>
+
+    func fetch(url: URL) async throws -> Data {
+        try result.get()
+    }
+}
+
+private actor RecordingQRCodeDetector: QRCodeImageDetecting {
+    private let payloads: [String]
+    private(set) var lastDataCount: Int?
+    private(set) var callCount = 0
+
+    init(payload: String) {
+        self.payloads = [payload]
+    }
+
+    init(payloads: [String]) {
+        self.payloads = payloads
+    }
+
+    func detectPayloads(in data: Data) async throws -> [String] {
+        callCount += 1
+        lastDataCount = data.count
+        return payloads
+    }
+}
+
+private actor FailingQRCodeDetector: QRCodeImageDetecting {
+    private let error: Error
+    private(set) var callCount = 0
+
+    init(error: Error) {
+        self.error = error
+    }
+
+    func detectPayloads(in data: Data) async throws -> [String] {
+        callCount += 1
+        throw error
+    }
+}
+
+private actor DelayedQRCodeDetector: QRCodeImageDetecting {
+    private(set) var callCount = 0
+
+    func detectPayloads(in data: Data) async throws -> [String] {
+        callCount += 1
+        try await Task.sleep(for: .milliseconds(data == Data("first".utf8) ? 100 : 10))
+        return ["vless://sample-user-id@delayed.example.invalid:443#Delayed"]
+    }
+}
+
+private nonisolated struct FailingImporter: VPNProfileImporting {
+    func parse(_ text: String) async throws -> VPNImportResult {
+        throw VPNImportError.invalidPayload("Unsupported QR content.")
+    }
 }
 
 private actor InMemoryActiveProfileStore: ActiveProfileStoring {
@@ -721,14 +1252,22 @@ private actor InMemoryActiveProfileStore: ActiveProfileStoring {
 private actor RecordingCredentialStore: CredentialStoring {
     private(set) var storeCount = 0
     private(set) var deletedReferences: [String] = []
+    private var secrets: [String: String] = [:]
 
     func store(_ secret: String, label: String) async throws -> String {
         storeCount += 1
-        return "recording://credential/\(storeCount)"
+        let reference = "recording://credential/\(storeCount)"
+        secrets[reference] = secret
+        return reference
+    }
+
+    func secret(for reference: String) async throws -> String? {
+        secrets[reference]
     }
 
     func delete(reference: String) async throws {
         deletedReferences.append(reference)
+        secrets[reference] = nil
     }
 }
 

@@ -12,6 +12,8 @@ nonisolated protocol VPNProfileImporting: Sendable {
 }
 
 nonisolated struct VPNLinkParser: VPNProfileImporting {
+    static let supportedProfileSchemes: Set<String> = ["vless", "trojan", "hysteria2", "hy2", "vmess", "ss", "tuic"]
+
     private let credentialStore: CredentialStoring
 
     init(credentialStore: CredentialStoring = KeychainCredentialStore()) {
