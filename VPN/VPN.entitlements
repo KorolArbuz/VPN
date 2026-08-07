@@ -8,8 +8,7 @@
 	</array>
 	<key>keychain-access-groups</key>
 	<array>
-		<string>$(AppIdentifierPrefix)denischizhov.VPN.shared</string>
-		<string>$(AppIdentifierPrefix)su.24kvn.app.PacketTunnelExtension</string>
+		<string>$(AppIdentifierPrefix)su.24kvn.app.shared</string>
 	</array>
 </dict>
 </plist>

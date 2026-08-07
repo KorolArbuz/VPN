@@ -28,12 +28,12 @@ struct PasteLinkView: View {
                     .frame(minHeight: 120)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
-                    .accessibilityLabel("Profile link")
+                    .accessibilityLabel(Text("profiles.profile_link"))
 
                 Button {
                     linkText = UIPasteboard.general.string ?? ""
                 } label: {
-                    Label("Paste from Clipboard", systemImage: "doc.on.clipboard")
+                    Label("profiles.paste_from_clipboard", systemImage: "doc.on.clipboard")
                 }
                 .buttonStyle(.borderless)
             } footer: {
@@ -54,15 +54,15 @@ struct PasteLinkView: View {
                         reviewResult = viewModel.importResult
                     }
                 } label: {
-                    Text("Continue")
+                    Text("common.continue")
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(linkText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                .accessibilityLabel("Continue to review profile")
+                .accessibilityLabel(Text("profiles.continue_to_review"))
             }
         }
-        .navigationTitle("Paste Link")
+        .navigationTitle("profiles.paste_link")
         .navigationDestination(item: $reviewResult) { result in
             ReviewProfileView(importResult: result, viewModel: viewModel, onProfileSaved: onProfileSaved)
         }
@@ -120,7 +120,7 @@ struct ReviewProfileView: View {
                 }
             }
         }
-        .navigationTitle("Review Profile")
+        .navigationTitle("profiles.review_profile")
     }
 
     @ViewBuilder

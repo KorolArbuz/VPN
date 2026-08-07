@@ -31,4 +31,21 @@ nonisolated enum VPNConnectionState: String, Codable, Sendable {
             "Failed"
         }
     }
+
+    var localizationKey: String {
+        switch self {
+        case .disconnected:
+            "home.status.disconnected"
+        case .testing:
+            "home.status.testing"
+        case .connecting:
+            "home.status.connecting"
+        case .connected:
+            "home.status.connected"
+        case .disconnecting:
+            "home.status.disconnecting"
+        case .failed:
+            "home.status.failed"
+        }
+    }
 }

@@ -30,7 +30,7 @@ struct ProfilesView: View {
                                     await viewModel.deleteProfile(profile)
                                 }
                             } label: {
-                                Label("Delete", systemImage: "trash")
+                                Label("common.delete", systemImage: "trash")
                             }
                         }
                     }
@@ -54,7 +54,7 @@ struct ProfilesView: View {
                                         await viewModel.deleteSubscription(subscription, mode: .deleteProfiles)
                                     }
                                 } label: {
-                                    Label("Delete", systemImage: "trash")
+                                    Label("common.delete", systemImage: "trash")
                                 }
 
                                 Button {
@@ -69,13 +69,13 @@ struct ProfilesView: View {
                 }
             }
         }
-        .navigationTitle("Profiles")
+        .navigationTitle("profiles.title")
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
                     isAddSheetPresented = true
                 } label: {
-                    Label("Add Profile", systemImage: "plus")
+                    Label("profiles.add", systemImage: "plus")
                 }
             }
         }
@@ -204,7 +204,7 @@ struct SubscriptionDetailsView: View {
                         await viewModel.refreshSubscription(currentSubscription)
                     }
                 } label: {
-                    Label("Refresh", systemImage: "arrow.clockwise")
+                    Label("profiles.refresh", systemImage: "arrow.clockwise")
                 }
                 .disabled(viewModel.subscriptionRefreshState == .downloading || currentSubscription.isEnabled == false)
             } footer: {
@@ -254,7 +254,7 @@ struct SubscriptionDetailsView: View {
         .navigationTitle(currentSubscription.name)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                Button("Save") {
+                Button("common.save") {
                     Task {
                         await viewModel.renameSubscription(currentSubscription, to: editedName)
                     }
@@ -268,7 +268,7 @@ struct SubscriptionDetailsView: View {
             Button("Keep profiles as local profiles") {
                 Task { await viewModel.deleteSubscription(currentSubscription, mode: .keepProfiles) }
             }
-            Button("Cancel", role: .cancel) {}
+            Button("common.cancel", role: .cancel) {}
         }
     }
 
@@ -330,7 +330,7 @@ private struct ProfileDetailView: View {
                 Button {
                     viewModel.selectProfile(profile)
                 } label: {
-                    Label("Use Profile", systemImage: "checkmark.circle")
+                    Label("profiles.use_profile", systemImage: "checkmark.circle")
                 }
 
                 Toggle("Enabled", isOn: Binding(
@@ -374,7 +374,7 @@ private struct ProfileDetailView: View {
         .navigationTitle(profile.name)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                Button("Save") {
+                Button("common.save") {
                     Task {
                         await viewModel.renameProfile(profile, to: editedName)
                     }

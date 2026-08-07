@@ -8,10 +8,22 @@
 import SwiftUI
 
 struct SettingsView: View {
+    @AppStorage(AppLanguage.storageKey) private var languageRawValue = AppLanguage.system.rawValue
+
     var body: some View {
         List {
+            Section("settings.language") {
+                Picker("settings.language", selection: $languageRawValue) {
+                    ForEach(AppLanguage.allCases) { language in
+                        Text(LocalizedStringKey(language.localizedTitleKey))
+                            .tag(language.rawValue)
+                    }
+                }
+                .pickerStyle(.inline)
+            }
+
             Section("App") {
-                LabeledContent("Connection Engine", value: "Mock")
+                LabeledContent("settings.connection_engine", value: "Mock")
                 LabeledContent("Mode", value: "Demo")
                 LabeledContent("NetworkExtension", value: "Not configured")
                 LabeledContent("Diagnostics", value: "Local only")
@@ -20,11 +32,11 @@ struct SettingsView: View {
             Section("Security") {
                 Label("Credentials are stored by reference in this prototype.", systemImage: "lock.shield")
                     .foregroundStyle(.secondary)
-                Label("Demo Mode does not route traffic through a VPN core.", systemImage: "info.circle")
+                Label("vpn.demo_mode", systemImage: "info.circle")
                     .foregroundStyle(.secondary)
             }
         }
-        .navigationTitle("Settings")
+        .navigationTitle("settings.title")
     }
 }
 

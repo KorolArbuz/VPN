@@ -27,7 +27,7 @@ struct AddVPNSheet: View {
         NavigationStack(path: $path) {
             List {
                 Section {
-                    Text("Choose how you want to add a VPN profile.")
+                    Text("profiles.add.description")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                         .padding(.vertical, 4)
@@ -36,28 +36,28 @@ struct AddVPNSheet: View {
                 Section("Quick Import") {
                     NavigationLink(value: AddProfileRoute.scanQRCode) {
                         ProfileActionRow(
-                            title: "Scan QR Code",
-                            subtitle: "Scan a QR code using the camera.",
+                            title: String(localized: "profiles.scan_qr"),
+                            subtitle: String(localized: "profiles.scan_qr.description"),
                             systemImage: "qrcode.viewfinder"
                         )
                     }
-                    .accessibilityLabel("Scan QR Code")
+                    .accessibilityLabel(Text("profiles.scan_qr"))
 
                     Button {
                         isQRImagePickerPresented = true
                     } label: {
                         ProfileActionRow(
-                            title: "Choose QR Image",
-                            subtitle: "Import a QR code from Photos.",
+                            title: String(localized: "profiles.choose_qr_image"),
+                            subtitle: String(localized: "profiles.choose_qr_image.description"),
                             systemImage: "photo"
                         )
                     }
-                    .accessibilityLabel("Choose QR Image")
+                    .accessibilityLabel(Text("profiles.choose_qr_image"))
 
                     NavigationLink(value: AddProfileRoute.pasteLink) {
                         ProfileActionRow(
-                            title: "Paste Link",
-                            subtitle: "Import a VPN link or save a subscription URL.",
+                            title: String(localized: "profiles.paste_link"),
+                            subtitle: String(localized: "profiles.paste_link.description"),
                             systemImage: "link"
                         )
                     }
@@ -66,19 +66,19 @@ struct AddVPNSheet: View {
                         isFileImporterPresented = true
                     } label: {
                         ProfileActionRow(
-                            title: "Import File",
-                            subtitle: "Open a .txt, .conf, .json, .yaml or .yml file.",
+                            title: String(localized: "profiles.import_file"),
+                            subtitle: String(localized: "profiles.import_file.description"),
                             systemImage: "doc.badge.plus"
                         )
                     }
-                    .accessibilityLabel("Import File")
+                    .accessibilityLabel(Text("profiles.import_file"))
                 }
 
                 Section("Other Methods") {
                     NavigationLink(value: AddProfileRoute.manualSetup) {
                         ProfileActionRow(
-                            title: "Manual Setup",
-                            subtitle: "Enter server details yourself and save a draft.",
+                            title: String(localized: "profiles.manual_setup"),
+                            subtitle: String(localized: "profiles.manual_setup.description"),
                             systemImage: "slider.horizontal.3"
                         )
                     }
@@ -87,8 +87,8 @@ struct AddVPNSheet: View {
                         AddSubscriptionView(viewModel: viewModel)
                     } label: {
                         ProfileActionRow(
-                            title: "Add Subscription",
-                            subtitle: "Preview a provider link and save selected profiles.",
+                            title: String(localized: "profiles.subscription"),
+                            subtitle: String(localized: "profiles.subscription.description"),
                             systemImage: "calendar.badge.plus"
                         )
                     }
@@ -104,7 +104,7 @@ struct AddVPNSheet: View {
                     }
                 }
             }
-            .navigationTitle("Add Profile")
+            .navigationTitle("profiles.add")
             .navigationDestination(for: AddProfileRoute.self) { route in
                 switch route {
                 case .pasteLink:
@@ -147,17 +147,17 @@ struct AddVPNSheet: View {
                 guard let newItem else { return }
                 handleQRImageSelection(newItem)
             }
-            .alert("Import Failed", isPresented: Binding(
+            .alert("profiles.import_failed", isPresented: Binding(
                 get: { importErrorMessage != nil },
                 set: { if $0 == false { importErrorMessage = nil } }
             )) {
-                Button("OK", role: .cancel) {}
+                Button("common.ok", role: .cancel) {}
             } message: {
                 Text(importErrorMessage ?? "")
             }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Done") {
+                    Button("common.done") {
                         dismiss()
                     }
                 }

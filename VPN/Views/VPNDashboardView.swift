@@ -26,7 +26,7 @@ struct VPNDashboardView: View {
                 .frame(maxWidth: .infinity)
             }
             .background(Color(.systemBackground))
-            .navigationTitle("SecureLink")
+            .navigationTitle("app.name")
             .navigationBarTitleDisplayMode(.inline)
             .sheet(isPresented: $isConnectionSheetPresented) {
                 ConnectionSelectionView(viewModel: viewModel)
@@ -56,7 +56,7 @@ struct VPNDashboardView: View {
                             .controlSize(.small)
                     }
 
-                    Text(viewModel.connectionState.displayName)
+                    Text(LocalizedStringKey(viewModel.connectionState.localizationKey))
                         .font(.title3.weight(.semibold))
                         .foregroundStyle(statusColor)
                 }
@@ -70,7 +70,7 @@ struct VPNDashboardView: View {
                             .multilineTextAlignment(.center)
 
                         if viewModel.connectionState == .failed && viewModel.canConnect {
-                            Button("Retry") {
+                            Button("common.retry") {
                                 Task {
                                     await viewModel.connect()
                                 }
@@ -94,7 +94,7 @@ struct VPNDashboardView: View {
                     connectionBadge
 
                     VStack(alignment: .leading, spacing: 5) {
-                        Text("Current Connection")
+                        Text("home.current_connection")
                             .font(.caption.weight(.semibold))
                             .foregroundStyle(.secondary)
                             .textCase(.uppercase)
@@ -115,7 +115,7 @@ struct VPNDashboardView: View {
                                 .foregroundStyle(selectedProfile.isComplete ? AnyShapeStyle(.secondary) : AnyShapeStyle(.orange))
                                 .lineLimit(1)
                         } else if viewModel.selectedServer != nil {
-                            Text("Using built-in server")
+                            Text("home.using_built_in_server")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
@@ -132,9 +132,9 @@ struct VPNDashboardView: View {
                 Divider()
 
                 HStack(spacing: 16) {
-                    compactStat("Ping", pingText, "speedometer")
-                    compactStat("Load", loadText, "chart.bar")
-                    compactStat("Mode", modeText, "slider.horizontal.3")
+                    compactStat("home.stat.ping", pingText, "speedometer")
+                    compactStat("home.stat.load", loadText, "chart.bar")
+                    compactStat("home.stat.mode", modeText, "slider.horizontal.3")
                 }
             }
             .padding(16)
@@ -142,18 +142,18 @@ struct VPNDashboardView: View {
             .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("Current connection. Tap to change server, protocol, or profile.")
+        .accessibilityLabel(Text("home.current_connection"))
     }
 
     private var demoModeNotice: some View {
-        Label("Demo Mode — traffic is not routed through a VPN core.", systemImage: "info.circle")
+        Label("vpn.demo_mode", systemImage: "info.circle")
             .font(.footnote)
             .foregroundStyle(.secondary)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 14)
             .padding(.vertical, 10)
             .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-            .accessibilityLabel("Demo Mode. Traffic is not routed through a VPN core.")
+            .accessibilityLabel(Text("vpn.demo_mode"))
     }
 
     @ViewBuilder
@@ -175,10 +175,10 @@ struct VPNDashboardView: View {
         }
     }
 
-    private func compactStat(_ title: String, _ value: String, _ systemImage: String) -> some View {
+    private func compactStat(_ titleKey: String, _ value: String, _ systemImage: String) -> some View {
         Label {
             VStack(alignment: .leading, spacing: 2) {
-                Text(title)
+                Text(LocalizedStringKey(titleKey))
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                 Text(value)
@@ -199,7 +199,7 @@ struct VPNDashboardView: View {
             return profile.name
         }
 
-        return viewModel.selectedServer?.country ?? "No server selected"
+        return viewModel.selectedServer?.country ?? String(localized: "home.no_server_selected")
     }
 
     private var secondaryConnectionTitle: String {
@@ -212,7 +212,7 @@ struct VPNDashboardView: View {
         }
 
         guard let server = viewModel.selectedServer else {
-            return "Choose a server or profile"
+            return String(localized: "home.choose_server_or_profile")
         }
 
         return "\(server.city) - \(server.name)"
@@ -228,7 +228,7 @@ struct VPNDashboardView: View {
 
     private var pingText: String {
         if viewModel.selectedProfile != nil {
-            return "Not tested"
+            return String(localized: "home.not_tested")
         }
 
         guard let server = viewModel.selectedServer else {
@@ -240,7 +240,7 @@ struct VPNDashboardView: View {
 
     private var loadText: String {
         if viewModel.selectedProfile != nil {
-            return "Unknown"
+            return String(localized: "home.unknown")
         }
 
         guard let server = viewModel.selectedServer else {

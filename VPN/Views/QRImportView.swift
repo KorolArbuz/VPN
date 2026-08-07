@@ -5,11 +5,55 @@
 //  Created by Denis Chizhov on 07.08.2026.
 //
 
+import AVFoundation
 import PhotosUI
 import SwiftUI
 import UIKit
 import Vision
 import VisionKit
+
+enum QRScannerCameraAccessState: Equatable {
+    case checking
+    case authorized
+    case permissionRequired
+    case denied
+    case restricted
+    case unavailable
+
+    var fallbackTitle: String {
+        switch self {
+        case .checking:
+            "qr.checking_camera"
+        case .permissionRequired, .denied, .restricted:
+            "qr.camera_permission_required"
+        case .unavailable:
+            "qr.camera_unavailable"
+        case .authorized:
+            ""
+        }
+    }
+
+    var fallbackDescription: String {
+        switch self {
+        case .checking:
+            "qr.please_wait"
+        case .permissionRequired:
+            "qr.permission_not_configured"
+        case .denied:
+            "qr.permission_denied_description"
+        case .restricted:
+            "qr.permission_restricted_description"
+        case .unavailable:
+            "qr.camera_unavailable_description"
+        case .authorized:
+            ""
+        }
+    }
+
+    var showsSettingsAction: Bool {
+        self == .denied || self == .restricted
+    }
+}
 
 struct QRScannerView: View {
     @Bindable var viewModel: VPNDashboardViewModel
@@ -22,10 +66,11 @@ struct QRScannerView: View {
     @State private var didHandlePayload = false
     @State private var qrImageProcessingTask: Task<Void, Never>?
     @State private var qrImageOperationID: UUID?
+    @State private var cameraAccessState: QRScannerCameraAccessState = .checking
 
     var body: some View {
         VStack(spacing: 20) {
-            if isLiveScannerAvailable {
+            if cameraAccessState == .authorized {
                 LiveQRScannerView { payload in
                     handlePayloadOnce(payload)
                 }
@@ -39,18 +84,21 @@ struct QRScannerView: View {
                 fallbackContent
             }
         }
-        .navigationTitle("Scan QR Code")
+        .navigationTitle("qr.title")
+        .task {
+            await updateCameraAccessState()
+        }
         .onChange(of: selectedItem) { _, newItem in
             guard let newItem else { return }
             Task {
                 await processImageItem(newItem)
             }
         }
-        .alert("QR Import Failed", isPresented: Binding(
+        .alert("qr.import_failed", isPresented: Binding(
             get: { errorMessage != nil },
             set: { if $0 == false { errorMessage = nil } }
         )) {
-            Button("OK", role: .cancel) {}
+            Button("common.ok", role: .cancel) {}
         } message: {
             Text(errorMessage ?? "")
         }
@@ -58,13 +106,17 @@ struct QRScannerView: View {
 
     private var fallbackContent: some View {
         ContentUnavailableView {
-            Label("Live QR scanning is unavailable on this device.", systemImage: "qrcode.viewfinder")
+            Label(LocalizedStringKey(cameraAccessState.fallbackTitle), systemImage: "qrcode.viewfinder")
         } description: {
-            Text("Choose a QR image from Photos or paste a VPN link instead.")
+            Text(LocalizedStringKey(cameraAccessState.fallbackDescription))
         } actions: {
             VStack(spacing: 12) {
+                if cameraAccessState == .checking {
+                    ProgressView()
+                }
+
                 PhotosPicker(selection: $selectedItem, matching: .images) {
-                    Label("Choose QR Image", systemImage: "photo")
+                    Label("profiles.choose_qr_image", systemImage: "photo")
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.borderedProminent)
@@ -72,12 +124,21 @@ struct QRScannerView: View {
                 NavigationLink {
                     PasteLinkView(viewModel: viewModel, onProfileSaved: onProfileSaved)
                 } label: {
-                    Label("Paste Link", systemImage: "link")
+                    Label("profiles.paste_link", systemImage: "link")
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.bordered)
 
-                Button("Cancel", role: .cancel) {
+                if cameraAccessState.showsSettingsAction,
+                   let settingsURL = URL(string: UIApplication.openSettingsURLString) {
+                    Link(destination: settingsURL) {
+                        Label("qr.open_settings", systemImage: "gearshape")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
+                }
+
+                Button("common.cancel", role: .cancel) {
                     dismiss()
                 }
                 .buttonStyle(.borderless)
@@ -87,7 +148,38 @@ struct QRScannerView: View {
         .padding()
     }
 
-    private var isLiveScannerAvailable: Bool {
+    @MainActor
+    private func updateCameraAccessState() async {
+        guard isLiveScannerSupported else {
+            cameraAccessState = .unavailable
+            return
+        }
+
+        guard hasCameraUsageDescription else {
+            cameraAccessState = .permissionRequired
+            return
+        }
+
+        switch AVCaptureDevice.authorizationStatus(for: .video) {
+        case .authorized:
+            cameraAccessState = .authorized
+        case .notDetermined:
+            let isGranted = await AVCaptureDevice.requestAccess(for: .video)
+            cameraAccessState = isGranted ? .authorized : .denied
+        case .denied:
+            cameraAccessState = .denied
+        case .restricted:
+            cameraAccessState = .restricted
+        @unknown default:
+            cameraAccessState = .unavailable
+        }
+    }
+
+    private var hasCameraUsageDescription: Bool {
+        Bundle.main.object(forInfoDictionaryKey: "NSCameraUsageDescription") as? String != nil
+    }
+
+    private var isLiveScannerSupported: Bool {
         #if targetEnvironment(simulator)
         false
         #else
@@ -215,6 +307,16 @@ private struct LiveQRScannerView: UIViewControllerRepresentable {
 
     func updateUIViewController(_ uiViewController: UIViewController, context: Context) {}
 
+    static func dismantleUIViewController(_ uiViewController: UIViewController, coordinator: Coordinator) {
+        guard #available(iOS 16.0, *),
+              let scanner = uiViewController as? DataScannerViewController else {
+            return
+        }
+
+        scanner.stopScanning()
+        scanner.delegate = nil
+    }
+
     func makeCoordinator() -> Coordinator {
         Coordinator(onPayload: onPayload)
     }
@@ -238,7 +340,9 @@ private struct LiveQRScannerView: UIViewControllerRepresentable {
                 if case .barcode(let barcode) = item, let payload = barcode.payloadStringValue {
                     didHandlePayload = true
                     dataScanner.stopScanning()
-                    onPayload(payload)
+                    DispatchQueue.main.async { [onPayload] in
+                        onPayload(payload)
+                    }
                     return
                 }
             }

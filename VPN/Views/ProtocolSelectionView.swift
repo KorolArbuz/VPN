@@ -25,11 +25,11 @@ struct ProtocolSelectionView: View {
                             .font(.headline)
 
                         if option == .automatic {
-                            Text("Best supported protocol for the selected server")
+                            Text("connection.best_supported_protocol")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         } else if viewModel.isProtocolCompatible(option) == false {
-                            Text("Not supported by selected server")
+                            Text("connection.protocol_not_supported")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
@@ -48,7 +48,7 @@ struct ProtocolSelectionView: View {
             .disabled(viewModel.isProtocolCompatible(option) == false)
             .opacity(viewModel.isProtocolCompatible(option) ? 1 : 0.45)
         }
-        .navigationTitle("Protocol")
+        .navigationTitle("connection.protocol")
     }
 }
 

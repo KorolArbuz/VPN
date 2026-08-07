@@ -23,7 +23,7 @@ struct ServerSelectionView: View {
             .buttonStyle(.plain)
             .disabled(server.isAvailable == false)
         }
-        .navigationTitle("Servers")
+        .navigationTitle("connection.servers")
         .overlay {
             if viewModel.servers.isEmpty {
                 ContentUnavailableView("No servers", systemImage: "server.rack")
@@ -74,7 +74,7 @@ private struct ServerRow: View {
                     .font(.title3)
                     .foregroundStyle(isSelected ? AnyShapeStyle(.tint) : AnyShapeStyle(.tertiary))
             } else {
-                Label("Unavailable", systemImage: "wifi.slash")
+                Label("connection.unavailable", systemImage: "wifi.slash")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

@@ -1106,6 +1106,399 @@ struct VPNTests {
         #expect(viewModel.currentMetrics == nil)
     }
 
+    @Test
+    @MainActor
+    func connectionInitialStateIsDisconnected() async {
+        let manager = RecordingConnectionManager()
+        let viewModel = VPNDashboardViewModel(connectionManager: manager)
+
+        #expect(viewModel.connectionState == .disconnected)
+        #expect(await manager.currentState() == .disconnected)
+    }
+
+    @Test
+    @MainActor
+    func connectionStateSurvivesInitialLoadAfterReturningHome() async {
+        let manager = RecordingConnectionManager()
+        let viewModel = VPNDashboardViewModel(connectionManager: manager)
+
+        await viewModel.loadInitialData()
+        await viewModel.connect()
+        await viewModel.loadInitialData()
+
+        #expect(viewModel.connectionState == .connected)
+        #expect(await manager.currentState() == .connected)
+        #expect(await manager.disconnectCount == 0)
+    }
+
+    @Test
+    @MainActor
+    func recreatingHomeViewModelDoesNotResetSharedManagerState() async {
+        let manager = RecordingConnectionManager()
+        let repository = InMemoryVPNProfileRepository()
+        let activeStore = InMemoryActiveProfileStore()
+        let firstViewModel = VPNDashboardViewModel(
+            connectionManager: manager,
+            profileRepository: repository,
+            activeProfileStore: activeStore
+        )
+
+        await firstViewModel.loadInitialData()
+        await firstViewModel.connect()
+
+        let recreatedViewModel = VPNDashboardViewModel(
+            connectionManager: manager,
+            profileRepository: repository,
+            activeProfileStore: activeStore
+        )
+        await recreatedViewModel.loadInitialData()
+
+        #expect(recreatedViewModel.connectionState == .connected)
+        #expect(await manager.connectCount == 1)
+        #expect(await manager.disconnectCount == 0)
+    }
+
+    @Test
+    @MainActor
+    func settingsNavigationDoesNotDisconnectSharedManager() async {
+        let manager = RecordingConnectionManager()
+        let viewModel = VPNDashboardViewModel(connectionManager: manager)
+
+        await viewModel.loadInitialData()
+        await viewModel.connect()
+        _ = SettingsView()
+        await viewModel.loadInitialData()
+
+        #expect(viewModel.connectionState == .connected)
+        #expect(await manager.disconnectCount == 0)
+    }
+
+    @Test
+    @MainActor
+    func disconnectUpdatesSameSharedManager() async {
+        let manager = RecordingConnectionManager()
+        let viewModel = VPNDashboardViewModel(connectionManager: manager)
+
+        await viewModel.loadInitialData()
+        await viewModel.connect()
+        await viewModel.disconnect()
+
+        #expect(viewModel.connectionState == .disconnected)
+        #expect(await manager.currentState() == .disconnected)
+        #expect(await manager.connectCount == 1)
+        #expect(await manager.disconnectCount == 1)
+    }
+
+    @Test
+    @MainActor
+    func selectingProfileDoesNotResetActiveConnectionState() async {
+        let manager = RecordingConnectionManager()
+        let repository = InMemoryVPNProfileRepository()
+        let profile = makeCompleteProfile(name: "Switch Profile")
+        try? await repository.save(profile)
+        let viewModel = VPNDashboardViewModel(
+            connectionManager: manager,
+            profileRepository: repository,
+            activeProfileStore: InMemoryActiveProfileStore()
+        )
+
+        await viewModel.loadInitialData()
+        await viewModel.connect()
+        viewModel.selectProfile(profile)
+
+        #expect(viewModel.connectionState == .connected)
+        #expect(await manager.currentState() == .connected)
+    }
+
+    @Test
+    func cameraDeniedStateShowsSettingsAction() {
+        #expect(QRScannerCameraAccessState.denied.fallbackTitle == "qr.camera_permission_required")
+        #expect(QRScannerCameraAccessState.denied.showsSettingsAction)
+    }
+
+    @Test
+    func cameraUnavailableStateKeepsImageFallbackAvailable() {
+        #expect(QRScannerCameraAccessState.unavailable.fallbackTitle == "qr.camera_unavailable")
+        #expect(QRScannerCameraAccessState.unavailable.showsSettingsAction == false)
+    }
+
+    @Test
+    func appLanguageDefaultsToSystemForUnsupportedPersistedValue() {
+        #expect(AppLanguage.persistedValue("unsupported") == .system)
+    }
+
+    @Test
+    func appLanguageUsesStableStorageValues() {
+        #expect(AppLanguage.storageKey == "app.language")
+        #expect(AppLanguage.system.rawValue == "system")
+        #expect(AppLanguage.english.rawValue == "english")
+        #expect(AppLanguage.russian.rawValue == "russian")
+    }
+
+    @Test
+    func appLanguageMapsToExpectedLocales() {
+        #expect(AppLanguage.english.locale.identifier == "en")
+        #expect(AppLanguage.russian.locale.identifier == "ru")
+    }
+
+    @Test
+    func keyEnglishLocalizationsExist() throws {
+        let strings = try localizableStrings()
+        let keys = ["app.name", "settings.language", "home.status.connected", "profiles.add", "qr.camera_permission_required"]
+
+        for key in keys {
+            let localization = try #require(strings[key] as? [String: Any])
+            let localizations = try #require(localization["localizations"] as? [String: Any])
+            #expect(localizations["en"] != nil)
+        }
+    }
+
+    @Test
+    func keyRussianLocalizationsExist() throws {
+        let strings = try localizableStrings()
+        let keys = ["app.name", "settings.language", "home.status.connected", "profiles.add", "qr.camera_permission_required"]
+
+        for key in keys {
+            let localization = try #require(strings[key] as? [String: Any])
+            let localizations = try #require(localization["localizations"] as? [String: Any])
+            #expect(localizations["ru"] != nil)
+        }
+    }
+
+    @Test
+    @MainActor
+    func changingLanguageDoesNotChangeConnectionStateOrActiveProfile() async {
+        let manager = RecordingConnectionManager()
+        let activeStore = InMemoryActiveProfileStore()
+        let repository = InMemoryVPNProfileRepository()
+        let profile = makeCompleteProfile(name: "Localized")
+        try? await repository.save(profile)
+        await activeStore.saveActiveProfileID(profile.id)
+        let viewModel = VPNDashboardViewModel(
+            connectionManager: manager,
+            profileRepository: repository,
+            activeProfileStore: activeStore
+        )
+
+        await viewModel.loadInitialData()
+        await viewModel.connect()
+        let language = AppLanguage.persistedValue(AppLanguage.russian.rawValue)
+
+        #expect(language == .russian)
+        #expect(viewModel.connectionState == .connected)
+        #expect(viewModel.activeProfileID == profile.id)
+    }
+
+    @Test
+    func vlessProfileCompilesToCoreConfiguration() throws {
+        let profile = makeCompleteProfile(name: "Core VLESS")
+        let configuration = try VLESSProfileConfigurationCompiler().compile(profile: profile)
+
+        #expect(configuration.protocolType == .vless)
+        #expect(configuration.endpoint.host == "profile.example.com")
+        #expect(configuration.endpoint.port == 443)
+        #expect(configuration.credentialReference == "test-reference")
+    }
+
+    @Test
+    func vlessRealityRequiresFields() {
+        var profile = makeCompleteProfile(name: "Reality")
+        profile.transportSettings.security = "reality"
+        profile.tlsSettings = VPNTLSSettings(isEnabled: true, serverName: "site.example.invalid", publicKeyReference: "public-key-ref", shortID: nil)
+
+        #expect(throws: CoreError.invalidConfiguration("Reality requires short ID.")) {
+            _ = try VLESSProfileConfigurationCompiler().compile(profile: profile)
+        }
+    }
+
+    @Test
+    func coreInvalidPortRejected() {
+        var profile = makeCompleteProfile(name: "Bad Port")
+        profile.port = 70_000
+
+        #expect(throws: CoreError.invalidConfiguration("Port must be in range 1...65535.")) {
+            _ = try VLESSProfileConfigurationCompiler().compile(profile: profile)
+        }
+    }
+
+    @Test
+    func coreMissingCredentialRejected() {
+        var profile = makeCompleteProfile(name: "Missing Credential")
+        profile.credentialReference = nil
+
+        #expect(throws: CoreError.missingCredential) {
+            _ = try VLESSProfileConfigurationCompiler().compile(profile: profile)
+        }
+    }
+
+    @Test
+    func backendSelectedByProtocol() throws {
+        let registry = VPNCoreBackendRegistry(factories: [MockCoreBackendFactory(supportedProtocols: [.vless])])
+        let backend = try registry.backend(for: .vless)
+
+        #expect(backend.identifier == "mock-core-backend")
+    }
+
+    @Test
+    func unsupportedBackendReturnsTypedError() {
+        let registry = VPNCoreBackendRegistry(factories: [])
+
+        #expect(throws: CoreError.unsupportedProtocol(.vless)) {
+            _ = try registry.backend(for: .vless)
+        }
+    }
+
+    @Test
+    func repeatedCoreStartIsBlocked() async {
+        let coordinator = makeCoreCoordinator(delay: .milliseconds(120))
+        let profile = makeCompleteProfile(name: "Repeated")
+
+        let task = Task {
+            try? await coordinator.start(profile: profile)
+        }
+        try? await Task.sleep(for: .milliseconds(10))
+
+        await #expect(throws: CoreError.alreadyRunning) {
+            try await coordinator.start(profile: profile)
+        }
+
+        await coordinator.stop()
+        await task.value
+    }
+
+    @Test
+    func startDuringPrepareDoesNotStartTwice() async {
+        let coordinator = makeCoreCoordinator(delay: .milliseconds(120))
+        let profile = makeCompleteProfile(name: "Prepare")
+
+        async let first: Void = coordinator.start(profile: profile)
+        try? await Task.sleep(for: .milliseconds(10))
+        await #expect(throws: CoreError.alreadyRunning) {
+            try await coordinator.start(profile: profile)
+        }
+        _ = try? await first
+        await coordinator.stop()
+    }
+
+    @Test
+    func stopCancelsPendingStartState() async {
+        let coordinator = makeCoreCoordinator(delay: .milliseconds(200))
+        let profile = makeCompleteProfile(name: "Stop Pending")
+        let task = Task {
+            try? await coordinator.start(profile: profile)
+        }
+
+        try? await Task.sleep(for: .milliseconds(20))
+        await coordinator.stop()
+        await task.value
+
+        #expect(await coordinator.currentState() == .stopped)
+    }
+
+    @Test
+    func backendErrorMovesCoordinatorToFailed() async {
+        let coordinator = makeCoreCoordinator(shouldFail: true)
+
+        await #expect(throws: CoreError.startupFailed("Mock backend configured to fail.")) {
+            try await coordinator.start(profile: makeCompleteProfile(name: "Failure"))
+        }
+
+        #expect(await coordinator.currentState() == .failed)
+    }
+
+    @Test
+    func stopAfterFailureReturnsStopped() async {
+        let coordinator = makeCoreCoordinator(shouldFail: true)
+        try? await coordinator.start(profile: makeCompleteProfile(name: "Failure"))
+
+        await coordinator.stop()
+
+        #expect(await coordinator.currentState() == .stopped)
+    }
+
+    @Test
+    func coreEventStreamEmitsStateOrder() async {
+        let coordinator = makeCoreCoordinator(delay: .milliseconds(20))
+        let stream = await coordinator.events
+        let collector = Task<[CoreState], Never> {
+            var states: [CoreState] = []
+            for await event in stream {
+                if case .stateChanged(let state) = event {
+                    states.append(state)
+                    if state == .running { break }
+                }
+            }
+            return states
+        }
+
+        try? await coordinator.start(profile: makeCompleteProfile(name: "Events"))
+        let states = await collector.value
+        await coordinator.stop()
+
+        #expect(states.contains(.preparing))
+        #expect(states.contains(.starting))
+        #expect(states.contains(.running))
+    }
+
+    @Test
+    func mockCoreStatisticsUpdate() async throws {
+        let backend = MockCoreBackend(delay: .milliseconds(10))
+        let configuration = try VLESSProfileConfigurationCompiler().compile(profile: makeCompleteProfile(name: "Stats"))
+
+        try await backend.prepare(configuration: configuration)
+        try await backend.start()
+        try? await Task.sleep(for: .milliseconds(180))
+        let statistics = await backend.statistics()
+        await backend.stop()
+
+        #expect(statistics.bytesReceived > 0)
+    }
+
+    @Test
+    func coreLoggerMasksCredentials() throws {
+        let configuration = try VLESSProfileConfigurationCompiler().compile(profile: makeCompleteProfile(name: "Logs"))
+        let message = SanitizedCoreLogger(isDeveloperMode: true).sanitizedMessage(.startupFailed("sample"), configuration: configuration)
+
+        #expect(message.contains("test-reference") == false)
+        #expect(message.contains("credential="))
+    }
+
+    @Test
+    func coreConfigurationCodableDoesNotContainRawSecret() throws {
+        var profile = makeCompleteProfile(name: "Codable")
+        profile.credentialReference = "keychain://service/account"
+        let configuration = try VLESSProfileConfigurationCompiler().compile(profile: profile)
+        let data = try JSONEncoder().encode(configuration)
+        let json = String(data: data, encoding: .utf8) ?? ""
+
+        #expect(json.contains("sample-password") == false)
+    }
+
+    @Test
+    func homeDemoModeUsesMockCoreBackendPath() async throws {
+        let manager = MockVPNConnectionManager()
+        let metrics = try await manager.connect(using: makeCompleteProfile(name: "Demo"))
+
+        #expect(await manager.currentState() == .connected)
+        #expect(metrics.latency > 0)
+        await manager.disconnect()
+    }
+
+    @Test
+    @MainActor
+    func selectingProfileDoesNotStartCore() {
+        let viewModel = VPNDashboardViewModel(
+            profileRepository: InMemoryVPNProfileRepository(),
+            credentialStore: InMemoryCredentialStore()
+        )
+        let profile = makeCompleteProfile(name: "Select Only")
+
+        viewModel.profiles = [profile]
+        viewModel.selectProfile(profile)
+
+        #expect(viewModel.connectionState == .disconnected)
+    }
+
     private func importedProfile(from result: VPNImportResult) throws -> VPNProfile {
         guard case .profile(let profile) = result.kind else {
             throw TestError.expectedProfile
@@ -1171,6 +1564,25 @@ struct VPNTests {
             source: .subscription
         )
         return merger.makeSubscriptionProfile(profile, subscriptionID: subscriptionID, now: Date())
+    }
+
+    private func makeCoreCoordinator(shouldFail: Bool = false, delay: Duration = .milliseconds(20)) -> VPNCoreCoordinator {
+        VPNCoreCoordinator(
+            compiler: CompositeProfileConfigurationCompiler(),
+            registry: VPNCoreBackendRegistry(factories: [
+                MockCoreBackendFactory(shouldFail: shouldFail, delay: delay)
+            ]),
+            credentialResolver: NonSecretReferenceCredentialResolver()
+        )
+    }
+
+    private func localizableStrings() throws -> [String: Any] {
+        let testsURL = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let projectURL = testsURL.deletingLastPathComponent()
+        let catalogURL = projectURL.appendingPathComponent("VPN/Resources/Localizable.xcstrings")
+        let data = try Data(contentsOf: catalogURL)
+        let object = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        return try #require(object?["strings"] as? [String: Any])
     }
 }
 
@@ -1268,6 +1680,60 @@ private actor RecordingCredentialStore: CredentialStoring {
     func delete(reference: String) async throws {
         deletedReferences.append(reference)
         secrets[reference] = nil
+    }
+}
+
+private actor RecordingConnectionManager: VPNConnectionManaging {
+    private var state: VPNConnectionState = .disconnected
+    private var continuations: [UUID: AsyncStream<VPNConnectionState>.Continuation] = [:]
+    private(set) var connectCount = 0
+    private(set) var disconnectCount = 0
+
+    func currentState() async -> VPNConnectionState {
+        state
+    }
+
+    func stateUpdates() -> AsyncStream<VPNConnectionState> {
+        AsyncStream { continuation in
+            Task {
+                let id = UUID()
+                await self.addContinuation(continuation, id: id)
+                continuation.onTermination = { _ in
+                    Task {
+                        await self.removeContinuation(id: id)
+                    }
+                }
+            }
+        }
+    }
+
+    func connect(using profile: VPNProfile) async throws -> ConnectionMetrics {
+        connectCount += 1
+        publish(.connecting)
+        publish(.connected)
+        return ConnectionMetrics(latency: 24, packetLoss: 0, serverLoad: 0.2, connectionTime: 0.1)
+    }
+
+    func disconnect() async {
+        disconnectCount += 1
+        publish(.disconnecting)
+        publish(.disconnected)
+    }
+
+    private func addContinuation(_ continuation: AsyncStream<VPNConnectionState>.Continuation, id: UUID) {
+        continuations[id] = continuation
+        continuation.yield(state)
+    }
+
+    private func removeContinuation(id: UUID) {
+        continuations[id] = nil
+    }
+
+    private func publish(_ newState: VPNConnectionState) {
+        state = newState
+        for continuation in continuations.values {
+            continuation.yield(newState)
+        }
     }
 }
 

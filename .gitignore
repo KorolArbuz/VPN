@@ -1,0 +1,12 @@
+# Xcode local state and build output
+DerivedData/
+Build/
+.build/
+*.xcuserstate
+
+# Large local binary frameworks
+PacketTunnelExtension/LibXray.xcframework/
+Vendor/libXray/
+
+# SwiftPM local checkouts can be restored from Package.resolved
+SourcePackages/

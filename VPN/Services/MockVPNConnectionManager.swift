@@ -10,10 +10,17 @@ import Foundation
 actor MockVPNConnectionManager: VPNConnectionManaging {
     private var state: VPNConnectionState = .disconnected
     private var continuations: [UUID: AsyncStream<VPNConnectionState>.Continuation] = [:]
-    private let shouldFail: Bool
+    private let coordinator: VPNCoreCoordinator
 
     init(shouldFail: Bool = false) {
-        self.shouldFail = shouldFail
+        let registry = VPNCoreBackendRegistry(factories: [
+            MockCoreBackendFactory(shouldFail: shouldFail, delay: .milliseconds(160))
+        ])
+        self.coordinator = VPNCoreCoordinator(
+            compiler: CompositeProfileConfigurationCompiler(),
+            registry: registry,
+            credentialResolver: NonSecretReferenceCredentialResolver()
+        )
     }
 
     func currentState() async -> VPNConnectionState {
@@ -46,19 +53,19 @@ actor MockVPNConnectionManager: VPNConnectionManaging {
         }
 
         await publish(.connecting)
-        try await Task.sleep(for: .milliseconds(450))
-        try Task.checkCancellation()
-
-        if shouldFail {
+        do {
+            try await coordinator.start(profile: profile)
+        } catch {
             await publish(.failed)
-            throw MockVPNError.serverUnavailable
+            throw error
         }
 
+        let statistics = await coordinator.statistics()
         await publish(.connected)
 
         return ConnectionMetrics(
-            latency: 35,
-            packetLoss: 0.01,
+            latency: Int(((statistics.currentLatency ?? 0.035) * 1_000).rounded()),
+            packetLoss: statistics.packetLoss,
             serverLoad: 0.35,
             connectionTime: 0.45
         )
@@ -66,7 +73,7 @@ actor MockVPNConnectionManager: VPNConnectionManaging {
 
     func disconnect() async {
         await publish(.disconnecting)
-        try? await Task.sleep(for: .milliseconds(220))
+        await coordinator.stop()
 
         if Task.isCancelled {
             return

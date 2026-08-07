@@ -26,6 +26,7 @@ final class VPNDashboardViewModel {
     private var stateObservationTask: Task<Void, Never>?
     private var saveOperationID: UUID?
     private var subscriptionOperationID: UUID?
+    private var isInitialLoadInFlight = false
 
     var connectionState: VPNConnectionState = .disconnected
     var selectedServer: VPNServer?
@@ -116,19 +117,21 @@ final class VPNDashboardViewModel {
     }
 
     func loadInitialData() async {
-        guard let operationID = beginOperation(state: .testing) else {
+        guard isInitialLoadInFlight == false else {
             return
+        }
+        isInitialLoadInFlight = true
+        defer {
+            isInitialLoadInFlight = false
         }
 
         do {
             let fetchedServers = try await serverProvider.fetchServers()
-            guard isCurrentOperation(operationID) else { return }
             servers = fetchedServers
 
             profiles = try await profileRepository.profiles()
             activeProfileID = await activeProfileStore.activeProfileID()
             clearMissingOrInvalidActiveProfileIfNeeded()
-            guard isCurrentOperation(operationID) else { return }
             subscriptions = try await subscriptionRepository.subscriptions()
 
             if selectedServer == nil {
@@ -136,15 +139,16 @@ final class VPNDashboardViewModel {
             }
 
             refreshEffectiveProtocol()
-            if isCurrentOperation(operationID) {
-                connectionState = .disconnected
-                errorMessage = nil
-                finishOperation(operationID)
+            let managerState = await connectionManager.currentState()
+            if managerState != .disconnected || connectionState == .testing {
+                connectionState = managerState
             }
+            errorMessage = nil
         } catch is CancellationError {
-            cancelIfCurrent(operationID)
+            return
         } catch {
-            failOperation(operationID, message: error.localizedDescription)
+            connectionState = .failed
+            errorMessage = error.localizedDescription
         }
     }
 
@@ -178,7 +182,6 @@ final class VPNDashboardViewModel {
         setActiveProfileID(profile.id)
         selectedProtocol = .manual(profile.protocolType)
         effectiveProtocol = profile.protocolType
-        connectionState = connectionState == .connected ? .disconnected : connectionState
         currentMetrics = nil
         errorMessage = nil
     }
@@ -843,9 +846,6 @@ final class VPNDashboardViewModel {
             selectedProtocol = .manual(profile.protocolType)
             effectiveProtocol = profile.protocolType
             currentMetrics = nil
-            if connectionState == .connected {
-                connectionState = .disconnected
-            }
             importResult = nil
             importErrorMessage = nil
             profileSaveState = .saved

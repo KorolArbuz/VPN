@@ -9,9 +9,13 @@ import SwiftUI
 
 @main
 struct VPNApp: App {
+    @State private var connectionManager = MockVPNConnectionManager()
+    @AppStorage(AppLanguage.storageKey) private var languageRawValue = AppLanguage.system.rawValue
+
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            ContentView(connectionManager: connectionManager)
+                .environment(\.locale, AppLanguage.persistedValue(languageRawValue).locale)
         }
     }
 }

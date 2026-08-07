@@ -36,21 +36,21 @@ struct ConnectionButton: View {
         .disabled(isEnabled == false)
         .opacity(isEnabled ? 1 : 0.7)
         .animation(.snappy(duration: 0.25), value: state)
-        .accessibilityLabel(buttonTitle)
+        .accessibilityLabel(Text(LocalizedStringKey(buttonTitleKey)))
     }
 
-    private var buttonTitle: String {
+    private var buttonTitleKey: String {
         switch state {
         case .connected:
-            "Disconnect"
+            "home.disconnect"
         case .testing:
-            "Testing"
+            "home.status.testing"
         case .connecting:
-            "Connecting"
+            "home.status.connecting"
         case .disconnecting:
-            "Disconnecting"
+            "home.status.disconnecting"
         case .disconnected, .failed:
-            "Connect"
+            "home.connect"
         }
     }
 

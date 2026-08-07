@@ -8,14 +8,18 @@
 import SwiftUI
 
 struct ContentView: View {
-    @State private var viewModel = VPNDashboardViewModel()
+    @State private var viewModel: VPNDashboardViewModel
     @State private var selectedTab: AppTab = .home
+
+    init(connectionManager: VPNConnectionManaging = MockVPNConnectionManager()) {
+        _viewModel = State(initialValue: VPNDashboardViewModel(connectionManager: connectionManager))
+    }
 
     var body: some View {
         TabView(selection: $selectedTab) {
             VPNDashboardView(viewModel: viewModel)
                 .tabItem {
-                    Label("Home", systemImage: "house")
+                    Label("tab.home", systemImage: "house")
                 }
                 .tag(AppTab.home)
 
@@ -25,7 +29,7 @@ struct ContentView: View {
                 }
             }
             .tabItem {
-                Label("Profiles", systemImage: "list.bullet.rectangle")
+                Label("profiles.title", systemImage: "list.bullet.rectangle")
             }
             .tag(AppTab.profiles)
 
@@ -33,7 +37,7 @@ struct ContentView: View {
                 SettingsView()
             }
             .tabItem {
-                Label("Settings", systemImage: "gearshape")
+                Label("settings.title", systemImage: "gearshape")
             }
             .tag(AppTab.settings)
         }

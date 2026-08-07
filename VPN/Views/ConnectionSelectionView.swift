@@ -29,7 +29,7 @@ struct ConnectionSelectionView: View {
                                 await viewModel.selectBestServer()
                             }
                         } label: {
-                            Label("Select Best Connection", systemImage: "wand.and.sparkles")
+                            Label("connection.select_best", systemImage: "wand.and.sparkles")
                         }
                     }
                 }
@@ -54,7 +54,7 @@ struct ConnectionSelectionView: View {
 
                 Section("Profile") {
                     if viewModel.profiles.isEmpty {
-                        Text("No saved profiles")
+                        Text("connection.no_saved_profiles")
                             .foregroundStyle(.secondary)
                     } else {
                         ForEach(viewModel.profiles) { profile in
@@ -81,11 +81,11 @@ struct ConnectionSelectionView: View {
                     }
                 }
             }
-            .navigationTitle("Connection")
+            .navigationTitle("connection.title")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") {
+                    Button("common.done") {
                         dismiss()
                     }
                 }
