@@ -32,7 +32,12 @@ nonisolated struct VPNLinkParser: VPNProfileImporting {
 
         switch scheme {
         case "http", "https":
-            return try SubscriptionURLParser().parse(trimmedText)
+            var result = try SubscriptionURLParser().parse(trimmedText)
+            if case .subscription(var subscription) = result.kind, subscription.credentialReference == nil {
+                subscription.credentialReference = try await credentialStore.store(trimmedText, label: "Subscription URL")
+                result.kind = .subscription(subscription)
+            }
+            return result
         case "vless":
             return try await VLESSLinkParser(credentialStore: credentialStore).parse(trimmedText)
         case "trojan":

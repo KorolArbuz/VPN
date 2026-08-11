@@ -57,7 +57,7 @@ enum QRScannerCameraAccessState: Equatable {
 
 struct QRScannerView: View {
     @Bindable var viewModel: VPNDashboardViewModel
-    let onProfileSaved: () -> Void
+    let onImportSucceeded: (ImportFlowSuccessKind) -> Void
     let onRoute: (ImportPayloadRoute) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var selectedItem: PhotosPickerItem?
@@ -122,7 +122,7 @@ struct QRScannerView: View {
                 .buttonStyle(.borderedProminent)
 
                 NavigationLink {
-                    PasteLinkView(viewModel: viewModel, onProfileSaved: onProfileSaved)
+                    PasteLinkView(viewModel: viewModel, onImportSucceeded: onImportSucceeded)
                 } label: {
                     Label("profiles.paste_link", systemImage: "link")
                         .frame(maxWidth: .infinity)

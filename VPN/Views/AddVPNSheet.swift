@@ -22,6 +22,8 @@ struct AddVPNSheet: View {
     @State private var processingMessage: String?
     @State private var qrImageProcessingTask: Task<Void, Never>?
     @State private var qrImageOperationID: UUID?
+    @State private var successKind: ImportFlowSuccessKind?
+    @State private var didCompleteImport = false
 
     var body: some View {
         NavigationStack(path: $path) {
@@ -84,7 +86,9 @@ struct AddVPNSheet: View {
                     }
 
                     NavigationLink {
-                        AddSubscriptionView(viewModel: viewModel)
+                        AddSubscriptionView(viewModel: viewModel) { kind in
+                            completeImport(kind)
+                        }
                     } label: {
                         ProfileActionRow(
                             title: String(localized: "profiles.subscription"),
@@ -108,15 +112,15 @@ struct AddVPNSheet: View {
             .navigationDestination(for: AddProfileRoute.self) { route in
                 switch route {
                 case .pasteLink:
-                    PasteLinkView(viewModel: viewModel) {
-                        finishFlow()
+                    PasteLinkView(viewModel: viewModel) { kind in
+                        completeImport(kind)
                     }
                 case .manualSetup:
-                    ManualSetupView(viewModel: viewModel) {
-                        finishFlow()
+                    ManualSetupView(viewModel: viewModel) { kind in
+                        completeImport(kind)
                     }
                 case .scanQRCode:
-                    QRScannerView(viewModel: viewModel, onProfileSaved: finishFlow) { route in
+                    QRScannerView(viewModel: viewModel, onImportSucceeded: completeImport) { route in
                         importRoute = route
                     }
                 case .chooseQRImage, .importFile:
@@ -126,12 +130,12 @@ struct AddVPNSheet: View {
             .navigationDestination(item: $importRoute) { route in
                 switch route {
                 case .single(let result):
-                    ReviewProfileView(importResult: result, viewModel: viewModel) {
-                        finishFlow()
+                    ReviewProfileView(importResult: result, viewModel: viewModel) { kind in
+                        completeImport(kind)
                     }
                 case .batch(let draft):
-                    BatchImportReviewView(draft: draft, viewModel: viewModel) {
-                        finishFlow()
+                    BatchImportReviewView(draft: draft, viewModel: viewModel) { kind in
+                        completeImport(kind)
                     }
                 case .qrPayloads(let draft):
                     QRPayloadSelectionView(draft: draft, viewModel: viewModel) { route in
@@ -160,6 +164,15 @@ struct AddVPNSheet: View {
                     Button("common.done") {
                         dismiss()
                     }
+                }
+            }
+            .disabled(successKind != nil)
+            .overlay {
+                if let successKind {
+                    Color.black.opacity(0.18)
+                        .ignoresSafeArea()
+                    ImportSuccessView(kind: successKind)
+                        .transition(.opacity)
                 }
             }
         }
@@ -264,11 +277,25 @@ struct AddVPNSheet: View {
     private func finishFlow() {
         path.removeAll()
         importRoute = nil
+        successKind = nil
         qrImageProcessingTask?.cancel()
         qrImageProcessingTask = nil
         qrImageOperationID = nil
         dismiss()
         onProfileSaved()
+    }
+
+    private func completeImport(_ kind: ImportFlowSuccessKind) {
+        guard didCompleteImport == false else { return }
+        didCompleteImport = true
+        successKind = kind
+
+        Task {
+            try? await Task.sleep(for: .milliseconds(800))
+            await MainActor.run {
+                finishFlow()
+            }
+        }
     }
 
     private func normalizedQRImageError(_ error: Error) -> String {

@@ -10,14 +10,15 @@ import UIKit
 
 struct PasteLinkView: View {
     @Bindable var viewModel: VPNDashboardViewModel
-    var onProfileSaved: () -> Void = {}
+    var onImportSucceeded: (ImportFlowSuccessKind) -> Void = { _ in }
     @State private var linkText = ""
-    @State private var reviewResult: VPNImportResult?
+    @State private var importRoute: ImportPayloadRoute?
+    @State private var isDetectingInput = false
 
     var body: some View {
         Form {
             Section {
-                Text("Paste a VLESS, Trojan, Hysteria, VMess, Shadowsocks or TUIC link to import a profile.")
+                Text("Paste a VPN link or subscription URL to import it.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .padding(.vertical, 4)
@@ -50,21 +51,66 @@ struct PasteLinkView: View {
             Section {
                 Button {
                     Task {
-                        await viewModel.parseImportText(linkText)
-                        reviewResult = viewModel.importResult
+                        await continueImport()
                     }
                 } label: {
-                    Text("common.continue")
-                        .frame(maxWidth: .infinity)
+                    HStack {
+                        if isDetectingInput {
+                            ProgressView()
+                        }
+                        Text("common.continue")
+                            .frame(maxWidth: .infinity)
+                    }
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(linkText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .disabled(linkText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isDetectingInput)
                 .accessibilityLabel(Text("profiles.continue_to_review"))
             }
         }
         .navigationTitle("profiles.paste_link")
-        .navigationDestination(item: $reviewResult) { result in
-            ReviewProfileView(importResult: result, viewModel: viewModel, onProfileSaved: onProfileSaved)
+        .navigationDestination(item: $importRoute) { route in
+            switch route {
+            case .single(let result):
+                ReviewProfileView(
+                    importResult: result,
+                    viewModel: viewModel,
+                    onImportSucceeded: onImportSucceeded,
+                    sourceText: linkText
+                )
+            case .batch(let draft):
+                BatchImportReviewView(draft: draft, viewModel: viewModel, onImportSucceeded: onImportSucceeded)
+            case .qrPayloads(let draft):
+                QRPayloadSelectionView(draft: draft, viewModel: viewModel) { route in
+                    importRoute = route
+                }
+            }
+        }
+    }
+
+    @MainActor
+    private func continueImport() async {
+        guard isDetectingInput == false else { return }
+        isDetectingInput = true
+        viewModel.importErrorMessage = nil
+
+        do {
+            importRoute = try await viewModel.routeImportPayload(text: linkText, title: String(localized: "profiles.paste_link"))
+        } catch {
+            viewModel.importErrorMessage = error.localizedDescription
+        }
+
+        isDetectingInput = false
+    }
+}
+
+private struct SubscriptionReviewSections: View {
+    let subscription: VPNSubscription
+
+    var body: some View {
+        Section("profiles.subscription") {
+            LabeledContent("Name", value: subscription.name)
+            LabeledContent("Provider", value: subscription.sanitizedHost)
+            LabeledContent("URL", value: subscription.sanitizedURLDisplay)
         }
     }
 }
@@ -72,8 +118,9 @@ struct PasteLinkView: View {
 struct ReviewProfileView: View {
     let importResult: VPNImportResult
     @Bindable var viewModel: VPNDashboardViewModel
-    var onProfileSaved: () -> Void = {}
+    var onImportSucceeded: (ImportFlowSuccessKind) -> Void = { _ in }
     var manualCredentialValue: String?
+    var sourceText: String?
     @State private var showAdvancedDetails = false
 
     var body: some View {
@@ -92,7 +139,7 @@ struct ReviewProfileView: View {
                                 didSave = await viewModel.saveImportResultAndSelect()
                             }
                             if didSave {
-                                onProfileSaved()
+                                onImportSucceeded(.profile)
                             }
                         }
                     } label: {
@@ -114,9 +161,34 @@ struct ReviewProfileView: View {
                             .foregroundStyle(saveMessageStyle)
                     }
                 }
-            case .subscription:
+            case .subscription(let subscription):
+                SubscriptionReviewSections(subscription: subscription)
+
                 Section {
-                    ContentUnavailableView("Subscriptions are saved from the Add Subscription screen", systemImage: "calendar.badge.plus")
+                    Button {
+                        Task {
+                            let didSave = await viewModel.saveSubscriptionImportResult(subscription, sourceText: sourceText)
+                            if didSave {
+                                onImportSucceeded(.subscription)
+                            }
+                        }
+                    } label: {
+                        HStack {
+                            if viewModel.subscriptionRefreshState == .downloading || viewModel.subscriptionRefreshState == .saving {
+                                ProgressView()
+                            }
+                            Text("Save Subscription")
+                                .frame(maxWidth: .infinity)
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(viewModel.subscriptionRefreshState == .downloading || viewModel.subscriptionRefreshState == .saving)
+
+                    if let importErrorMessage = viewModel.importErrorMessage {
+                        Text(importErrorMessage)
+                            .font(.footnote)
+                            .foregroundStyle(.red)
+                    }
                 }
             }
         }

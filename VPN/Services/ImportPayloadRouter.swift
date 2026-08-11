@@ -43,6 +43,11 @@ nonisolated struct ImportPayloadRouter: Sendable {
             return .single(result)
         }
 
+        if isSubscriptionURL(trimmed) {
+            let result = try await importer.parse(trimmed)
+            return .single(result)
+        }
+
         let result = try await subscriptionParser.parseResult(from: Data(trimmed.utf8))
         guard result.profiles.isEmpty == false else {
             if result.format == .clashYAML {
@@ -76,5 +81,16 @@ nonisolated struct ImportPayloadRouter: Sendable {
     private func isSingleVPNLink(_ text: String) -> Bool {
         let lowercased = text.lowercased()
         return VPNLinkParser.supportedProfileSchemes.contains { lowercased.hasPrefix("\($0)://") }
+    }
+
+    private func isSubscriptionURL(_ text: String) -> Bool {
+        guard let url = URL(string: text),
+              let scheme = url.scheme?.lowercased(),
+              ["http", "https"].contains(scheme),
+              url.host?.isEmpty == false else {
+            return false
+        }
+
+        return true
     }
 }

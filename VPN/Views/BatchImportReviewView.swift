@@ -10,15 +10,15 @@ import SwiftUI
 struct BatchImportReviewView: View {
     let draft: BatchImportDraft
     @Bindable var viewModel: VPNDashboardViewModel
-    var onProfileSaved: () -> Void = {}
+    var onImportSucceeded: (ImportFlowSuccessKind) -> Void = { _ in }
     @State private var profiles: [BatchImportProfileDraft]
     @State private var isSaving = false
     @State private var errorMessage: String?
 
-    init(draft: BatchImportDraft, viewModel: VPNDashboardViewModel, onProfileSaved: @escaping () -> Void = {}) {
+    init(draft: BatchImportDraft, viewModel: VPNDashboardViewModel, onImportSucceeded: @escaping (ImportFlowSuccessKind) -> Void = { _ in }) {
         self.draft = draft
         self.viewModel = viewModel
-        self.onProfileSaved = onProfileSaved
+        self.onImportSucceeded = onImportSucceeded
         _profiles = State(initialValue: draft.profiles)
     }
 
@@ -118,7 +118,7 @@ struct BatchImportReviewView: View {
         }
 
         isSaving = false
-        onProfileSaved()
+        onImportSucceeded(selectedProfiles.count > 1 ? .multipleProfiles : .profile)
     }
 }
 

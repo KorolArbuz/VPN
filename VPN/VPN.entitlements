@@ -4,7 +4,7 @@
 <dict>
 	<key>com.apple.security.application-groups</key>
 	<array>
-		<string>group.su.24kvn.app</string>
+		<string>group.su.24kvn.kvn-app</string>
 	</array>
 	<key>keychain-access-groups</key>
 	<array>

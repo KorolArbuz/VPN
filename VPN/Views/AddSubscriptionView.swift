@@ -9,10 +9,10 @@ import SwiftUI
 
 struct AddSubscriptionView: View {
     @Bindable var viewModel: VPNDashboardViewModel
+    var onSubscriptionSaved: (ImportFlowSuccessKind) -> Void = { _ in }
     @State private var name = ""
     @State private var urlText = ""
     @State private var allowInsecureHTTP = false
-    @State private var savedSubscription: VPNSubscription?
 
     var body: some View {
         Form {
@@ -59,9 +59,6 @@ struct AddSubscriptionView: View {
             }
         }
         .navigationTitle("Add Subscription")
-        .navigationDestination(item: $savedSubscription) { subscription in
-            SubscriptionDetailsView(subscription: subscription, viewModel: viewModel)
-        }
         .toolbar {
             ToolbarItem(placement: .cancellationAction) {
                 Button("Cancel") {
@@ -126,7 +123,9 @@ struct AddSubscriptionView: View {
         Section {
             Button {
                 Task {
-                    savedSubscription = await viewModel.saveSubscriptionPreview()
+                    if await viewModel.saveSubscriptionPreview() != nil {
+                        onSubscriptionSaved(.subscription)
+                    }
                 }
             } label: {
                 actionLabel(title: "Save Subscription", systemImage: "tray.and.arrow.down")

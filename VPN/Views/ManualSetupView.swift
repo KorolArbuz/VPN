@@ -9,7 +9,7 @@ import SwiftUI
 
 struct ManualSetupView: View {
     @Bindable var viewModel: VPNDashboardViewModel
-    var onProfileSaved: () -> Void = {}
+    var onImportSucceeded: (ImportFlowSuccessKind) -> Void = { _ in }
     @State private var protocolType: VPNProtocol = .vless
     @State private var name = ""
     @State private var serverAddress = ""
@@ -84,7 +84,7 @@ struct ManualSetupView: View {
             ReviewProfileView(
                 importResult: result,
                 viewModel: viewModel,
-                onProfileSaved: onProfileSaved,
+                onImportSucceeded: onImportSucceeded,
                 manualCredentialValue: credential
             )
         }

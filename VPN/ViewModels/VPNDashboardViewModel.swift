@@ -489,6 +489,85 @@ final class VPNDashboardViewModel {
     }
 
     @discardableResult
+    func importSubscriptionFromURL(name: String, urlText: String, allowInsecureHTTP: Bool = false) async -> Bool {
+        guard subscriptionOperationID == nil else { return false }
+
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        await previewSubscription(
+            urlText: urlText,
+            name: trimmedName.isEmpty ? "Subscription" : trimmedName,
+            allowInsecureHTTP: allowInsecureHTTP
+        )
+
+        guard subscriptionPreview != nil else {
+            return false
+        }
+
+        return await saveSubscriptionPreview() != nil
+    }
+
+    @discardableResult
+    func saveSubscriptionImportResult(_ subscription: VPNSubscription, sourceText: String? = nil, allowInsecureHTTP: Bool = false) async -> Bool {
+        guard subscriptionOperationID == nil else { return false }
+
+        let operationID = UUID()
+        subscriptionOperationID = operationID
+        subscriptionRefreshState = .downloading
+        importErrorMessage = nil
+        subscriptionPreview = nil
+        var subscriptionToPreview = subscription
+        var createdReference: String?
+
+        do {
+            let urlText: String
+            if let sourceText, sourceText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
+                urlText = sourceText.trimmingCharacters(in: .whitespacesAndNewlines)
+            } else if let reference = subscription.credentialReference,
+                      let storedURL = try await credentialStore.secret(for: reference) {
+                urlText = storedURL
+            } else {
+                throw SubscriptionError.credentialsUnavailable
+            }
+
+            guard let url = URL(string: urlText),
+                  let scheme = url.scheme?.lowercased(),
+                  ["http", "https"].contains(scheme),
+                  url.host?.isEmpty == false else {
+                throw SubscriptionError.invalidURL
+            }
+            if scheme == "http", allowInsecureHTTP == false {
+                throw SubscriptionError.invalidURL
+            }
+
+            if subscriptionToPreview.credentialReference == nil {
+                let reference = try await credentialStore.store(urlText, label: "Subscription URL")
+                createdReference = reference
+                subscriptionToPreview.credentialReference = reference
+            }
+            subscriptionToPreview.sanitizedHost = SecretMasker.sanitizedHost(from: url)
+            subscriptionToPreview.sanitizedURLDisplay = SecretMasker.sanitizedURLDisplay(url)
+
+            let preview = try await subscriptionUpdater.preview(subscriptionToPreview, url: url)
+            guard subscriptionOperationID == operationID else { return false }
+            subscriptionPreview = preview
+            subscriptionPreviewProfiles = preview.profiles.map(\.profile)
+            subscriptionRefreshState = .reviewing
+            subscriptionOperationID = nil
+            return await saveSubscriptionPreview() != nil
+        } catch {
+            if let createdReference {
+                try? await credentialStore.delete(reference: createdReference)
+            }
+            importErrorMessage = error.localizedDescription
+            subscriptionRefreshState = .failed
+            if subscriptionOperationID == operationID {
+                subscriptionOperationID = nil
+            }
+            return false
+        }
+    }
+
+    @discardableResult
     func saveSubscriptionPreview() async -> VPNSubscription? {
         guard subscriptionOperationID == nil, var preview = subscriptionPreview else { return nil }
 

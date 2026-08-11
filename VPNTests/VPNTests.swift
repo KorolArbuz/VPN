@@ -7,6 +7,7 @@
 
 import Foundation
 import Testing
+import UIKit
 @testable import VPN
 
 struct VPNTests {
@@ -432,6 +433,142 @@ struct VPNTests {
         }
         #expect(profile.protocolType == .hysteria2)
         #expect(profile.serverAddress == "qr.example.invalid")
+    }
+
+    @Test
+    func pasteURLVLESSRoutesToProfileReview() async throws {
+        let router = ImportPayloadRouter(
+            importer: VPNLinkParser(credentialStore: InMemoryCredentialStore()),
+            subscriptionParser: SubscriptionContentParser(linkParser: VPNLinkParser(credentialStore: InMemoryCredentialStore()))
+        )
+
+        let route = try await router.route(text: "vless://sample-user-id@paste.example.invalid:443?encryption=none#Paste", title: "Paste")
+
+        guard case .single(let result) = route,
+              case .profile(let profile) = result.kind else {
+            Issue.record("Expected a profile review route")
+            return
+        }
+        #expect(profile.protocolType == .vless)
+        #expect(profile.serverAddress == "paste.example.invalid")
+    }
+
+    @Test
+    func pasteURLTrojanRoutesToProfileReview() async throws {
+        let router = ImportPayloadRouter(
+            importer: VPNLinkParser(credentialStore: InMemoryCredentialStore()),
+            subscriptionParser: SubscriptionContentParser(linkParser: VPNLinkParser(credentialStore: InMemoryCredentialStore()))
+        )
+
+        let route = try await router.route(text: "trojan://sample-password@paste.example.invalid:443#Trojan", title: "Paste")
+
+        guard case .single(let result) = route,
+              case .profile(let profile) = result.kind else {
+            Issue.record("Expected a profile review route")
+            return
+        }
+        #expect(profile.protocolType == .trojan)
+    }
+
+    @Test
+    func pasteURLHysteriaRoutesToProfileReview() async throws {
+        let router = ImportPayloadRouter(
+            importer: VPNLinkParser(credentialStore: InMemoryCredentialStore()),
+            subscriptionParser: SubscriptionContentParser(linkParser: VPNLinkParser(credentialStore: InMemoryCredentialStore()))
+        )
+
+        let route = try await router.route(text: "hy2://sample-password@paste.example.invalid:443#Hysteria", title: "Paste")
+
+        guard case .single(let result) = route,
+              case .profile(let profile) = result.kind else {
+            Issue.record("Expected a profile review route")
+            return
+        }
+        #expect(profile.protocolType == .hysteria2)
+    }
+
+    @Test
+    func pasteURLHTTPSRoutesToSubscriptionReview() async throws {
+        let credentialStore = InMemoryCredentialStore()
+        let router = ImportPayloadRouter(
+            importer: VPNLinkParser(credentialStore: credentialStore),
+            subscriptionParser: SubscriptionContentParser(linkParser: VPNLinkParser(credentialStore: credentialStore))
+        )
+
+        let route = try await router.route(text: "https://provider.example.invalid/sub?token=sample-token", title: "Paste")
+
+        guard case .single(let result) = route,
+              case .subscription(let subscription) = result.kind else {
+            Issue.record("Expected a subscription review route")
+            return
+        }
+        #expect(subscription.sanitizedHost == "provider.example.invalid")
+        #expect(subscription.sanitizedURLDisplay.contains("sample-token") == false)
+        #expect(subscription.credentialReference != nil)
+    }
+
+    @Test
+    func invalidPasteInputThrowsTypedError() async {
+        let router = ImportPayloadRouter(
+            importer: VPNLinkParser(credentialStore: InMemoryCredentialStore()),
+            subscriptionParser: SubscriptionContentParser(linkParser: VPNLinkParser(credentialStore: InMemoryCredentialStore()))
+        )
+
+        await #expect(throws: VPNImportError.invalidPayload("No supported VPN profiles were found.")) {
+            _ = try await router.route(text: "not a vpn link", title: "Paste")
+        }
+    }
+
+    @Test
+    func emptyPasteInputThrowsValidationError() async {
+        let router = ImportPayloadRouter(
+            importer: VPNLinkParser(credentialStore: InMemoryCredentialStore()),
+            subscriptionParser: SubscriptionContentParser(linkParser: VPNLinkParser(credentialStore: InMemoryCredentialStore()))
+        )
+
+        await #expect(throws: VPNImportError.emptyInput) {
+            _ = try await router.route(text: "   \n", title: "Paste")
+        }
+    }
+
+    @Test
+    @MainActor
+    func subscriptionFromPasteURLUsesExistingSubscriptionImporter() async throws {
+        let profileRepository = InMemoryVPNProfileRepository()
+        let subscriptionRepository = InMemorySubscriptionRepository()
+        let credentialStore = InMemoryCredentialStore()
+        let profile = makeCompleteProfile(name: "Subscription Profile")
+        let viewModel = VPNDashboardViewModel(
+            profileRepository: profileRepository,
+            subscriptionRepository: subscriptionRepository,
+            subscriptionUpdater: StubSubscriptionUpdater(profile: profile),
+            credentialStore: credentialStore,
+            activeProfileStore: InMemoryActiveProfileStore()
+        )
+        let importResult = try await VPNLinkParser(credentialStore: credentialStore)
+            .parse("https://provider.example.invalid/sub?token=sample-token")
+
+        guard case .subscription(let subscription) = importResult.kind else {
+            Issue.record("Expected subscription result")
+            return
+        }
+
+        let didSave = await viewModel.saveSubscriptionImportResult(subscription)
+
+        #expect(didSave)
+        #expect((try await subscriptionRepository.subscriptions()).count == 1)
+        #expect((try await profileRepository.profiles()).count == 1)
+        #expect(viewModel.connectionState == .disconnected)
+    }
+
+    @Test
+    func iPhoneOrientationPolicyIsPortraitOnly() {
+        #expect(AppOrientationPolicy.supportedInterfaceOrientations(for: .phone) == .portrait)
+    }
+
+    @Test
+    func iPadOrientationPolicyPreservesAllOrientations() {
+        #expect(AppOrientationPolicy.supportedInterfaceOrientations(for: .pad) == .all)
     }
 
     @Test
@@ -1244,7 +1381,18 @@ struct VPNTests {
     @Test
     func keyEnglishLocalizationsExist() throws {
         let strings = try localizableStrings()
-        let keys = ["app.name", "settings.language", "home.status.connected", "profiles.add", "qr.camera_permission_required"]
+        let keys = [
+            "app.name",
+            "settings.language",
+            "home.status.connected",
+            "profiles.add",
+            "qr.camera_permission_required",
+            "import.success.title",
+            "import.success.profile",
+            "import.success.subscription",
+            "import.error.subscription_failed",
+            "import.progress.importing"
+        ]
 
         for key in keys {
             let localization = try #require(strings[key] as? [String: Any])
@@ -1256,7 +1404,18 @@ struct VPNTests {
     @Test
     func keyRussianLocalizationsExist() throws {
         let strings = try localizableStrings()
-        let keys = ["app.name", "settings.language", "home.status.connected", "profiles.add", "qr.camera_permission_required"]
+        let keys = [
+            "app.name",
+            "settings.language",
+            "home.status.connected",
+            "profiles.add",
+            "qr.camera_permission_required",
+            "import.success.title",
+            "import.success.profile",
+            "import.success.subscription",
+            "import.error.subscription_failed",
+            "import.progress.importing"
+        ]
 
         for key in keys {
             let localization = try #require(strings[key] as? [String: Any])
@@ -1596,6 +1755,35 @@ private nonisolated struct StubSubscriptionClient: SubscriptionClient {
 
     func fetch(url: URL) async throws -> Data {
         try result.get()
+    }
+}
+
+private nonisolated struct StubSubscriptionUpdater: SubscriptionUpdating {
+    let profile: VPNProfile
+
+    func preview(_ subscription: VPNSubscription, url: URL) async throws -> SubscriptionPreview {
+        SubscriptionPreview(
+            id: UUID(),
+            subscription: subscription,
+            providerURLReference: subscription.credentialReference ?? "",
+            detectedFormat: .plainURIList,
+            profiles: [
+                SubscriptionProfilePreview(profile: profile, state: .valid, isSelected: true)
+            ],
+            warnings: []
+        )
+    }
+
+    func planRefresh(_ subscription: VPNSubscription, existingProfiles: [VPNProfile], url: URL) async throws -> SubscriptionUpdatePlan {
+        SubscriptionUpdatePlan(
+            id: UUID(),
+            subscription: subscription,
+            providerURLReference: subscription.credentialReference ?? "",
+            detectedFormat: .plainURIList,
+            changes: [
+                SubscriptionProfileChange(kind: .added, incomingProfile: profile)
+            ]
+        )
     }
 }
 

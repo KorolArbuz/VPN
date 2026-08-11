@@ -66,6 +66,25 @@ nonisolated enum ImportPayloadRoute: Identifiable, Hashable, Sendable {
     }
 }
 
+nonisolated enum ImportFlowSuccessKind: String, Identifiable, Hashable, Sendable {
+    case profile
+    case subscription
+    case multipleProfiles
+
+    var id: String { rawValue }
+
+    var messageKey: String {
+        switch self {
+        case .profile:
+            "import.success.profile"
+        case .subscription:
+            "import.success.subscription"
+        case .multipleProfiles:
+            "import.success.multiple_profiles"
+        }
+    }
+}
+
 nonisolated struct QRPayloadSelectionDraft: Identifiable, Hashable, Sendable {
     var id: UUID
     var title: String
