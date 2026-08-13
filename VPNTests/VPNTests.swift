@@ -10,6 +10,11 @@ import Testing
 import UIKit
 @testable import VPN
 
+// Serialized: several tests exercise a @MainActor view model with async state
+// streams and process-global stores (UserDefaults/Keychain/file repositories).
+// Running the suite serially removes in-process concurrency contamination
+// without weakening any assertion.
+@Suite(.serialized)
 struct VPNTests {
     @Test
     func validVLESS() async throws {
@@ -907,6 +912,7 @@ struct VPNTests {
     func subscriptionRecordSaves() async {
         let viewModel = VPNDashboardViewModel(
             profileRepository: InMemoryVPNProfileRepository(),
+            subscriptionRepository: InMemorySubscriptionRepository(),
             credentialStore: InMemoryCredentialStore(),
             activeProfileStore: InMemoryActiveProfileStore()
         )
@@ -950,6 +956,58 @@ struct VPNTests {
     }
 
     @Test
+    func portValidHostnameNumeric() throws {
+        let components = try ParserSupport.components(from: "vless://user@example.com:443")
+        #expect(try ParserSupport.requiredPort(from: components) == 443)
+    }
+
+    @Test
+    func portAlphabeticRejected() {
+        #expect(throws: VPNImportError.invalidPort) {
+            _ = try ParserSupport.components(from: "vless://user@example.com:bad")
+        }
+    }
+
+    @Test
+    func portZeroRejected() {
+        #expect(throws: VPNImportError.invalidPort) {
+            _ = try ParserSupport.components(from: "vless://user@example.com:0")
+        }
+    }
+
+    @Test
+    func portUpperBoundAccepted() throws {
+        let components = try ParserSupport.components(from: "vless://user@example.com:65535")
+        #expect(try ParserSupport.requiredPort(from: components) == 65535)
+    }
+
+    @Test
+    func portAboveUpperBoundRejected() {
+        #expect(throws: VPNImportError.invalidPort) {
+            _ = try ParserSupport.components(from: "vless://user@example.com:65536")
+        }
+    }
+
+    @Test
+    func bracketedIPv6NumericPortAccepted() throws {
+        let components = try ParserSupport.components(from: "vless://user@[2001:db8::1]:443")
+        #expect(try ParserSupport.requiredPort(from: components) == 443)
+    }
+
+    @Test
+    func bracketedIPv6MalformedPortRejected() {
+        #expect(throws: VPNImportError.invalidPort) {
+            _ = try ParserSupport.components(from: "vless://user@[2001:db8::1]:bad")
+        }
+    }
+
+    @Test
+    func userinfoColonNotMistakenForPort() throws {
+        let components = try ParserSupport.components(from: "vless://user:pass@example.com:443")
+        #expect(try ParserSupport.requiredPort(from: components) == 443)
+    }
+
+    @Test
     func missingHost() async {
         let parser = VPNLinkParser(credentialStore: InMemoryCredentialStore())
 
@@ -979,7 +1037,9 @@ struct VPNTests {
 
     @Test
     func secretMasking() {
-        #expect(SecretMasker.masked("sample-password") == "••••word")
+        // A plain secret reveals only its last 4 characters. (A hyphenated,
+        // UUID-like value takes the dedicated identifier-mask branch below.)
+        #expect(SecretMasker.masked("samplepassword") == "••••word")
         #expect(SecretMasker.masked("11111111-2222-3333-4444-555555555555") == "••••••••-••••")
     }
 
@@ -1114,8 +1174,10 @@ struct VPNTests {
             await viewModel.loadInitialData()
         }
 
-        try await Task.sleep(for: .milliseconds(30))
-        viewModel.cancelCurrentOperation()
+        // Structured cancellation: loadInitialData awaits a cancellable
+        // fetch, so cancelling the task deterministically aborts the load
+        // before servers are populated (no timing assumptions).
+        task.cancel()
         await task.value
 
         #expect(viewModel.servers.isEmpty)
@@ -1228,7 +1290,9 @@ struct VPNTests {
     func mockConnectionStateChanges() async {
         let viewModel = VPNDashboardViewModel(
             profileRepository: InMemoryVPNProfileRepository(),
-            credentialStore: InMemoryCredentialStore()
+            subscriptionRepository: InMemorySubscriptionRepository(),
+            credentialStore: InMemoryCredentialStore(),
+            activeProfileStore: InMemoryActiveProfileStore()
         )
 
         await viewModel.loadInitialData()
@@ -1257,7 +1321,13 @@ struct VPNTests {
     @MainActor
     func connectionStateSurvivesInitialLoadAfterReturningHome() async {
         let manager = RecordingConnectionManager()
-        let viewModel = VPNDashboardViewModel(connectionManager: manager)
+        let viewModel = VPNDashboardViewModel(
+            connectionManager: manager,
+            profileRepository: InMemoryVPNProfileRepository(),
+            subscriptionRepository: InMemorySubscriptionRepository(),
+            credentialStore: InMemoryCredentialStore(),
+            activeProfileStore: InMemoryActiveProfileStore()
+        )
 
         await viewModel.loadInitialData()
         await viewModel.connect()
@@ -1273,10 +1343,14 @@ struct VPNTests {
     func recreatingHomeViewModelDoesNotResetSharedManagerState() async {
         let manager = RecordingConnectionManager()
         let repository = InMemoryVPNProfileRepository()
+        let subscriptionRepository = InMemorySubscriptionRepository()
+        let credentialStore = InMemoryCredentialStore()
         let activeStore = InMemoryActiveProfileStore()
         let firstViewModel = VPNDashboardViewModel(
             connectionManager: manager,
             profileRepository: repository,
+            subscriptionRepository: subscriptionRepository,
+            credentialStore: credentialStore,
             activeProfileStore: activeStore
         )
 
@@ -1286,6 +1360,8 @@ struct VPNTests {
         let recreatedViewModel = VPNDashboardViewModel(
             connectionManager: manager,
             profileRepository: repository,
+            subscriptionRepository: subscriptionRepository,
+            credentialStore: credentialStore,
             activeProfileStore: activeStore
         )
         await recreatedViewModel.loadInitialData()
@@ -1299,7 +1375,13 @@ struct VPNTests {
     @MainActor
     func settingsNavigationDoesNotDisconnectSharedManager() async {
         let manager = RecordingConnectionManager()
-        let viewModel = VPNDashboardViewModel(connectionManager: manager)
+        let viewModel = VPNDashboardViewModel(
+            connectionManager: manager,
+            profileRepository: InMemoryVPNProfileRepository(),
+            subscriptionRepository: InMemorySubscriptionRepository(),
+            credentialStore: InMemoryCredentialStore(),
+            activeProfileStore: InMemoryActiveProfileStore()
+        )
 
         await viewModel.loadInitialData()
         await viewModel.connect()
@@ -1314,7 +1396,13 @@ struct VPNTests {
     @MainActor
     func disconnectUpdatesSameSharedManager() async {
         let manager = RecordingConnectionManager()
-        let viewModel = VPNDashboardViewModel(connectionManager: manager)
+        let viewModel = VPNDashboardViewModel(
+            connectionManager: manager,
+            profileRepository: InMemoryVPNProfileRepository(),
+            subscriptionRepository: InMemorySubscriptionRepository(),
+            credentialStore: InMemoryCredentialStore(),
+            activeProfileStore: InMemoryActiveProfileStore()
+        )
 
         await viewModel.loadInitialData()
         await viewModel.connect()
@@ -1336,6 +1424,8 @@ struct VPNTests {
         let viewModel = VPNDashboardViewModel(
             connectionManager: manager,
             profileRepository: repository,
+            subscriptionRepository: InMemorySubscriptionRepository(),
+            credentialStore: InMemoryCredentialStore(),
             activeProfileStore: InMemoryActiveProfileStore()
         )
 
@@ -1515,7 +1605,7 @@ struct VPNTests {
         let task = Task {
             try? await coordinator.start(profile: profile)
         }
-        try? await Task.sleep(for: .milliseconds(10))
+        await waitUntilCoreBusy(coordinator)
 
         await #expect(throws: CoreError.alreadyRunning) {
             try await coordinator.start(profile: profile)
@@ -1531,7 +1621,7 @@ struct VPNTests {
         let profile = makeCompleteProfile(name: "Prepare")
 
         async let first: Void = coordinator.start(profile: profile)
-        try? await Task.sleep(for: .milliseconds(10))
+        await waitUntilCoreBusy(coordinator)
         await #expect(throws: CoreError.alreadyRunning) {
             try await coordinator.start(profile: profile)
         }
@@ -1547,7 +1637,7 @@ struct VPNTests {
             try? await coordinator.start(profile: profile)
         }
 
-        try? await Task.sleep(for: .milliseconds(20))
+        await waitUntilCoreBusy(coordinator)
         await coordinator.stop()
         await task.value
 
@@ -1725,6 +1815,17 @@ struct VPNTests {
         return merger.makeSubscriptionProfile(profile, subscriptionID: subscriptionID, now: Date())
     }
 
+    /// Deterministically awaits until the coordinator has left idle (reached
+    /// preparing/starting/running) via its event stream — replaces fixed
+    /// `Task.sleep` interleaving in concurrency tests.
+    private func waitUntilCoreBusy(_ coordinator: VPNCoreCoordinator) async {
+        // Poll the actor's authoritative state directly (no fixed sleep, no
+        // event-stream registration race): yield until it leaves idle.
+        while await coordinator.currentState() == .idle {
+            await Task.yield()
+        }
+    }
+
     private func makeCoreCoordinator(shouldFail: Bool = false, delay: Duration = .milliseconds(20)) -> VPNCoreCoordinator {
         VPNCoreCoordinator(
             compiler: CompositeProfileConfigurationCompiler(),
@@ -1881,7 +1982,7 @@ private actor RecordingConnectionManager: VPNConnectionManaging {
         state
     }
 
-    func stateUpdates() -> AsyncStream<VPNConnectionState> {
+    nonisolated func stateUpdates() -> AsyncStream<VPNConnectionState> {
         AsyncStream { continuation in
             Task {
                 let id = UUID()

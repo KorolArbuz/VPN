@@ -894,9 +894,16 @@ final class VPNDashboardViewModel {
 
     private func observeConnectionState() {
         stateObservationTask = Task { [weak self, connectionManager] in
-            for await state in connectionManager.stateUpdates() {
+            for await _ in connectionManager.stateUpdates() {
+                // Read the manager's authoritative current state at apply time
+                // rather than trusting the (possibly stale) buffered event, so a
+                // lagging observer can never clobber state with an out-of-date
+                // value. A user-initiated operation owns the state while it is
+                // in flight; external transitions apply only when idle.
+                let current = await connectionManager.currentState()
                 await MainActor.run {
-                    self?.connectionState = state
+                    guard let self, self.activeOperationID == nil else { return }
+                    self.connectionState = current
                 }
             }
         }
@@ -921,7 +928,10 @@ final class VPNDashboardViewModel {
             }
 
             profiles = try await profileRepository.profiles()
-            setActiveProfileID(profile.id)
+            // Persist the active profile deterministically (await) so the store
+            // reflects it before this call returns — no fire-and-forget race.
+            activeProfileID = profile.id
+            await activeProfileStore.saveActiveProfileID(profile.id)
             selectedProtocol = .manual(profile.protocolType)
             effectiveProtocol = profile.protocolType
             currentMetrics = nil

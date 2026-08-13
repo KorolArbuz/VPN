@@ -10,3 +10,11 @@ Vendor/libXray/
 
 # SwiftPM local checkouts can be restored from Package.resolved
 SourcePackages/
+
+# Rust (KVN Core) build output — never commit compiled artifacts
+core/target/
+target/
+
+# Generated Apple binaries (KVNCore.xcframework is built locally, not tracked).
+# core/Cargo.lock is intentionally NOT ignored — we want reproducible builds.
+Generated/KVNCore.xcframework/

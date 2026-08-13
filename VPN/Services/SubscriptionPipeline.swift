@@ -106,7 +106,13 @@ nonisolated struct DefaultSubscriptionContentDetector: SubscriptionContentDetect
     func detect(_ content: String) -> SubscriptionContentFormat {
         let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
         if VPNLinkParser.supportedProfileSchemes.contains(where: { trimmed.lowercased().hasPrefix("\($0)://") }) {
-            return .singleURI
+            // A single URI line is `.singleURI`; multiple content lines are a
+            // plain URI list (even if some lines are not valid profiles).
+            let contentLines = trimmed
+                .components(separatedBy: .newlines)
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { $0.isEmpty == false && $0.hasPrefix("#") == false && $0.hasPrefix("//") == false }
+            return contentLines.count > 1 ? .plainURIList : .singleURI
         }
         if trimmed.hasPrefix("{") {
             return .singBoxJSON
@@ -221,19 +227,23 @@ nonisolated struct DefaultSubscriptionUpdatePlanner: SubscriptionUpdatePlanning 
         var changes: [SubscriptionProfileChange] = []
 
         for profile in incoming {
-            let identity = merger.stableIdentity(for: profile)
-            if duplicateIdentities.contains(identity), seenIdentities.contains(identity) {
+            // Content identity drives duplicate detection; the provider-stable
+            // externalIdentity (when present) drives matching against existing
+            // profiles, consistent with how `existingByIdentity` is keyed.
+            let contentIdentity = merger.stableIdentity(for: profile)
+            let matchIdentity = profile.externalIdentity ?? contentIdentity
+            if duplicateIdentities.contains(contentIdentity), seenIdentities.contains(contentIdentity) {
                 changes.append(SubscriptionProfileChange(kind: .duplicate, incomingProfile: profile, message: "Duplicate provider entry", isSelected: false))
                 continue
             }
-            seenIdentities.insert(identity)
+            seenIdentities.insert(contentIdentity)
 
             guard profile.isComplete else {
                 changes.append(SubscriptionProfileChange(kind: .invalid, incomingProfile: profile, message: profile.missingRequiredFields.joined(separator: ", "), isSelected: false))
                 continue
             }
 
-            if let existingProfile = existingByIdentity[identity] {
+            if let existingProfile = existingByIdentity[matchIdentity] {
                 changes.append(SubscriptionProfileChange(
                     kind: hasProviderManagedChanges(existing: existingProfile, incoming: profile) ? .updated : .unchanged,
                     incomingProfile: profile,
@@ -244,7 +254,7 @@ nonisolated struct DefaultSubscriptionUpdatePlanner: SubscriptionUpdatePlanning 
             }
         }
 
-        let incomingIdentities = Set(incoming.map { merger.stableIdentity(for: $0) })
+        let incomingIdentities = Set(incoming.map { $0.externalIdentity ?? merger.stableIdentity(for: $0) })
         for profile in existingForSubscription where incomingIdentities.contains(profile.externalIdentity ?? merger.stableIdentity(for: profile)) == false {
             changes.append(SubscriptionProfileChange(kind: .missing, existingProfile: profile, message: "No longer returned by provider", isSelected: false))
         }

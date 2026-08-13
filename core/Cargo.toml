@@ -1,0 +1,19 @@
+[workspace]
+resolver = "2"
+members = ["kvn-core", "kvn-core-ffi"]
+
+[workspace.package]
+edition = "2021"
+license = "Proprietary"
+publish = false
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
+
+# The FFI boundary relies on catch_unwind, which requires unwinding panics.
+# Pin this explicitly so an Apple/CI release build can never silently switch to
+# panic = "abort" and defeat panic containment.
+[profile.release]
+panic = "unwind"

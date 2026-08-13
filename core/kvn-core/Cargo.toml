@@ -1,0 +1,17 @@
+[package]
+name = "kvn-core"
+version = "0.1.0"
+description = "Portable VPN control-plane core (health, scoring, selection, routing, state)"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+name = "kvn_core"
+# rlib for tests now; staticlib/cdylib are added by kvn-core-ffi in Phase C.
+crate-type = ["rlib"]
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }

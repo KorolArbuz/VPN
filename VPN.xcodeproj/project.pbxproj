@@ -9,6 +9,7 @@
 /* Begin PBXBuildFile section */
 		5C54520E30253BAF00EE5EA6 /* NetworkExtension.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 5C54520D30253BAF00EE5EA6 /* NetworkExtension.framework */; };
 		5C54521630253BAF00EE5EA6 /* PacketTunnelExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 5C54520B30253BAE00EE5EA6 /* PacketTunnelExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		5C590005302BBF3C00A1448C /* KVNCore.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 5C590004302BBF3C00A1448C /* KVNCore.xcframework */; };
 		5C59FFEB302584FD00A1448C /* Tun2SocksKit in Frameworks */ = {isa = PBXBuildFile; productRef = 5C59FFEA302584FD00A1448C /* Tun2SocksKit */; };
 /* End PBXBuildFile section */
 
@@ -56,6 +57,7 @@
 		5C5451873025211F00EE5EA6 /* VPNUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = VPNUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		5C54520B30253BAE00EE5EA6 /* PacketTunnelExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = PacketTunnelExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		5C54520D30253BAF00EE5EA6 /* NetworkExtension.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = NetworkExtension.framework; path = System/Library/Frameworks/NetworkExtension.framework; sourceTree = SDKROOT; };
+		5C590004302BBF3C00A1448C /* KVNCore.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = KVNCore.xcframework; path = Generated/KVNCore.xcframework; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -99,6 +101,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				5C590005302BBF3C00A1448C /* KVNCore.xcframework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -154,6 +157,7 @@
 		5C54520C30253BAF00EE5EA6 /* Frameworks */ = {
 			isa = PBXGroup;
 			children = (
+				5C590004302BBF3C00A1448C /* KVNCore.xcframework */,
 				5C54520D30253BAF00EE5EA6 /* NetworkExtension.framework */,
 			);
 			name = Frameworks;
@@ -682,7 +686,7 @@
 					"@executable_path/../../Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = "su.24kvn.kvn-app";
+				PRODUCT_BUNDLE_IDENTIFIER = "su.24kvn.kvn-app.PacketTunnelExtension";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				SKIP_INSTALL = YES;
@@ -713,7 +717,7 @@
 					"@executable_path/../../Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = "su.24kvn.kvn-app";
+				PRODUCT_BUNDLE_IDENTIFIER = "su.24kvn.kvn-app.PacketTunnelExtension";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				SKIP_INSTALL = YES;

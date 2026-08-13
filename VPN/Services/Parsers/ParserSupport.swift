@@ -9,12 +9,16 @@ import Foundation
 
 nonisolated enum ParserSupport {
     static func components(from text: String) throws -> URLComponents {
-        guard let components = URLComponents(string: text), let scheme = components.scheme, scheme.isEmpty == false else {
-            throw VPNImportError.malformedURL
-        }
-
+        // Detect a non-numeric port before constructing URLComponents: modern
+        // Foundation's URLComponents(string:) returns nil for an invalid port
+        // (e.g. "host:bad"), which would otherwise surface as the less-specific
+        // `.malformedURL` and make the `.invalidPort` path dead code.
         if hasMalformedPort(in: text) {
             throw VPNImportError.invalidPort
+        }
+
+        guard let components = URLComponents(string: text), let scheme = components.scheme, scheme.isEmpty == false else {
+            throw VPNImportError.malformedURL
         }
 
         return components
@@ -29,15 +33,21 @@ nonisolated enum ParserSupport {
     }
 
     static func requiredPort(from components: URLComponents, defaultPort: Int? = nil) throws -> Int {
-        if let port = components.port {
-            return port
-        }
-
         if hasExplicitInvalidPort(components) {
             throw VPNImportError.invalidPort
         }
 
+        if let port = components.port {
+            guard isValidPortValue(port) else {
+                throw VPNImportError.invalidPort
+            }
+            return port
+        }
+
         if let defaultPort {
+            guard isValidPortValue(defaultPort) else {
+                throw VPNImportError.invalidPort
+            }
             return defaultPort
         }
 
@@ -80,39 +90,73 @@ nonisolated enum ParserSupport {
     }
 
     private static func hasExplicitInvalidPort(_ components: URLComponents) -> Bool {
-        guard let host = components.host else {
+        guard let string = components.string else {
             return false
         }
 
-        let marker = "\(host):"
-        guard let range = components.string?.range(of: marker) else {
-            return false
-        }
-
-        let suffix = components.string?[range.upperBound...] ?? ""
-        let portText = suffix.prefix { character in
-            character != "/" && character != "?" && character != "#"
-        }
-
-        return portText.isEmpty == false && Int(portText) == nil
+        return hasMalformedPort(in: string)
     }
 
-    private static func hasMalformedPort(in text: String) -> Bool {
-        guard let schemeRange = text.range(of: "://") else {
+    /// True when the authority carries an explicit port that is not a valid
+    /// network port (non-numeric, or outside `1...65535`). Correctly ignores
+    /// IPv6 address colons and userinfo (`user:password@`) colons.
+    static func hasMalformedPort(in text: String) -> Bool {
+        guard let portText = explicitPortText(in: text), portText.isEmpty == false else {
             return false
+        }
+
+        return isValidPortText(portText) == false
+    }
+
+    /// Extracts the explicit port substring from a URL's authority, or `nil`
+    /// when there is no explicit port. Deterministic single source of truth for
+    /// port parsing.
+    private static func explicitPortText(in text: String) -> String? {
+        guard let schemeRange = text.range(of: "://") else {
+            return nil
         }
 
         let afterScheme = text[schemeRange.upperBound...]
         let authority = afterScheme.prefix { character in
             character != "/" && character != "?" && character != "#"
         }
-        let hostPort = authority.split(separator: "@", omittingEmptySubsequences: false).last.map(String.init) ?? String(authority)
-
-        guard hostPort.contains("]") == false, let colonIndex = hostPort.lastIndex(of: ":") else {
-            return false
+        // Strip userinfo (`user:password@`) by taking everything after the last
+        // "@" so a colon inside credentials is never read as a port separator.
+        let hostPort: Substring
+        if let atIndex = authority.lastIndex(of: "@") {
+            hostPort = authority[authority.index(after: atIndex)...]
+        } else {
+            hostPort = authority
         }
 
-        let portText = hostPort[hostPort.index(after: colonIndex)...]
-        return portText.isEmpty == false && portText.allSatisfy(\.isNumber) == false
+        // Bracketed IPv6 literal: the port (if any) follows the closing "]".
+        if hostPort.hasPrefix("[") {
+            guard let closeIndex = hostPort.firstIndex(of: "]") else {
+                return nil
+            }
+            let afterBracket = hostPort[hostPort.index(after: closeIndex)...]
+            guard afterBracket.hasPrefix(":") else {
+                return nil
+            }
+            return String(afterBracket.dropFirst())
+        }
+
+        // Regular host: the host contains no colon, so the last colon (if any)
+        // introduces the port.
+        guard let colonIndex = hostPort.lastIndex(of: ":") else {
+            return nil
+        }
+        return String(hostPort[hostPort.index(after: colonIndex)...])
+    }
+
+    private static func isValidPortText(_ text: String) -> Bool {
+        guard let value = Int(text) else {
+            return false
+        }
+        return isValidPortValue(value)
+    }
+
+    private static func isValidPortValue(_ value: Int) -> Bool {
+        (1...65535).contains(value)
     }
 }

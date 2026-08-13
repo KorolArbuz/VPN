@@ -1,0 +1,23 @@
+[package]
+name = "kvn-core-ffi"
+version = "0.1.0"
+description = "Stable C ABI for kvn-core (control-plane), portable across Apple/Android/Windows/Linux"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+name = "kvn_core_ffi"
+# staticlib: for Apple/Windows/Linux native static linking (Phase D).
+# rlib:      so the in-repo integration tests can link and exercise the ABI.
+crate-type = ["staticlib", "rlib"]
+
+[features]
+# Opt-in test hooks (e.g. the panic-boundary self-test symbol). NEVER enabled
+# in production/release builds so the symbol is absent from shipped artifacts.
+ffi-test-hooks = []
+
+[dependencies]
+kvn-core = { path = "../kvn-core" }
+serde = { workspace = true }
+serde_json = { workspace = true }

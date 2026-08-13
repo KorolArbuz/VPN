@@ -1,0 +1,4 @@
+module KVNCore {
+    header "kvn_core.h"
+    export *
+}

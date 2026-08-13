@@ -48,7 +48,17 @@ nonisolated struct ImportPayloadRouter: Sendable {
             return .single(result)
         }
 
-        let result = try await subscriptionParser.parseResult(from: Data(trimmed.utf8))
+        let result: SubscriptionContentParseResult
+        do {
+            result = try await subscriptionParser.parseResult(from: Data(trimmed.utf8))
+        } catch let error as SubscriptionError {
+            // Unrecognized paste content: surface the router's own typed
+            // contract rather than leaking a data-plane SubscriptionError.
+            if case .unsupportedFormat = error {
+                throw VPNImportError.invalidPayload("No supported VPN profiles were found.")
+            }
+            throw error
+        }
         guard result.profiles.isEmpty == false else {
             if result.format == .clashYAML {
                 throw VPNImportError.invalidPayload("Clash subscriptions are recognized but are not fully supported in this build.")
