@@ -5,9 +5,10 @@ client. It decides *which* candidate to connect to and *when* to switch. It
 carries no traffic, launches no backend, performs no I/O, reads no clock, and
 holds no secrets — those remain in the platform/data-plane layers.
 
-> Status: Phases A–D complete. Swift/Xcode integration is Phase E and has not
-> started. The Xcode project, signing, entitlements, Bundle IDs, and the
-> current VPN flow are untouched.
+> Status: Phases A–E, F1, and F2A are implemented and validated. Swift
+> integration remains passive, KVNCore is linked only to the app target, and
+> PacketTunnelExtension still does not link KVNCore. Automatic failover,
+> profile switching, reconnect commands, and Phase F2B have not started.
 
 ---
 
@@ -172,7 +173,7 @@ libkvn_core_ffi.a   (per target)
    ▼
 Generated/KVNCore.xcframework
    │
-Phase E: KVNCoreSwiftBridge  (not yet implemented)
+Phase E: KVNCoreSwiftBridge  (implemented, passive)
 ```
 
 ### Supported Apple architectures / slices
@@ -223,14 +224,14 @@ toolchain, so any developer/CI rebuilds an equivalent artifact from source.
 
 ---
 
-## 10. iOS integration (Phase E — planned)
+## 10. iOS integration (Phase E — implemented, passive)
 
-A thin `KVNCoreSwiftBridge` will wrap the C ABI: create/destroy, encode request
-JSON, decode response envelopes into Swift types, map status codes to typed
-Swift errors, and manage handle lifetime. Scoring/selection logic stays in Rust.
-Integration will be **passive behind a feature flag** (`portableCoreSelectionEnabled = false`
-by default); the existing VPN flow keeps working and automatic failover stays
-disconnected from the production tunnel.
+`KVNCoreSwiftBridge` wraps the C ABI: create/destroy, encode request JSON,
+decode response envelopes into Swift types, map status codes to typed Swift
+errors, and manage handle lifetime. Scoring/selection logic stays in Rust.
+Integration is **passive behind a feature flag**
+(`portable.core.selection.enabled`, default false); the existing VPN flow keeps
+working and automatic failover stays disconnected from the production tunnel.
 
 ---
 
@@ -307,4 +308,66 @@ Location: `VPN/VPN/Core/Portable/` — `KVNCoreError.swift`, `KVNCoreDTO.swift`,
    fails clearly; re-run step 1.
 
 No Xcode Run Script build phase is added yet; the XCFramework stays untracked.
+
+---
+
+## 13. Phase F1/F2A validation status
+
+Phase F1 adds app-process transport health probes that feed truthful,
+sanitized measurements into `PortableCoreService`. Phase F2A adds read-only
+app-to-PacketTunnelExtension IPC and authoritative runtime telemetry snapshots.
+Both phases remain diagnostics/passive only:
+
+* no automatic reconnect;
+* no automatic profile switching;
+* no KVNCore link in PacketTunnelExtension;
+* no PacketTunnel command messages;
+* no fabricated packet loss, server load, throughput, or healthy state.
+
+### Phase F2A message path
+
 ```
+VPN app
+  ↓ NETunnelProviderSession.sendProviderMessage
+PacketTunnelProvider.handleAppMessage
+  ↓ TunnelAppMessageHandler
+TunnelTelemetryStore
+  ↓ sanitized Codable response
+VPN diagnostics + passive PortableCoreService health update
+```
+
+The F2A request set is read-only: `ping`, `getCapabilities`,
+`getRuntimeSnapshot`, `getHealthSnapshot`, and `getRecentEvents`.
+
+### Xcode validation
+
+External unsandboxed Xcode validation on iPhone 17 / iOS 26.5 Simulator:
+
+| Gate | Result |
+| --- | --- |
+| Serial full scheme run #1 | TEST SUCCEEDED |
+| Serial full scheme run #2 | TEST SUCCEEDED |
+| Serial full scheme run #3 | TEST SUCCEEDED |
+| Parallel/default full scheme run #1 | TEST SUCCEEDED |
+| Parallel/default full scheme run #2 | TEST SUCCEEDED |
+| Parallel/default full scheme run #3 | TEST SUCCEEDED |
+
+Each full scheme run executed 197 Swift tests across 15 suites plus 10 UI
+tests, with zero failures. The executed suites included legacy `VPNTests`,
+`PortableCoreTests`, `TransportHealthTests`, tunnel message protocol tests,
+provider messaging tests, telemetry store/snapshot/core-update tests, and
+localization/security tests.
+
+### Rust validation
+
+Current Rust validation remains green:
+
+* `cargo fmt --check`
+* `cargo clippy --workspace --all-targets -- -D warnings`
+* `cargo test --workspace` — 53 tests passed
+
+### Git hygiene
+
+`Generated/KVNCore.xcframework/` and `core/target/` are generated artifacts and
+remain ignored. `core/Cargo.lock` remains tracked. `xcuserdata` is not part of
+the intended commit set for these phases.

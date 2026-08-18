@@ -116,6 +116,7 @@ nonisolated struct VPNProfile: Identifiable, Codable, Hashable, Sendable {
             protocolType: protocolType,
             serverAddress: server.hostname,
             port: 443,
+            username: protocolType == .ikev2 ? "mock-user" : nil,
             credentialReference: "mock-bundled-profile",
             transportSettings: VPNTransportSettings(network: "mock"),
             tlsSettings: VPNTLSSettings(isEnabled: true, serverName: server.hostname),

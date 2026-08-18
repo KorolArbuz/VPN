@@ -15,12 +15,20 @@ nonisolated struct Hysteria2LinkParser {
         let host = try ParserSupport.requiredHost(from: components)
         let port = try ParserSupport.requiredPort(from: components, defaultPort: 443)
         let query = ParserSupport.queryDictionary(from: components)
+        var publicQuery = query
+        publicQuery.removeValue(forKey: "obfs-password")
 
         guard let password = ParserSupport.decodedUser(from: components), password.isEmpty == false else {
             throw VPNImportError.missingRequiredComponent("password")
         }
 
         let credentialReference = try await credentialStore.store(password, label: "Hysteria 2 password")
+        let obfsPasswordReference: String?
+        if let obfsPassword = query["obfs-password"], obfsPassword.isEmpty == false {
+            obfsPasswordReference = try await credentialStore.store(obfsPassword, label: "Hysteria 2 obfs password")
+        } else {
+            obfsPasswordReference = nil
+        }
         let name = ParserSupport.displayName(from: components, fallback: host)
         let profile = VPNProfile.draft(
             name: name,
@@ -28,18 +36,23 @@ nonisolated struct Hysteria2LinkParser {
             serverAddress: host,
             port: port,
             credentialReference: credentialReference,
-            transportSettings: VPNTransportSettings(network: "udp", security: "tls", metadata: query),
+            transportSettings: VPNTransportSettings(network: "udp", security: "tls", metadata: publicQuery),
             tlsSettings: VPNTLSSettings(isEnabled: true, serverName: query["sni"], allowInsecure: query["insecure"] == "1"),
-            protocolConfiguration: .hysteria2(Hysteria2ProfileConfiguration(obfs: query["obfs"], bandwidthHint: query["bandwidth"])),
+            protocolConfiguration: .hysteria2(Hysteria2ProfileConfiguration(
+                obfs: query["obfs"],
+                bandwidthHint: query["bandwidth"],
+                obfsPasswordReference: obfsPasswordReference
+            )),
             source: .importedURL,
-            metadata: query
+            metadata: publicQuery
         )
 
+        let sanitizedQueryItems = (components.queryItems ?? []).filter { $0.name != "obfs-password" }
         return VPNImportResult(
             kind: .profile(profile),
             detectedScheme: components.scheme?.lowercased() ?? "hysteria2",
             displayName: name,
-            sanitizedSummary: SecretMasker.sanitizedQuerySummary(from: components.queryItems ?? [])
+            sanitizedSummary: SecretMasker.sanitizedQuerySummary(from: sanitizedQueryItems)
                 .merging(["credential": SecretMasker.masked(password), "host": host, "port": "\(port)"]) { current, _ in current }
         )
     }

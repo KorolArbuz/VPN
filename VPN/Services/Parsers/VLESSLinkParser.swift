@@ -35,8 +35,9 @@ nonisolated struct VLESSLinkParser {
             serverName: query["sni"] ?? query["host"],
             allowInsecure: query["allowInsecure"] == "1",
             fingerprint: query["fp"],
-            publicKeyReference: try await storeOptional(query["pbk"], label: "Reality public key"),
-            shortID: query["sid"]
+            realityPublicKey: query["pbk"],
+            shortID: query["sid"],
+            spiderX: query["spx"]
         )
         let profile = VPNProfile.draft(
             name: name,
@@ -60,11 +61,4 @@ nonisolated struct VLESSLinkParser {
         )
     }
 
-    private func storeOptional(_ value: String?, label: String) async throws -> String? {
-        guard let value, value.isEmpty == false else {
-            return nil
-        }
-
-        return try await credentialStore.store(value, label: label)
-    }
 }

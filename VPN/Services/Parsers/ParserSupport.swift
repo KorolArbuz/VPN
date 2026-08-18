@@ -73,7 +73,24 @@ nonisolated enum ParserSupport {
     }
 
     static func decodedUser(from components: URLComponents) -> String? {
-        components.percentEncodedUser?.removingPercentEncoding ?? components.user
+        let user: String
+        if let percentEncodedUser = components.percentEncodedUser {
+            user = percentEncodedUser.removingPercentEncoding ?? percentEncodedUser
+        } else if let decodedUser = components.user {
+            user = decodedUser
+        } else {
+            return nil
+        }
+
+        if let percentEncodedPassword = components.percentEncodedPassword {
+            let password = percentEncodedPassword.removingPercentEncoding ?? percentEncodedPassword
+            return "\(user):\(password)"
+        }
+        if let decodedPassword = components.password {
+            return "\(user):\(decodedPassword)"
+        }
+
+        return user
     }
 
     static func decodedBase64(_ input: String) -> Data? {

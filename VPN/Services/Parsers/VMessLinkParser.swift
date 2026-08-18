@@ -59,7 +59,7 @@ nonisolated struct VMessLinkParser {
     }
 }
 
-private struct VMessPayload: Decodable {
+private nonisolated struct VMessPayload: Decodable {
     var ps: String
     var add: String
     var port: String

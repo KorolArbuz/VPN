@@ -59,8 +59,9 @@ nonisolated struct CoreTLSConfiguration: Codable, Hashable, Sendable {
 nonisolated struct CoreRealityConfiguration: Codable, Hashable, Sendable {
     var serverName: String
     var fingerprint: String?
-    var publicKeyReference: String
+    var publicKey: String
     var shortID: String
+    var spiderX: String?
 }
 
 nonisolated struct CoreDNSConfiguration: Codable, Hashable, Sendable {
@@ -146,7 +147,7 @@ nonisolated enum CoreError: LocalizedError, Hashable, Sendable {
 }
 
 extension CoreProtocol {
-    init(vpnProtocol: VPNProtocol) {
+    nonisolated init(vpnProtocol: VPNProtocol) {
         switch vpnProtocol {
         case .vless: self = .vless
         case .trojan: self = .trojan

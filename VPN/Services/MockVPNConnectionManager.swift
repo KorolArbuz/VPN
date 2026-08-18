@@ -17,7 +17,7 @@ actor MockVPNConnectionManager: VPNConnectionManaging {
             MockCoreBackendFactory(shouldFail: shouldFail, delay: .milliseconds(160))
         ])
         self.coordinator = VPNCoreCoordinator(
-            compiler: CompositeProfileConfigurationCompiler(),
+            compiler: BundledMockProfileConfigurationCompiler(),
             registry: registry,
             credentialResolver: NonSecretReferenceCredentialResolver()
         )
@@ -96,5 +96,53 @@ actor MockVPNConnectionManager: VPNConnectionManaging {
         for continuation in continuations.values {
             continuation.yield(newState)
         }
+    }
+}
+
+nonisolated private struct BundledMockProfileConfigurationCompiler: ProfileConfigurationCompiling {
+    private let productionCompiler = CompositeProfileConfigurationCompiler()
+
+    func compile(profile: VPNProfile) throws -> CoreConfiguration {
+        guard profile.source == .bundledMock else {
+            return try productionCompiler.compile(profile: profile)
+        }
+
+        let host = profile.serverAddress.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard host.isEmpty == false, host.contains(" ") == false else {
+            throw CoreError.invalidConfiguration("Host is missing or malformed.")
+        }
+        guard let port = profile.port, (1...65_535).contains(port) else {
+            throw CoreError.invalidConfiguration("Port must be in range 1...65535.")
+        }
+        guard let credentialReference = profile.credentialReference, credentialReference.isEmpty == false else {
+            throw CoreError.missingCredential
+        }
+
+        return CoreConfiguration(
+            profileID: profile.id,
+            protocolType: CoreProtocol(vpnProtocol: profile.protocolType),
+            endpoint: CoreEndpoint(host: host, port: port),
+            transport: .tcp(options: profile.transportSettings.metadata),
+            security: mockSecurity(for: profile),
+            dns: CoreDNSConfiguration(servers: profile.routingSettings.dnsServers),
+            routing: CoreRoutingConfiguration(
+                routeAllTraffic: profile.routingSettings.routeAllTraffic,
+                excludedRoutes: profile.routingSettings.excludedRoutes
+            ),
+            credentialReference: credentialReference,
+            metadata: profile.metadata
+        )
+    }
+
+    private func mockSecurity(for profile: VPNProfile) -> CoreSecurityConfiguration {
+        guard profile.tlsSettings.isEnabled else {
+            return .none
+        }
+
+        return .tls(CoreTLSConfiguration(
+            serverName: profile.tlsSettings.serverName,
+            allowInsecure: profile.tlsSettings.allowInsecure,
+            fingerprint: profile.tlsSettings.fingerprint
+        ))
     }
 }

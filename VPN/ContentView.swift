@@ -9,6 +9,7 @@ import SwiftUI
 
 struct ContentView: View {
     @State private var viewModel: VPNDashboardViewModel
+    @State private var healthDiagnostics = PortableHealthDiagnosticsViewModel()
     @State private var selectedTab: AppTab = .home
 
     init(connectionManager: VPNConnectionManaging = MockVPNConnectionManager()) {
@@ -34,7 +35,7 @@ struct ContentView: View {
             .tag(AppTab.profiles)
 
             NavigationStack {
-                SettingsView()
+                SettingsView(viewModel: viewModel, healthDiagnostics: healthDiagnostics)
             }
             .tabItem {
                 Label("settings.title", systemImage: "gearshape")

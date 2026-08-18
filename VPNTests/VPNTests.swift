@@ -43,7 +43,8 @@ struct VPNTests {
         #expect(profile.tlsSettings.isEnabled)
         #expect(profile.tlsSettings.serverName == "site.example")
         #expect(profile.tlsSettings.fingerprint == "chrome")
-        #expect(profile.tlsSettings.publicKeyReference != nil)
+        #expect(profile.tlsSettings.realityPublicKey == "sample-public-key")
+        #expect(profile.tlsSettings.publicKeyReference == nil)
         #expect(profile.tlsSettings.shortID == "abcd")
     }
 
@@ -661,21 +662,81 @@ struct VPNTests {
 
     @Test
     func repeatedQRImageSelectionCancelsStaleProcessing() async {
-        let detector = DelayedQRCodeDetector()
-        let coordinator = QRImageImportCoordinator(processor: QRCodeImageImportProcessor(
-            detector: detector,
-            router: ImportPayloadRouter(
-                importer: VPNLinkParser(credentialStore: InMemoryCredentialStore()),
-                subscriptionParser: SubscriptionContentParser(linkParser: VPNLinkParser(credentialStore: InMemoryCredentialStore()))
-            )
-        ))
+        let detector = ControllableQRCodeDetector()
+        let coordinator = makeQRImageImportCoordinator(detector: detector)
 
-        async let first: ImportPayloadRoute? = coordinator.start(data: Data("first".utf8), title: "First")
-        async let second: ImportPayloadRoute? = coordinator.start(data: Data("second".utf8), title: "Second")
-        let results = await (first, second)
+        let firstTask = Task { await coordinator.start(data: Data("first".utf8), title: "First") }
+        await detector.waitForRequest("first")
+        let secondTask = Task { await coordinator.start(data: Data("second".utf8), title: "Second") }
+        await detector.waitForRequest("second")
 
-        #expect(results.0 == nil || results.1 != nil)
-        #expect(await detector.callCount >= 1)
+        await detector.succeed("second", payload: "vless://sample-user-id@second.example.invalid:443#Second")
+        await detector.succeed("first", payload: "vless://sample-user-id@first.example.invalid:443#First")
+        let results = await (firstTask.value, secondTask.value)
+
+        #expect(results.0 == nil)
+        #expect(singleProfileName(from: results.1) == "Second")
+        #expect(await detector.callCount == 2)
+    }
+
+    @Test
+    func staleQRResultIsDiscardedAfterNewerSelectionStarts() async {
+        let detector = ControllableQRCodeDetector()
+        let coordinator = makeQRImageImportCoordinator(detector: detector)
+
+        let firstTask = Task { await coordinator.start(data: Data("first".utf8), title: "First") }
+        await detector.waitForRequest("first")
+        let secondTask = Task { await coordinator.start(data: Data("second".utf8), title: "Second") }
+        await detector.waitForRequest("second")
+
+        await detector.succeed("first", payload: "vless://sample-user-id@first.example.invalid:443#First")
+        let staleResult = await firstTask.value
+
+        #expect(staleResult == nil)
+        #expect(await coordinator.isProcessing)
+
+        await detector.succeed("second", payload: "vless://sample-user-id@second.example.invalid:443#Second")
+        let latestResult = await secondTask.value
+
+        #expect(singleProfileName(from: latestResult) == "Second")
+        #expect(await coordinator.isProcessing == false)
+    }
+
+    @Test
+    func staleQRImageErrorCannotOverwriteSuccessfulLatestSelection() async {
+        let detector = ControllableQRCodeDetector()
+        let coordinator = makeQRImageImportCoordinator(detector: detector)
+
+        let firstTask = Task { await coordinator.start(data: Data("first".utf8), title: "First") }
+        await detector.waitForRequest("first")
+        let secondTask = Task { await coordinator.start(data: Data("second".utf8), title: "Second") }
+        await detector.waitForRequest("second")
+
+        await detector.fail("first", error: QRCodeImageImportError.noQRCodeFound)
+        await detector.succeed("second", payload: "vless://sample-user-id@second.example.invalid:443#Second")
+        let results = await (firstTask.value, secondTask.value)
+
+        #expect(results.0 == nil)
+        #expect(singleProfileName(from: results.1) == "Second")
+        #expect(await coordinator.errorMessage == nil)
+    }
+
+    @Test
+    func repeatedQRImageSelectionAppliesOnlyLatestRoute() async {
+        let detector = ControllableQRCodeDetector()
+        let coordinator = makeQRImageImportCoordinator(detector: detector)
+
+        let firstTask = Task { await coordinator.start(data: Data("first".utf8), title: "First") }
+        await detector.waitForRequest("first")
+        let secondTask = Task { await coordinator.start(data: Data("second".utf8), title: "Second") }
+        await detector.waitForRequest("second")
+
+        await detector.succeed("first", payload: "vless://sample-user-id@first.example.invalid:443#First")
+        await detector.succeed("second", payload: "vless://sample-user-id@second.example.invalid:443#Second")
+        let routes = await [firstTask.value, secondTask.value].compactMap { $0 }
+
+        #expect(routes.count == 1)
+        #expect(singleProfileName(from: routes.first) == "Second")
     }
 
     @Test
@@ -985,6 +1046,13 @@ struct VPNTests {
     func portAboveUpperBoundRejected() {
         #expect(throws: VPNImportError.invalidPort) {
             _ = try ParserSupport.components(from: "vless://user@example.com:65536")
+        }
+    }
+
+    @Test
+    func portFarAboveUpperBoundRejected() {
+        #expect(throws: VPNImportError.invalidPort) {
+            _ = try ParserSupport.components(from: "vless://user@example.com:99999")
         }
     }
 
@@ -1553,7 +1621,7 @@ struct VPNTests {
     func vlessRealityRequiresFields() {
         var profile = makeCompleteProfile(name: "Reality")
         profile.transportSettings.security = "reality"
-        profile.tlsSettings = VPNTLSSettings(isEnabled: true, serverName: "site.example.invalid", publicKeyReference: "public-key-ref", shortID: nil)
+        profile.tlsSettings = VPNTLSSettings(isEnabled: true, serverName: "site.example.invalid", realityPublicKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", shortID: nil)
 
         #expect(throws: CoreError.invalidConfiguration("Reality requires short ID.")) {
             _ = try VLESSProfileConfigurationCompiler().compile(profile: profile)
@@ -1668,7 +1736,7 @@ struct VPNTests {
     @Test
     func coreEventStreamEmitsStateOrder() async {
         let coordinator = makeCoreCoordinator(delay: .milliseconds(20))
-        let stream = await coordinator.events
+        let stream = coordinator.events
         let collector = Task<[CoreState], Never> {
             var states: [CoreState] = []
             for await event in stream {
@@ -1844,6 +1912,25 @@ struct VPNTests {
         let object = try JSONSerialization.jsonObject(with: data) as? [String: Any]
         return try #require(object?["strings"] as? [String: Any])
     }
+
+    private func makeQRImageImportCoordinator(detector: QRCodeImageDetecting) -> QRImageImportCoordinator {
+        QRImageImportCoordinator(processor: QRCodeImageImportProcessor(
+            detector: detector,
+            router: ImportPayloadRouter(
+                importer: VPNLinkParser(credentialStore: InMemoryCredentialStore()),
+                subscriptionParser: SubscriptionContentParser(linkParser: VPNLinkParser(credentialStore: InMemoryCredentialStore()))
+            )
+        ))
+    }
+
+    private func singleProfileName(from route: ImportPayloadRoute?) -> String? {
+        guard case .single(let result)? = route,
+              case .profile(let profile) = result.kind else {
+            return nil
+        }
+
+        return profile.name
+    }
 }
 
 private nonisolated enum TestError: Error {
@@ -1922,13 +2009,44 @@ private actor FailingQRCodeDetector: QRCodeImageDetecting {
     }
 }
 
-private actor DelayedQRCodeDetector: QRCodeImageDetecting {
+private actor ControllableQRCodeDetector: QRCodeImageDetecting {
+    private var continuations: [String: CheckedContinuation<[String], Error>] = [:]
+    private var waiters: [String: [CheckedContinuation<Void, Never>]] = [:]
     private(set) var callCount = 0
 
     func detectPayloads(in data: Data) async throws -> [String] {
         callCount += 1
-        try await Task.sleep(for: .milliseconds(data == Data("first".utf8) ? 100 : 10))
-        return ["vless://sample-user-id@delayed.example.invalid:443#Delayed"]
+        let requestKey = key(for: data)
+
+        return try await withCheckedThrowingContinuation { continuation in
+            continuations[requestKey] = continuation
+            let pendingWaiters = waiters.removeValue(forKey: requestKey) ?? []
+            for waiter in pendingWaiters {
+                waiter.resume()
+            }
+        }
+    }
+
+    func waitForRequest(_ requestKey: String) async {
+        if continuations[requestKey] != nil {
+            return
+        }
+
+        await withCheckedContinuation { continuation in
+            waiters[requestKey, default: []].append(continuation)
+        }
+    }
+
+    func succeed(_ requestKey: String, payload: String) {
+        continuations.removeValue(forKey: requestKey)?.resume(returning: [payload])
+    }
+
+    func fail(_ requestKey: String, error: Error) {
+        continuations.removeValue(forKey: requestKey)?.resume(throwing: error)
+    }
+
+    private nonisolated func key(for data: Data) -> String {
+        String(data: data, encoding: .utf8) ?? data.base64EncodedString()
     }
 }
 

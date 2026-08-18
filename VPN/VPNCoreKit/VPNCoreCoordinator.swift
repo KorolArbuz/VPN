@@ -72,7 +72,7 @@ actor VPNCoreCoordinator {
     }
 
     func start(profile: VPNProfile) async throws {
-        guard state != .preparing && state != .starting && state != .running else {
+        guard state != .preparing && state != .ready && state != .starting && state != .running else {
             throw CoreError.alreadyRunning
         }
 
@@ -161,9 +161,17 @@ actor VPNCoreCoordinator {
         backendEventTask?.cancel()
         backendEventTask = Task { [weak self] in
             for await event in backend.events {
-                await self?.publish(event)
+                await self?.publishBackendEvent(event)
             }
         }
+    }
+
+    private func publishBackendEvent(_ event: CoreEvent) {
+        if case .stateChanged(.idle) = event {
+            return
+        }
+
+        publish(event)
     }
 
     private func addContinuation(_ continuation: AsyncStream<CoreEvent>.Continuation, id: UUID) {

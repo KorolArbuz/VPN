@@ -44,8 +44,8 @@ nonisolated struct VLESSProfileConfigurationCompiler: ProfileConfigurationCompil
         )
     }
 
-    private func compileTransport(profile: VPNProfile) throws -> CoreTransportConfiguration {
-        let network = profile.transportSettings.network?.lowercased() ?? "tcp"
+    func compileTransport(profile: VPNProfile) throws -> CoreTransportConfiguration {
+        let network = profile.transportSettings.network?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? "tcp"
         let metadata = profile.transportSettings.metadata
 
         switch network {
@@ -59,28 +59,38 @@ nonisolated struct VLESSProfileConfigurationCompiler: ProfileConfigurationCompil
             return .grpc(serviceName: profile.transportSettings.serviceName, options: metadata)
         case "httpupgrade":
             return .httpUpgrade(path: profile.transportSettings.path, host: profile.transportSettings.host, options: metadata)
-        case "xhttp":
-            let mode = profile.metadata["mode"] ?? profile.transportSettings.metadata["mode"]
-            if let mode, ["auto", "packet-up", "stream-up"].contains(mode) == false {
+        case "xhttp", "splithttp":
+            let mode = normalizedOptional(profile.metadata["mode"] ?? profile.transportSettings.metadata["mode"])
+            if let mode, ["auto", "packet-up", "stream-up", "stream-one"].contains(mode) == false {
                 throw CoreError.invalidConfiguration("Unsupported xhttp mode.")
             }
-            return .xhttp(path: profile.transportSettings.path, host: profile.transportSettings.host, mode: mode, options: metadata)
+            return .xhttp(
+                path: normalizedOptional(profile.transportSettings.path),
+                host: normalizedOptional(profile.transportSettings.host),
+                mode: mode,
+                options: metadata
+            )
         case "quic":
             return .quic(options: metadata)
         default:
-            throw CoreError.invalidConfiguration("Unsupported VLESS transport: \(network).")
+            throw CoreError.invalidConfiguration("Unsupported transport: \(network).")
         }
     }
 
-    private func compileSecurity(profile: VPNProfile) throws -> CoreSecurityConfiguration {
+    private func normalizedOptional(_ value: String?) -> String? {
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed?.isEmpty == false ? trimmed : nil
+    }
+
+    func compileSecurity(profile: VPNProfile) throws -> CoreSecurityConfiguration {
         let security = profile.transportSettings.security?.lowercased() ?? profile.metadata["security"]?.lowercased()
 
-        if security == "reality" || profile.tlsSettings.publicKeyReference != nil {
+        if security == "reality" || profile.tlsSettings.realityPublicKey != nil || profile.tlsSettings.publicKeyReference != nil {
             guard let serverName = profile.tlsSettings.serverName, serverName.isEmpty == false else {
                 throw CoreError.invalidConfiguration("Reality requires SNI/server name.")
             }
-            guard let publicKeyReference = profile.tlsSettings.publicKeyReference, publicKeyReference.isEmpty == false else {
-                throw CoreError.invalidConfiguration("Reality requires public key reference.")
+            guard let publicKey = profile.tlsSettings.realityPublicKey, publicKey.isEmpty == false else {
+                throw CoreError.invalidConfiguration("Reality requires public key.")
             }
             guard let shortID = profile.tlsSettings.shortID, shortID.isEmpty == false else {
                 throw CoreError.invalidConfiguration("Reality requires short ID.")
@@ -89,8 +99,9 @@ nonisolated struct VLESSProfileConfigurationCompiler: ProfileConfigurationCompil
             return .reality(CoreRealityConfiguration(
                 serverName: serverName,
                 fingerprint: profile.tlsSettings.fingerprint,
-                publicKeyReference: publicKeyReference,
-                shortID: shortID
+                publicKey: publicKey,
+                shortID: shortID,
+                spiderX: profile.tlsSettings.spiderX
             ))
         }
 
@@ -134,16 +145,59 @@ nonisolated struct CompositeProfileConfigurationCompiler: ProfileConfigurationCo
             throw CoreError.missingCredential
         }
 
+        let transport: CoreTransportConfiguration
+        let security: CoreSecurityConfiguration
+        switch profile.protocolType {
+        case .vmess:
+            transport = try vlessCompiler.compileTransport(profile: profile)
+            security = try vlessCompiler.compileSecurity(profile: profile)
+        case .trojan:
+            transport = try vlessCompiler.compileTransport(profile: profile)
+            security = try vlessCompiler.compileSecurity(profile: profile)
+            if case .none = security {
+                throw CoreError.invalidConfiguration("Trojan runtime requires TLS or REALITY.")
+            }
+        case .shadowsocks:
+            if let plugin = profile.transportSettings.metadata["plugin"] ?? profile.metadata["plugin"],
+               plugin.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
+                throw CoreError.invalidConfiguration("Shadowsocks plugins are not supported by the Xray data plane yet.")
+            }
+            transport = .tcp(options: profile.transportSettings.metadata)
+            security = .none
+        case .hysteria2:
+            let requestedSecurity = profile.transportSettings.security?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                ?? profile.metadata["security"]?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            if requestedSecurity == "reality" {
+                throw CoreError.invalidConfiguration("Hysteria2 runtime does not support REALITY.")
+            }
+            if let pin = profile.metadata["pinSHA256"] ?? profile.transportSettings.metadata["pinSHA256"],
+               pin.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
+                throw CoreError.invalidConfiguration("Hysteria2 pinSHA256 is not supported by the current Xray data plane.")
+            }
+            if containsUnsupportedHysteria2ECH(in: profile.metadata)
+                || containsUnsupportedHysteria2ECH(in: profile.transportSettings.metadata) {
+                throw CoreError.invalidConfiguration("Hysteria2 ECH is not supported by the current Xray data plane.")
+            }
+            if let port = profile.metadata["mport"] ?? profile.transportSettings.metadata["mport"],
+               port.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
+                throw CoreError.invalidConfiguration("Hysteria2 port hopping is not supported by the current Xray data plane.")
+            }
+            transport = .udp(options: profile.transportSettings.metadata)
+            security = .tls(CoreTLSConfiguration(
+                serverName: profile.tlsSettings.serverName,
+                allowInsecure: profile.tlsSettings.allowInsecure,
+                fingerprint: profile.tlsSettings.fingerprint
+            ))
+        case .wireGuard, .tuic, .ikev2, .vless:
+            throw CoreError.unsupportedProtocol(CoreProtocol(vpnProtocol: profile.protocolType))
+        }
+
         return CoreConfiguration(
             profileID: profile.id,
             protocolType: CoreProtocol(vpnProtocol: profile.protocolType),
             endpoint: CoreEndpoint(host: host, port: port),
-            transport: .tcp(options: profile.transportSettings.metadata),
-            security: profile.tlsSettings.isEnabled ? .tls(CoreTLSConfiguration(
-                serverName: profile.tlsSettings.serverName,
-                allowInsecure: profile.tlsSettings.allowInsecure,
-                fingerprint: profile.tlsSettings.fingerprint
-            )) : .none,
+            transport: transport,
+            security: security,
             dns: CoreDNSConfiguration(servers: profile.routingSettings.dnsServers),
             routing: CoreRoutingConfiguration(
                 routeAllTraffic: profile.routingSettings.routeAllTraffic,
@@ -152,5 +206,19 @@ nonisolated struct CompositeProfileConfigurationCompiler: ProfileConfigurationCo
             credentialReference: credentialReference,
             metadata: profile.metadata
         )
+    }
+
+    private func containsUnsupportedHysteria2ECH(in metadata: [String: String]) -> Bool {
+        metadata.contains { key, value in
+            guard value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false else {
+                return false
+            }
+            let normalized = key
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .replacingOccurrences(of: "-", with: "")
+                .replacingOccurrences(of: "_", with: "")
+                .lowercased()
+            return normalized == "ech" || normalized == "echconfig" || normalized == "echconfiglist"
+        }
     }
 }

@@ -11,6 +11,7 @@
 		5C54521630253BAF00EE5EA6 /* PacketTunnelExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 5C54520B30253BAE00EE5EA6 /* PacketTunnelExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		5C590005302BBF3C00A1448C /* KVNCore.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 5C590004302BBF3C00A1448C /* KVNCore.xcframework */; };
 		5C59FFEB302584FD00A1448C /* Tun2SocksKit in Frameworks */ = {isa = PBXBuildFile; productRef = 5C59FFEA302584FD00A1448C /* Tun2SocksKit */; };
+		5CC8D99030304B7500796938 /* libresolv.tbd in Frameworks */ = {isa = PBXBuildFile; fileRef = 5CC8D98F30304B7500796938 /* libresolv.tbd */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -58,6 +59,7 @@
 		5C54520B30253BAE00EE5EA6 /* PacketTunnelExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = PacketTunnelExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		5C54520D30253BAF00EE5EA6 /* NetworkExtension.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = NetworkExtension.framework; path = System/Library/Frameworks/NetworkExtension.framework; sourceTree = SDKROOT; };
 		5C590004302BBF3C00A1448C /* KVNCore.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = KVNCore.xcframework; path = Generated/KVNCore.xcframework; sourceTree = "<group>"; };
+		5CC8D98F30304B7500796938 /* libresolv.tbd */ = {isa = PBXFileReference; lastKnownFileType = "sourcecode.text-based-dylib-definition"; name = libresolv.tbd; path = usr/lib/libresolv.tbd; sourceTree = SDKROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -68,11 +70,21 @@
 			);
 			target = 5C54520A30253BAE00EE5EA6 /* PacketTunnelExtension */;
 		};
+		5CC8D988302E54E300796938 /* Exceptions for "VPN" folder in "VPN" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = 5C54516F3025211D00EE5EA6 /* VPN */;
+		};
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		5C5451723025211D00EE5EA6 /* VPN */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				5CC8D988302E54E300796938 /* Exceptions for "VPN" folder in "VPN" target */,
+			);
 			path = VPN;
 			sourceTree = "<group>";
 		};
@@ -123,6 +135,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				5CC8D99030304B7500796938 /* libresolv.tbd in Frameworks */,
 				5C54520E30253BAF00EE5EA6 /* NetworkExtension.framework in Frameworks */,
 				5C59FFEB302584FD00A1448C /* Tun2SocksKit in Frameworks */,
 			);
@@ -157,6 +170,7 @@
 		5C54520C30253BAF00EE5EA6 /* Frameworks */ = {
 			isa = PBXGroup;
 			children = (
+				5CC8D98F30304B7500796938 /* libresolv.tbd */,
 				5C590004302BBF3C00A1448C /* KVNCore.xcframework */,
 				5C54520D30253BAF00EE5EA6 /* NetworkExtension.framework */,
 			);
@@ -524,6 +538,7 @@
 				DEVELOPMENT_TEAM = 4Q3236JB9E;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = VPN/Info.plist;
 				INFOPLIST_KEY_NSCameraUsageDescription = "Camera access is used to scan VPN configuration QR codes.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
@@ -560,6 +575,7 @@
 				DEVELOPMENT_TEAM = 4Q3236JB9E;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = VPN/Info.plist;
 				INFOPLIST_KEY_NSCameraUsageDescription = "Camera access is used to scan VPN configuration QR codes.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;

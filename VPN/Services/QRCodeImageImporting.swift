@@ -45,8 +45,8 @@ nonisolated struct QRCodeImageImportProcessor: Sendable {
 
 actor QRImageImportCoordinator {
     private let processor: QRCodeImageImportProcessor
-    private var activeTask: Task<ImportPayloadRoute?, Error>?
-    private var operationID: UUID?
+    private var activeTask: Task<ImportPayloadRoute, Error>?
+    private var generation = 0
     private(set) var isProcessing = false
     private(set) var errorMessage: String?
 
@@ -55,46 +55,55 @@ actor QRImageImportCoordinator {
     }
 
     func start(data: Data?, title: String) async -> ImportPayloadRoute? {
+        generation += 1
+        let currentGeneration = generation
         activeTask?.cancel()
+
         guard let data else {
             isProcessing = false
             errorMessage = nil
-            operationID = nil
+            activeTask = nil
             return nil
         }
 
-        let currentID = UUID()
-        operationID = currentID
         isProcessing = true
         errorMessage = nil
 
-        let task = Task<ImportPayloadRoute?, Error> {
+        let task = Task<ImportPayloadRoute, Error> {
             try await processor.process(data: data, title: title)
         }
         activeTask = task
 
         do {
             let route = try await task.value
-            guard operationID == currentID, Task.isCancelled == false else {
+            guard isCurrentGeneration(currentGeneration) else {
                 return nil
             }
-            isProcessing = false
-            operationID = nil
+            clearCurrentOperation(currentGeneration)
             return route
         } catch is CancellationError {
-            if operationID == currentID {
-                isProcessing = false
-                operationID = nil
-            }
+            clearCurrentOperation(currentGeneration)
             return nil
         } catch {
-            if operationID == currentID {
-                isProcessing = false
+            if isCurrentGeneration(currentGeneration) {
                 errorMessage = error.localizedDescription
-                operationID = nil
+                clearCurrentOperation(currentGeneration)
             }
             return nil
         }
+    }
+
+    private func isCurrentGeneration(_ value: Int) -> Bool {
+        generation == value
+    }
+
+    private func clearCurrentOperation(_ value: Int) {
+        guard isCurrentGeneration(value) else {
+            return
+        }
+
+        isProcessing = false
+        activeTask = nil
     }
 }
 

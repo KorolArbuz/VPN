@@ -37,23 +37,29 @@ nonisolated struct VPNTLSSettings: Codable, Hashable, Sendable {
     var serverName: String?
     var allowInsecure: Bool
     var fingerprint: String?
+    var realityPublicKey: String?
     var publicKeyReference: String?
     var shortID: String?
+    var spiderX: String?
 
     init(
         isEnabled: Bool = false,
         serverName: String? = nil,
         allowInsecure: Bool = false,
         fingerprint: String? = nil,
+        realityPublicKey: String? = nil,
         publicKeyReference: String? = nil,
-        shortID: String? = nil
+        shortID: String? = nil,
+        spiderX: String? = nil
     ) {
         self.isEnabled = isEnabled
         self.serverName = serverName
         self.allowInsecure = allowInsecure
         self.fingerprint = fingerprint
+        self.realityPublicKey = realityPublicKey
         self.publicKeyReference = publicKeyReference
         self.shortID = shortID
+        self.spiderX = spiderX
     }
 }
 
@@ -100,6 +106,17 @@ nonisolated struct VLESSProfileConfiguration: Codable, Hashable, Sendable {
 nonisolated struct Hysteria2ProfileConfiguration: Codable, Hashable, Sendable {
     var obfs: String?
     var bandwidthHint: String?
+    var obfsPasswordReference: String?
+
+    init(
+        obfs: String? = nil,
+        bandwidthHint: String? = nil,
+        obfsPasswordReference: String? = nil
+    ) {
+        self.obfs = obfs
+        self.bandwidthHint = bandwidthHint
+        self.obfsPasswordReference = obfsPasswordReference
+    }
 }
 
 nonisolated struct TrojanProfileConfiguration: Codable, Hashable, Sendable {
