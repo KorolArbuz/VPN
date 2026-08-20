@@ -249,6 +249,14 @@ nonisolated struct SharedRuntimeProfileRecord: Codable, Equatable, Sendable, Cus
     var debugDescription: String {
         "SharedRuntimeProfileRecord(profileID: \(profileID.uuidString), recordRevision: \(recordRevision), protocol: \(protocolKind.rawValue), endpoint: <redacted>, credentialReference: <redacted>)"
     }
+
+    var credentialReferences: Set<String> {
+        var references: Set<String> = [credentialReference]
+        if let obfsPasswordReference = hysteria2?.obfsPasswordReference {
+            references.insert(obfsPasswordReference)
+        }
+        return references
+    }
 }
 
 nonisolated struct SharedRuntimeProfileCollection: Codable, Equatable, Sendable, CustomDebugStringConvertible {
@@ -1125,7 +1133,27 @@ nonisolated struct RuntimeProfileSynchronizationSummary: Equatable, Sendable {
     var omissions: [RuntimeProfileSynchronizationOmission]
 }
 
-actor RuntimeProfileSynchronizer {
+nonisolated protocol RuntimeProfileSynchronizing: Sendable {
+    func profileSaved(_ profile: VPNProfile) async throws -> RuntimeProfileSynchronizationSummary
+    func profileDeleted(id: UUID) async throws
+    func credentialReferences() async throws -> Set<String>
+}
+
+nonisolated struct UnavailableRuntimeProfileSynchronizer: RuntimeProfileSynchronizing {
+    func profileSaved(_ profile: VPNProfile) async throws -> RuntimeProfileSynchronizationSummary {
+        throw RuntimeConfigurationError.sharedContainerUnavailable
+    }
+
+    func profileDeleted(id: UUID) async throws {
+        throw RuntimeConfigurationError.sharedContainerUnavailable
+    }
+
+    func credentialReferences() async throws -> Set<String> {
+        throw RuntimeConfigurationError.sharedContainerUnavailable
+    }
+}
+
+actor RuntimeProfileSynchronizer: RuntimeProfileSynchronizing {
     private let profileRepository: any VPNProfileRepository
     private let mapper: SharedRuntimeProfileMapper
     private let store: any SharedRuntimeProfileStoring
@@ -1196,6 +1224,13 @@ actor RuntimeProfileSynchronizer {
 
     func profileDeleted(id: UUID) async throws {
         try await store.delete(profileID: id)
+    }
+
+    func credentialReferences() async throws -> Set<String> {
+        let records = try await store.records()
+        return records.reduce(into: Set<String>()) { references, record in
+            references.formUnion(record.credentialReferences)
+        }
     }
 
     private func preparedRecord(from profile: VPNProfile) async throws -> SharedRuntimeProfileRecord {

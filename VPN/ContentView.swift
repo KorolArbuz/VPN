@@ -13,7 +13,24 @@ struct ContentView: View {
     @State private var selectedTab: AppTab = .home
 
     init(connectionManager: VPNConnectionManaging = MockVPNConnectionManager()) {
-        _viewModel = State(initialValue: VPNDashboardViewModel(connectionManager: connectionManager))
+        let profileRepository = FileVPNProfileRepository()
+        let credentialStore = KeychainCredentialStore()
+        let runtimeProfileSynchronizer: any RuntimeProfileSynchronizing
+        if let appGroupSynchronizer = RuntimeProfileSynchronizer.appGroupSynchronizer(
+            profileRepository: profileRepository,
+            credentialStore: credentialStore
+        ) {
+            runtimeProfileSynchronizer = appGroupSynchronizer
+        } else {
+            runtimeProfileSynchronizer = UnavailableRuntimeProfileSynchronizer()
+        }
+        _viewModel = State(initialValue: VPNDashboardViewModel(
+            connectionManager: connectionManager,
+            profileRepository: profileRepository,
+            subscriptionUpdater: URLSessionSubscriptionUpdater(credentialStore: credentialStore),
+            credentialStore: credentialStore,
+            runtimeProfileSynchronizer: runtimeProfileSynchronizer
+        ))
     }
 
     var body: some View {

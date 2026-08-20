@@ -124,12 +124,8 @@ actor FileSubscriptionRepository: SubscriptionRepository {
         guard FileManager.default.fileExists(atPath: fileURL.path) else {
             return []
         }
-        do {
-            let data = try Data(contentsOf: fileURL)
-            return try decoder.decode([VPNSubscription].self, from: data)
-        } catch {
-            return []
-        }
+        let data = try Data(contentsOf: fileURL)
+        return try decoder.decode([VPNSubscription].self, from: data)
     }
 
     private func writeSubscriptions(_ subscriptions: [VPNSubscription]) throws {
@@ -143,17 +139,22 @@ actor FileSubscriptionRepository: SubscriptionRepository {
 nonisolated struct URLSessionSubscriptionUpdater: SubscriptionUpdating {
     private let client: SubscriptionClient
     private let parser: SubscriptionContentParser
+    private let credentialStore: any CredentialStoring
     private let merger: SubscriptionMerging
     private let planner: SubscriptionUpdatePlanning
 
     init(
         client: SubscriptionClient = URLSessionSubscriptionClient(),
-        parser: SubscriptionContentParser = SubscriptionContentParser(linkParser: VPNLinkParser()),
+        parser: SubscriptionContentParser? = nil,
+        credentialStore: any CredentialStoring = KeychainCredentialStore(),
         merger: SubscriptionMerging = DefaultSubscriptionMerger(),
         planner: SubscriptionUpdatePlanning = DefaultSubscriptionUpdatePlanner()
     ) {
         self.client = client
-        self.parser = parser
+        self.parser = parser ?? SubscriptionContentParser(
+            linkParser: VPNLinkParser(credentialStore: credentialStore)
+        )
+        self.credentialStore = credentialStore
         self.merger = merger
         self.planner = planner
     }
@@ -199,8 +200,108 @@ nonisolated struct URLSessionSubscriptionUpdater: SubscriptionUpdating {
 
     func planRefresh(_ subscription: VPNSubscription, existingProfiles: [VPNProfile], url: URL) async throws -> SubscriptionUpdatePlan {
         let preview = try await preview(subscription, url: url)
-        var plan = planner.planUpdate(subscription: subscription, incoming: preview.profiles.map(\.profile), existing: existingProfiles)
-        plan.detectedFormat = preview.detectedFormat
-        return plan
+        let incomingProfiles = preview.profiles.map(\.profile)
+        let incomingReferences = credentialReferences(in: incomingProfiles)
+        let existingReferences = credentialReferences(in: existingProfiles)
+
+        do {
+            let reconciledProfiles = try await reconcileCredentialReferences(
+                in: incomingProfiles,
+                subscription: subscription,
+                existingProfiles: existingProfiles
+            )
+            let reconciledReferences = credentialReferences(in: reconciledProfiles)
+            try await deleteCredentialReferences(
+                incomingReferences.subtracting(reconciledReferences).subtracting(existingReferences)
+            )
+
+            var plan = planner.planUpdate(
+                subscription: subscription,
+                incoming: reconciledProfiles,
+                existing: existingProfiles
+            )
+            plan.detectedFormat = preview.detectedFormat
+            return plan
+        } catch let reconciliationError {
+            do {
+                try await deleteCredentialReferences(incomingReferences.subtracting(existingReferences))
+            } catch {
+                // Cleanup failure is the actionable error: returning the original
+                // error would hide a prepared credential that may now be orphaned.
+                throw error
+            }
+            throw reconciliationError
+        }
+    }
+
+    private func reconcileCredentialReferences(
+        in incomingProfiles: [VPNProfile],
+        subscription: VPNSubscription,
+        existingProfiles: [VPNProfile]
+    ) async throws -> [VPNProfile] {
+        let existingForSubscription = existingProfiles.filter {
+            $0.sourceSubscriptionID == subscription.id
+        }
+        var existingByIdentity: [String: VPNProfile] = [:]
+        for profile in existingForSubscription {
+            let identity = profile.externalIdentity ?? merger.stableIdentity(for: profile)
+            existingByIdentity[identity] = profile
+        }
+
+        var reconciledProfiles: [VPNProfile] = []
+        reconciledProfiles.reserveCapacity(incomingProfiles.count)
+
+        for var incomingProfile in incomingProfiles {
+            let identity = incomingProfile.externalIdentity ?? merger.stableIdentity(for: incomingProfile)
+            guard let existingProfile = existingByIdentity[identity] else {
+                reconciledProfiles.append(incomingProfile)
+                continue
+            }
+
+            for slot in VPNProfileCredentialSlot.allCases {
+                guard let incomingReference = incomingProfile.credentialReference(for: slot) else {
+                    continue
+                }
+                guard let incomingSecret = try await credentialStore.secret(for: incomingReference) else {
+                    throw SubscriptionError.credentialsUnavailable
+                }
+                guard let existingReference = existingProfile.credentialReference(for: slot),
+                      existingReference != incomingReference,
+                      let existingSecret = try await credentialStore.secret(for: existingReference),
+                      existingSecret == incomingSecret else {
+                    continue
+                }
+
+                // Equal secret material is a semantic no-op. Reuse the committed
+                // reference so a parser-generated random UUID cannot create a
+                // false provider change or an unnecessary profile revision.
+                incomingProfile.setCredentialReference(existingReference, for: slot)
+            }
+            reconciledProfiles.append(incomingProfile)
+        }
+
+        return reconciledProfiles
+    }
+
+    private func credentialReferences(in profiles: [VPNProfile]) -> Set<String> {
+        profiles.reduce(into: Set<String>()) { references, profile in
+            references.formUnion(profile.credentialReferences)
+        }
+    }
+
+    private func deleteCredentialReferences(_ references: Set<String>) async throws {
+        var firstError: (any Error)?
+        for reference in references.sorted() {
+            do {
+                try await credentialStore.delete(reference: reference)
+            } catch {
+                if firstError == nil {
+                    firstError = error
+                }
+            }
+        }
+        if let firstError {
+            throw firstError
+        }
     }
 }

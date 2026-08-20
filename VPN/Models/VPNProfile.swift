@@ -146,3 +146,56 @@ nonisolated struct VPNProfile: Identifiable, Codable, Hashable, Sendable {
         }
     }
 }
+
+nonisolated enum VPNProfileCredentialSlot: CaseIterable, Sendable {
+    case primary
+    case tlsPublicKey
+    case wireGuardPeerPublicKey
+    case wireGuardPresharedKey
+    case hysteria2ObfsPassword
+}
+
+nonisolated extension VPNProfile {
+    func credentialReference(for slot: VPNProfileCredentialSlot) -> String? {
+        switch slot {
+        case .primary:
+            return credentialReference
+        case .tlsPublicKey:
+            return tlsSettings.publicKeyReference
+        case .wireGuardPeerPublicKey:
+            guard case .wireGuard(let configuration) = protocolConfiguration else { return nil }
+            return configuration.peerPublicKeyReference
+        case .wireGuardPresharedKey:
+            guard case .wireGuard(let configuration) = protocolConfiguration else { return nil }
+            return configuration.presharedKeyReference
+        case .hysteria2ObfsPassword:
+            guard case .hysteria2(let configuration) = protocolConfiguration else { return nil }
+            return configuration.obfsPasswordReference
+        }
+    }
+
+    mutating func setCredentialReference(_ reference: String?, for slot: VPNProfileCredentialSlot) {
+        switch slot {
+        case .primary:
+            credentialReference = reference
+        case .tlsPublicKey:
+            tlsSettings.publicKeyReference = reference
+        case .wireGuardPeerPublicKey:
+            guard case .wireGuard(var configuration) = protocolConfiguration else { return }
+            configuration.peerPublicKeyReference = reference
+            protocolConfiguration = .wireGuard(configuration)
+        case .wireGuardPresharedKey:
+            guard case .wireGuard(var configuration) = protocolConfiguration else { return }
+            configuration.presharedKeyReference = reference
+            protocolConfiguration = .wireGuard(configuration)
+        case .hysteria2ObfsPassword:
+            guard case .hysteria2(var configuration) = protocolConfiguration else { return }
+            configuration.obfsPasswordReference = reference
+            protocolConfiguration = .hysteria2(configuration)
+        }
+    }
+
+    var credentialReferences: Set<String> {
+        Set(VPNProfileCredentialSlot.allCases.compactMap { credentialReference(for: $0) })
+    }
+}

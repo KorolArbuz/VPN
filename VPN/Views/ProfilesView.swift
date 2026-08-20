@@ -270,6 +270,11 @@ struct SubscriptionDetailsView: View {
             }
             Button("common.cancel", role: .cancel) {}
         }
+        .onDisappear {
+            Task {
+                await viewModel.discardSubscriptionUpdate(for: subscription.id)
+            }
+        }
     }
 
     @ViewBuilder

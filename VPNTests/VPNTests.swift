@@ -324,13 +324,53 @@ struct VPNTests {
     }
 
     @Test
+    func corruptedProfileAndSubscriptionStoresFailClosed() async throws {
+        let profileURL = temporaryProfilesURL()
+        let subscriptionURL = temporarySubscriptionsURL()
+        defer {
+            try? FileManager.default.removeItem(at: profileURL.deletingLastPathComponent())
+            try? FileManager.default.removeItem(at: subscriptionURL.deletingLastPathComponent())
+        }
+        try FileManager.default.createDirectory(
+            at: profileURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createDirectory(
+            at: subscriptionURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try Data("not-json".utf8).write(to: profileURL, options: .atomic)
+        try Data("not-json".utf8).write(to: subscriptionURL, options: .atomic)
+
+        var profileReadFailed = false
+        do {
+            _ = try await FileVPNProfileRepository(fileURL: profileURL).profiles()
+        } catch {
+            profileReadFailed = true
+        }
+        var subscriptionReadFailed = false
+        do {
+            _ = try await FileSubscriptionRepository(fileURL: subscriptionURL).subscriptions()
+        } catch {
+            subscriptionReadFailed = true
+        }
+
+        #expect(profileReadFailed)
+        #expect(subscriptionReadFailed)
+    }
+
+    @Test
     @MainActor
     func subscriptionPreviewAndSaveCreatesProfiles() async {
+        let credentialStore = InMemoryCredentialStore()
         let viewModel = VPNDashboardViewModel(
             profileRepository: InMemoryVPNProfileRepository(),
             subscriptionRepository: InMemorySubscriptionRepository(),
-            subscriptionUpdater: URLSessionSubscriptionUpdater(client: StubSubscriptionClient(result: .success(Data("trojan://sample-password@sub.example.invalid:443#Sub".utf8)))),
-            credentialStore: InMemoryCredentialStore(),
+            subscriptionUpdater: URLSessionSubscriptionUpdater(
+                client: StubSubscriptionClient(result: .success(Data("trojan://sample-password@sub.example.invalid:443#Sub".utf8))),
+                credentialStore: credentialStore
+            ),
+            credentialStore: credentialStore,
             activeProfileStore: InMemoryActiveProfileStore()
         )
 
@@ -348,11 +388,15 @@ struct VPNTests {
     func repeatedRefreshDoesNotCreateDuplicates() async {
         let repository = InMemoryVPNProfileRepository()
         let subscriptionRepository = InMemorySubscriptionRepository()
+        let credentialStore = InMemoryCredentialStore()
         let viewModel = VPNDashboardViewModel(
             profileRepository: repository,
             subscriptionRepository: subscriptionRepository,
-            subscriptionUpdater: URLSessionSubscriptionUpdater(client: StubSubscriptionClient(result: .success(Data("vless://sample-user-id@dup.example.invalid:443#Dup".utf8)))),
-            credentialStore: InMemoryCredentialStore(),
+            subscriptionUpdater: URLSessionSubscriptionUpdater(
+                client: StubSubscriptionClient(result: .success(Data("vless://sample-user-id@dup.example.invalid:443#Dup".utf8))),
+                credentialStore: credentialStore
+            ),
+            credentialStore: credentialStore,
             activeProfileStore: InMemoryActiveProfileStore()
         )
 
@@ -365,6 +409,404 @@ struct VPNTests {
         await viewModel.applySubscriptionUpdate()
 
         #expect((try? await repository.profiles().count) == 1)
+    }
+
+    @Test
+    @MainActor
+    func hysteriaAuthOnlyRefreshAdoptsCredentialPublishesRuntimeAndBuildsCurrentAuth() async throws {
+        let oldAuth = "test-old-auth"
+        let currentAuth = "test-current-auth"
+        let credentialStore = RecordingCredentialStore()
+        let profileRepository = InMemoryVPNProfileRepository()
+        let subscriptionRepository = InMemorySubscriptionRepository()
+        let subscriptionReference = try await credentialStore.store(
+            "https://subscription.example.invalid/list",
+            label: "Subscription URL"
+        )
+        var subscription = makeSubscription()
+        subscription.credentialReference = subscriptionReference
+        let oldProfile = try await makeHysteriaSubscriptionProfile(
+            auth: oldAuth,
+            subscriptionID: subscription.id,
+            credentialStore: credentialStore
+        )
+        try await profileRepository.save(oldProfile)
+        try await subscriptionRepository.save(subscription)
+        let committedProfiles = try await profileRepository.profiles()
+        let committedOldProfile = try #require(committedProfiles.first)
+        let oldReference = try #require(committedOldProfile.credentialReference)
+
+        let runtimeStore = RefreshRuntimeProfileStore()
+        let runtimeSynchronizer = RuntimeProfileSynchronizer(
+            profileRepository: profileRepository,
+            store: runtimeStore,
+            credentialStore: credentialStore
+        )
+        _ = try await runtimeSynchronizer.profileSaved(committedOldProfile)
+        let viewModel = makeSubscriptionRefreshViewModel(
+            profileRepository: profileRepository,
+            subscriptionRepository: subscriptionRepository,
+            credentialStore: credentialStore,
+            runtimeSynchronizer: runtimeSynchronizer,
+            refreshedAuth: currentAuth
+        )
+
+        await viewModel.loadInitialData()
+        await viewModel.refreshSubscription(subscription)
+
+        let change = try #require(viewModel.subscriptionUpdatePlan?.changes.first)
+        #expect(change.kind == .updated)
+        let preparedReference = try #require(change.incomingProfile?.credentialReference)
+        #expect(preparedReference != oldReference)
+
+        await viewModel.applySubscriptionUpdate()
+
+        let persistedProfiles = try await profileRepository.profiles()
+        let persistedProfile = try #require(persistedProfiles.first)
+        let currentReference = try #require(persistedProfile.credentialReference)
+        let currentSecret = try await credentialStore.secret(for: currentReference)
+        let supersededSecret = try await credentialStore.secret(for: oldReference)
+        let activeReferenceCount = await credentialStore.activeReferenceCount
+        #expect(currentReference == preparedReference)
+        #expect(currentSecret == currentAuth)
+        #expect(supersededSecret == nil)
+        #expect(activeReferenceCount == 3)
+
+        let runtimeRecord = try await runtimeStore.read(profileID: persistedProfile.id)
+        #expect(runtimeRecord.credentialReference == currentReference)
+        let providerConfiguration = try RuntimeProviderConfiguration(
+            profileID: runtimeRecord.profileID,
+            sharedRecordRevision: runtimeRecord.recordRevision
+        )
+        let resolved = try await RuntimeConfigurationLoader(
+            store: runtimeStore,
+            credentialResolver: CredentialStoreRuntimeCredentialResolver(credentialStore: credentialStore)
+        ).load(providerConfiguration: providerConfiguration.propertyList)
+        let json = try XrayConfigurationBuilder()
+            .build(from: resolved, options: XrayBuildOptions())
+            .withJSONString { $0 }
+        #expect(try hysteriaAuth(fromXrayJSON: json) == currentAuth)
+    }
+
+    @Test
+    @MainActor
+    func identicalHysteriaAuthRefreshReusesCommittedReferenceWithoutProfileRevisionOrOrphan() async throws {
+        let unchangedAuth = "test-same-auth"
+        let credentialStore = RecordingCredentialStore()
+        let profileRepository = InMemoryVPNProfileRepository()
+        let subscriptionRepository = InMemorySubscriptionRepository()
+        let subscriptionReference = try await credentialStore.store(
+            "https://subscription.example.invalid/list",
+            label: "Subscription URL"
+        )
+        var subscription = makeSubscription()
+        subscription.credentialReference = subscriptionReference
+        let profile = try await makeHysteriaSubscriptionProfile(
+            auth: unchangedAuth,
+            subscriptionID: subscription.id,
+            credentialStore: credentialStore
+        )
+        try await profileRepository.save(profile)
+        try await subscriptionRepository.save(subscription)
+        let committedProfiles = try await profileRepository.profiles()
+        let committedProfile = try #require(committedProfiles.first)
+        let committedReference = try #require(committedProfile.credentialReference)
+        let activeReferenceCountBeforeRefresh = await credentialStore.activeReferenceCount
+        let viewModel = makeSubscriptionRefreshViewModel(
+            profileRepository: profileRepository,
+            subscriptionRepository: subscriptionRepository,
+            credentialStore: credentialStore,
+            runtimeSynchronizer: nil,
+            refreshedAuth: unchangedAuth
+        )
+
+        await viewModel.loadInitialData()
+        await viewModel.refreshSubscription(subscription)
+
+        let change = try #require(viewModel.subscriptionUpdatePlan?.changes.first)
+        let activeReferenceCountAfterRefresh = await credentialStore.activeReferenceCount
+        #expect(change.kind == .unchanged)
+        #expect(change.incomingProfile?.credentialReference == committedReference)
+        #expect(activeReferenceCountAfterRefresh == activeReferenceCountBeforeRefresh)
+
+        await viewModel.applySubscriptionUpdate()
+
+        let persistedProfiles = try await profileRepository.profiles()
+        let persistedProfile = try #require(persistedProfiles.first)
+        let activeReferenceCountAfterApply = await credentialStore.activeReferenceCount
+        let persistedSecret = try await credentialStore.secret(for: committedReference)
+        #expect(persistedProfile.credentialReference == committedReference)
+        #expect(persistedProfile.updatedAt == committedProfile.updatedAt)
+        #expect(persistedSecret == unchangedAuth)
+        #expect(activeReferenceCountAfterApply == activeReferenceCountBeforeRefresh)
+    }
+
+    @Test
+    @MainActor
+    func discardedHysteriaAuthRefreshRemovesPreparedCredential() async throws {
+        let credentialStore = RecordingCredentialStore()
+        let profileRepository = InMemoryVPNProfileRepository()
+        let subscriptionRepository = InMemorySubscriptionRepository()
+        let subscriptionReference = try await credentialStore.store(
+            "https://subscription.example.invalid/list",
+            label: "Subscription URL"
+        )
+        var subscription = makeSubscription()
+        subscription.credentialReference = subscriptionReference
+        let oldProfile = try await makeHysteriaSubscriptionProfile(
+            auth: "test-old-auth",
+            subscriptionID: subscription.id,
+            credentialStore: credentialStore
+        )
+        try await profileRepository.save(oldProfile)
+        try await subscriptionRepository.save(subscription)
+        let oldReference = try #require(oldProfile.credentialReference)
+        let viewModel = makeSubscriptionRefreshViewModel(
+            profileRepository: profileRepository,
+            subscriptionRepository: subscriptionRepository,
+            credentialStore: credentialStore,
+            runtimeSynchronizer: nil,
+            refreshedAuth: "test-current-auth"
+        )
+
+        await viewModel.loadInitialData()
+        await viewModel.refreshSubscription(subscription)
+        let preparedReference = try #require(
+            viewModel.subscriptionUpdatePlan?.changes.first?.incomingProfile?.credentialReference
+        )
+
+        await viewModel.discardSubscriptionUpdate(for: subscription.id)
+
+        let preparedSecret = try await credentialStore.secret(for: preparedReference)
+        let committedSecret = try await credentialStore.secret(for: oldReference)
+        let activeReferenceCount = await credentialStore.activeReferenceCount
+        #expect(viewModel.subscriptionUpdatePlan == nil)
+        #expect(preparedSecret == nil)
+        #expect(committedSecret != nil)
+        #expect(activeReferenceCount == 3)
+    }
+
+    @Test
+    @MainActor
+    func leavingDuringHysteriaRefreshDiscardsEventuallyPreparedCredential() async throws {
+        let credentialStore = RecordingCredentialStore()
+        let profileRepository = InMemoryVPNProfileRepository()
+        let subscriptionRepository = InMemorySubscriptionRepository()
+        let subscriptionReference = try await credentialStore.store(
+            "https://subscription.example.invalid/list",
+            label: "Subscription URL"
+        )
+        var subscription = makeSubscription()
+        subscription.credentialReference = subscriptionReference
+        let oldProfile = try await makeHysteriaSubscriptionProfile(
+            auth: "test-old-auth",
+            subscriptionID: subscription.id,
+            credentialStore: credentialStore
+        )
+        try await profileRepository.save(oldProfile)
+        try await subscriptionRepository.save(subscription)
+        let oldReference = try #require(oldProfile.credentialReference)
+        let client = SuspendedSubscriptionClient()
+        let viewModel = VPNDashboardViewModel(
+            profileRepository: profileRepository,
+            subscriptionRepository: subscriptionRepository,
+            subscriptionUpdater: URLSessionSubscriptionUpdater(
+                client: client,
+                credentialStore: credentialStore
+            ),
+            credentialStore: credentialStore,
+            activeProfileStore: InMemoryActiveProfileStore()
+        )
+
+        await viewModel.loadInitialData()
+        let refreshTask = Task {
+            await viewModel.refreshSubscription(subscription)
+        }
+        await client.waitUntilFetchStarts()
+        await viewModel.discardSubscriptionUpdate(for: subscription.id)
+        await client.complete(
+            with: Data(hysteriaSubscriptionURI(auth: "test-current-auth").utf8)
+        )
+        await refreshTask.value
+
+        let committedSecret = try await credentialStore.secret(for: oldReference)
+        let activeReferenceCount = await credentialStore.activeReferenceCount
+        #expect(viewModel.subscriptionUpdatePlan == nil)
+        #expect(viewModel.subscriptionRefreshState == .cancelled)
+        #expect(committedSecret != nil)
+        #expect(activeReferenceCount == 3)
+    }
+
+    @Test
+    @MainActor
+    func changedHysteriaCredentialRollsBackWhenProfilePersistenceFails() async throws {
+        let oldAuth = "test-old-auth"
+        let currentAuth = "test-current-auth"
+        let credentialStore = RecordingCredentialStore()
+        let subscriptionRepository = InMemorySubscriptionRepository()
+        let subscriptionReference = try await credentialStore.store(
+            "https://subscription.example.invalid/list",
+            label: "Subscription URL"
+        )
+        var subscription = makeSubscription()
+        subscription.credentialReference = subscriptionReference
+        let oldProfile = try await makeHysteriaSubscriptionProfile(
+            auth: oldAuth,
+            subscriptionID: subscription.id,
+            credentialStore: credentialStore
+        )
+        let profileRepository = SeededFailingProfileRepository(profile: oldProfile)
+        try await subscriptionRepository.save(subscription)
+        let oldReference = try #require(oldProfile.credentialReference)
+        let runtimeStore = RefreshRuntimeProfileStore()
+        let runtimeSynchronizer = RuntimeProfileSynchronizer(
+            profileRepository: profileRepository,
+            store: runtimeStore,
+            credentialStore: credentialStore
+        )
+        _ = try await runtimeSynchronizer.profileSaved(oldProfile)
+        let oldRuntimeRecord = try await runtimeStore.read(profileID: oldProfile.id)
+        let viewModel = makeSubscriptionRefreshViewModel(
+            profileRepository: profileRepository,
+            subscriptionRepository: subscriptionRepository,
+            credentialStore: credentialStore,
+            runtimeSynchronizer: runtimeSynchronizer,
+            refreshedAuth: currentAuth
+        )
+
+        await viewModel.loadInitialData()
+        await viewModel.refreshSubscription(subscription)
+        let preparedReference = try #require(
+            viewModel.subscriptionUpdatePlan?.changes.first?.incomingProfile?.credentialReference
+        )
+        #expect(preparedReference != oldReference)
+
+        await viewModel.applySubscriptionUpdate()
+
+        let persistedProfiles = try await profileRepository.profiles()
+        let persistedProfile = try #require(persistedProfiles.first)
+        let committedSecret = try await credentialStore.secret(for: oldReference)
+        let preparedSecret = try await credentialStore.secret(for: preparedReference)
+        let currentRuntimeRecord = try await runtimeStore.read(profileID: oldProfile.id)
+        let activeReferenceCount = await credentialStore.activeReferenceCount
+        #expect(persistedProfile.credentialReference == oldReference)
+        #expect(committedSecret == oldAuth)
+        #expect(preparedSecret == nil)
+        #expect(currentRuntimeRecord == oldRuntimeRecord)
+        #expect(activeReferenceCount == 3)
+        #expect(viewModel.subscriptionRefreshState == .failed)
+    }
+
+    @Test
+    @MainActor
+    func runtimePublicationFailureKeepsCommittedProfileAndBothRequiredCredentials() async throws {
+        let oldAuth = "test-old-auth"
+        let currentAuth = "test-current-auth"
+        let credentialStore = RecordingCredentialStore()
+        let profileRepository = InMemoryVPNProfileRepository()
+        let subscriptionRepository = InMemorySubscriptionRepository()
+        let subscriptionReference = try await credentialStore.store(
+            "https://subscription.example.invalid/list",
+            label: "Subscription URL"
+        )
+        var subscription = makeSubscription()
+        subscription.credentialReference = subscriptionReference
+        let oldProfile = try await makeHysteriaSubscriptionProfile(
+            auth: oldAuth,
+            subscriptionID: subscription.id,
+            credentialStore: credentialStore
+        )
+        try await profileRepository.save(oldProfile)
+        try await subscriptionRepository.save(subscription)
+        let oldReference = try #require(oldProfile.credentialReference)
+        let runtimeSynchronizer = FailingRefreshRuntimeProfileSynchronizer()
+        let viewModel = makeSubscriptionRefreshViewModel(
+            profileRepository: profileRepository,
+            subscriptionRepository: subscriptionRepository,
+            credentialStore: credentialStore,
+            runtimeSynchronizer: runtimeSynchronizer,
+            refreshedAuth: currentAuth
+        )
+
+        await viewModel.loadInitialData()
+        await viewModel.refreshSubscription(subscription)
+        await viewModel.applySubscriptionUpdate()
+
+        let persistedProfiles = try await profileRepository.profiles()
+        let persistedProfile = try #require(persistedProfiles.first)
+        let currentReference = try #require(persistedProfile.credentialReference)
+        let currentSecret = try await credentialStore.secret(for: currentReference)
+        let retainedOldSecret = try await credentialStore.secret(for: oldReference)
+        let persistedSubscriptions = try await subscriptionRepository.subscriptions()
+        let persistedSubscription = try #require(persistedSubscriptions.first)
+        let activeReferenceCount = await credentialStore.activeReferenceCount
+        #expect(currentReference != oldReference)
+        #expect(currentSecret == currentAuth)
+        #expect(retainedOldSecret == oldAuth)
+        #expect(persistedSubscription.refreshState == .failed)
+        #expect(viewModel.subscriptionRefreshState == .failed)
+        #expect(activeReferenceCount == 4)
+    }
+
+    @Test
+    @MainActor
+    func successfulHysteriaAuthRefreshRetainsSupersededCredentialWhenAnotherProfileReferencesIt() async throws {
+        let oldAuth = "test-shared-old-auth"
+        let currentAuth = "test-current-auth"
+        let credentialStore = RecordingCredentialStore()
+        let profileRepository = InMemoryVPNProfileRepository()
+        let subscriptionRepository = InMemorySubscriptionRepository()
+        let subscriptionReference = try await credentialStore.store(
+            "https://subscription.example.invalid/list",
+            label: "Subscription URL"
+        )
+        var subscription = makeSubscription()
+        subscription.credentialReference = subscriptionReference
+        let oldProfile = try await makeHysteriaSubscriptionProfile(
+            auth: oldAuth,
+            subscriptionID: subscription.id,
+            credentialStore: credentialStore
+        )
+        let oldReference = try #require(oldProfile.credentialReference)
+        var sharingProfile = oldProfile
+        sharingProfile.id = UUID()
+        sharingProfile.name = "Shared credential owner"
+        sharingProfile.source = .manual
+        sharingProfile.sourceSubscriptionID = nil
+        sharingProfile.externalIdentity = nil
+        try await profileRepository.save(oldProfile)
+        try await profileRepository.save(sharingProfile)
+        try await subscriptionRepository.save(subscription)
+        let runtimeStore = RefreshRuntimeProfileStore()
+        let runtimeSynchronizer = RuntimeProfileSynchronizer(
+            profileRepository: profileRepository,
+            store: runtimeStore,
+            credentialStore: credentialStore
+        )
+        _ = try await runtimeSynchronizer.profileSaved(oldProfile)
+        _ = try await runtimeSynchronizer.profileSaved(sharingProfile)
+        let viewModel = makeSubscriptionRefreshViewModel(
+            profileRepository: profileRepository,
+            subscriptionRepository: subscriptionRepository,
+            credentialStore: credentialStore,
+            runtimeSynchronizer: runtimeSynchronizer,
+            refreshedAuth: currentAuth
+        )
+
+        await viewModel.loadInitialData()
+        await viewModel.refreshSubscription(subscription)
+        await viewModel.applySubscriptionUpdate()
+
+        let storedProfiles = try await profileRepository.profiles()
+        let refreshedProfile = try #require(storedProfiles.first { $0.id == oldProfile.id })
+        let sharedSecret = try await credentialStore.secret(for: oldReference)
+        let sharedRuntimeRecord = try await runtimeStore.read(profileID: sharingProfile.id)
+        let activeReferenceCount = await credentialStore.activeReferenceCount
+        #expect(refreshedProfile.credentialReference != oldReference)
+        #expect(storedProfiles.first { $0.id == sharingProfile.id }?.credentialReference == oldReference)
+        #expect(sharedSecret == oldAuth)
+        #expect(sharedRuntimeRecord.credentialReference == oldReference)
+        #expect(activeReferenceCount == 4)
     }
 
     @Test
@@ -808,6 +1250,7 @@ struct VPNTests {
     @Test
     @MainActor
     func saveProfileCallsCredentialStorage() async {
+        let credentialValue = "sample-manual-secret"
         let credentialStore = RecordingCredentialStore()
         let viewModel = VPNDashboardViewModel(
             profileRepository: InMemoryVPNProfileRepository(),
@@ -815,11 +1258,19 @@ struct VPNTests {
             activeProfileStore: InMemoryActiveProfileStore()
         )
 
-        let didSave = await viewModel.saveProfileDraft(makeIncompleteCredentialProfile(name: "Manual"), credentialValue: "sample-manual-secret")
+        let didSave = await viewModel.saveProfileDraft(
+            makeIncompleteCredentialProfile(name: "Manual"),
+            credentialValue: credentialValue
+        )
 
         #expect(didSave)
         #expect(await credentialStore.storeCount == 1)
-        #expect(viewModel.profiles.first?.credentialReference?.hasPrefix("recording://") == true)
+        let savedReference = viewModel.profiles.first?.credentialReference
+        #expect(savedReference != nil)
+        guard let savedReference else { return }
+        let savedReferenceResolves = (try? await credentialStore.secret(for: savedReference)) != nil
+        #expect(savedReferenceResolves)
+        #expect(savedReference != credentialValue)
     }
 
     @Test
@@ -1816,6 +2267,59 @@ struct VPNTests {
         #expect(viewModel.connectionState == .disconnected)
     }
 
+    private func makeHysteriaSubscriptionProfile(
+        auth: String,
+        subscriptionID: UUID,
+        credentialStore: any CredentialStoring
+    ) async throws -> VPNProfile {
+        let result = try await Hysteria2LinkParser(credentialStore: credentialStore)
+            .parse(hysteriaSubscriptionURI(auth: auth))
+        let profile = try importedProfile(from: result)
+        return DefaultSubscriptionMerger().makeSubscriptionProfile(
+            profile,
+            subscriptionID: subscriptionID,
+            now: Date(timeIntervalSince1970: 1_800_000_000)
+        )
+    }
+
+    @MainActor
+    private func makeSubscriptionRefreshViewModel(
+        profileRepository: any VPNProfileRepository,
+        subscriptionRepository: any SubscriptionRepository,
+        credentialStore: RecordingCredentialStore,
+        runtimeSynchronizer: (any RuntimeProfileSynchronizing)?,
+        refreshedAuth: String
+    ) -> VPNDashboardViewModel {
+        VPNDashboardViewModel(
+            profileRepository: profileRepository,
+            subscriptionRepository: subscriptionRepository,
+            subscriptionUpdater: URLSessionSubscriptionUpdater(
+                client: StubSubscriptionClient(
+                    result: .success(Data(hysteriaSubscriptionURI(auth: refreshedAuth).utf8))
+                ),
+                credentialStore: credentialStore
+            ),
+            credentialStore: credentialStore,
+            activeProfileStore: InMemoryActiveProfileStore(),
+            runtimeProfileSynchronizer: runtimeSynchronizer
+        )
+    }
+
+    private func hysteriaSubscriptionURI(auth: String) -> String {
+        "hy2://\(auth)@refresh-hy2.example.invalid:443?sni=refresh-hy2.example.invalid&obfs=salamander&obfs-password=test-static-obfs#Credential%20Refresh"
+    }
+
+    private func hysteriaAuth(fromXrayJSON json: String) throws -> String {
+        let object = try #require(
+            JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any]
+        )
+        let outbounds = try #require(object["outbounds"] as? [[String: Any]])
+        let outbound = try #require(outbounds.first)
+        let streamSettings = try #require(outbound["streamSettings"] as? [String: Any])
+        let hysteriaSettings = try #require(streamSettings["hysteriaSettings"] as? [String: Any])
+        return try #require(hysteriaSettings["auth"] as? String)
+    }
+
     private func importedProfile(from result: VPNImportResult) throws -> VPNProfile {
         guard case .profile(let profile) = result.kind else {
             throw TestError.expectedProfile
@@ -2073,9 +2577,13 @@ private actor RecordingCredentialStore: CredentialStoring {
     private(set) var deletedReferences: [String] = []
     private var secrets: [String: String] = [:]
 
+    var activeReferenceCount: Int {
+        secrets.count
+    }
+
     func store(_ secret: String, label: String) async throws -> String {
         storeCount += 1
-        let reference = "recording://credential/\(storeCount)"
+        let reference = "keychain://test.credentials/account-\(storeCount)"
         secrets[reference] = secret
         return reference
     }
@@ -2087,6 +2595,101 @@ private actor RecordingCredentialStore: CredentialStoring {
     func delete(reference: String) async throws {
         deletedReferences.append(reference)
         secrets[reference] = nil
+    }
+}
+
+private actor SuspendedSubscriptionClient: SubscriptionClient {
+    private var fetchContinuation: CheckedContinuation<Data, Never>?
+    private var startWaiters: [CheckedContinuation<Void, Never>] = []
+
+    func fetch(url: URL) async throws -> Data {
+        await withCheckedContinuation { continuation in
+            fetchContinuation = continuation
+            let waiters = startWaiters
+            startWaiters.removeAll()
+            for waiter in waiters {
+                waiter.resume()
+            }
+        }
+    }
+
+    func waitUntilFetchStarts() async {
+        guard fetchContinuation == nil else { return }
+        await withCheckedContinuation { continuation in
+            startWaiters.append(continuation)
+        }
+    }
+
+    func complete(with data: Data) {
+        let continuation = fetchContinuation
+        fetchContinuation = nil
+        continuation?.resume(returning: data)
+    }
+}
+
+private actor SeededFailingProfileRepository: VPNProfileRepository {
+    private var storedProfiles: [VPNProfile]
+
+    init(profile: VPNProfile) {
+        self.storedProfiles = [profile]
+    }
+
+    func profiles() async throws -> [VPNProfile] {
+        storedProfiles
+    }
+
+    func save(_ profile: VPNProfile) async throws {
+        throw TestError.forcedFailure
+    }
+
+    func delete(id: VPNProfile.ID) async throws {
+        storedProfiles.removeAll { $0.id == id }
+    }
+
+    func setEnabled(_ isEnabled: Bool, id: VPNProfile.ID) async throws {}
+    func rename(id: VPNProfile.ID, to name: String) async throws {}
+}
+
+private actor RefreshRuntimeProfileStore: SharedRuntimeProfileStoring {
+    private var storedRecords: [UUID: SharedRuntimeProfileRecord] = [:]
+
+    func write(_ record: SharedRuntimeProfileRecord) async throws {
+        storedRecords[record.profileID] = record
+    }
+
+    func read(profileID: UUID) async throws -> SharedRuntimeProfileRecord {
+        guard let record = storedRecords[profileID] else {
+            throw RuntimeConfigurationError.profileRecordNotFound
+        }
+        return record
+    }
+
+    func records() async throws -> [SharedRuntimeProfileRecord] {
+        storedRecords.values.sorted { lhs, rhs in
+            lhs.profileID.uuidString < rhs.profileID.uuidString
+        }
+    }
+
+    func replaceAll(_ records: [SharedRuntimeProfileRecord]) async throws {
+        storedRecords = Dictionary(uniqueKeysWithValues: records.map { ($0.profileID, $0) })
+    }
+
+    func delete(profileID: UUID) async throws {
+        storedRecords[profileID] = nil
+    }
+}
+
+private actor FailingRefreshRuntimeProfileSynchronizer: RuntimeProfileSynchronizing {
+    func profileSaved(_ profile: VPNProfile) async throws -> RuntimeProfileSynchronizationSummary {
+        throw TestError.forcedFailure
+    }
+
+    func profileDeleted(id: UUID) async throws {
+        throw TestError.forcedFailure
+    }
+
+    func credentialReferences() async throws -> Set<String> {
+        throw TestError.forcedFailure
     }
 }
 

@@ -8,6 +8,20 @@
 import Foundation
 import Observation
 
+private enum SubscriptionProfileMutation {
+    case saved(UUID)
+    case deleted(UUID)
+    case none
+}
+
+private enum SubscriptionApplicationError: LocalizedError {
+    case runtimePublicationFailed
+
+    var errorDescription: String? {
+        "The updated profile was saved, but its runtime configuration could not be published."
+    }
+}
+
 @MainActor
 @Observable
 final class VPNDashboardViewModel {
@@ -21,11 +35,14 @@ final class VPNDashboardViewModel {
     private let importer: VPNProfileImporting
     private let credentialStore: CredentialStoring
     private let activeProfileStore: ActiveProfileStoring
+    private let runtimeProfileSynchronizer: (any RuntimeProfileSynchronizing)?
 
     private var activeOperationID: UUID?
     private var stateObservationTask: Task<Void, Never>?
     private var saveOperationID: UUID?
     private var subscriptionOperationID: UUID?
+    private var refreshingSubscriptionID: UUID?
+    private var discardedRefreshSubscriptionID: UUID?
     private var isInitialLoadInFlight = false
 
     var connectionState: VPNConnectionState = .disconnected
@@ -54,10 +71,11 @@ final class VPNDashboardViewModel {
         serverSelector: ServerSelecting = MockServerSelector(),
         profileRepository: VPNProfileRepository = FileVPNProfileRepository(),
         subscriptionRepository: SubscriptionRepository = FileSubscriptionRepository(),
-        subscriptionUpdater: SubscriptionUpdating = URLSessionSubscriptionUpdater(),
+        subscriptionUpdater: SubscriptionUpdating? = nil,
         credentialStore: CredentialStoring = KeychainCredentialStore(),
         activeProfileStore: ActiveProfileStoring = UserDefaultsActiveProfileStore(),
-        importer: VPNProfileImporting? = nil
+        importer: VPNProfileImporting? = nil,
+        runtimeProfileSynchronizer: (any RuntimeProfileSynchronizing)? = nil
     ) {
         self.serverProvider = serverProvider
         self.serverProber = serverProber
@@ -65,10 +83,13 @@ final class VPNDashboardViewModel {
         self.serverSelector = serverSelector
         self.profileRepository = profileRepository
         self.subscriptionRepository = subscriptionRepository
-        self.subscriptionUpdater = subscriptionUpdater
+        self.subscriptionUpdater = subscriptionUpdater ?? URLSessionSubscriptionUpdater(
+            credentialStore: credentialStore
+        )
         self.credentialStore = credentialStore
         self.activeProfileStore = activeProfileStore
         self.importer = importer ?? VPNLinkParser(credentialStore: credentialStore)
+        self.runtimeProfileSynchronizer = runtimeProfileSynchronizer
         observeConnectionState()
     }
 
@@ -417,12 +438,7 @@ final class VPNDashboardViewModel {
     func deleteProfile(_ profile: VPNProfile) async {
         do {
             try await profileRepository.delete(id: profile.id)
-            if let credentialReference = profile.credentialReference {
-                try await credentialStore.delete(reference: credentialReference)
-            }
-            if let publicKeyReference = profile.tlsSettings.publicKeyReference {
-                try await credentialStore.delete(reference: publicKeyReference)
-            }
+            try await deleteProfileCredentials(profile)
             profiles = try await profileRepository.profiles()
             if activeProfileID == profile.id {
                 setActiveProfileID(nil)
@@ -612,8 +628,24 @@ final class VPNDashboardViewModel {
 
         let operationID = UUID()
         subscriptionOperationID = operationID
+        refreshingSubscriptionID = subscription.id
+        discardedRefreshSubscriptionID = nil
         subscriptionRefreshState = .downloading
         importErrorMessage = nil
+        if let pendingPlan = subscriptionUpdatePlan {
+            do {
+                try await deleteUnreferencedCredentialReferences(
+                    incomingCredentialReferences(in: pendingPlan)
+                )
+            } catch {
+                importErrorMessage = error.localizedDescription
+                subscriptionRefreshState = .failed
+                subscriptionOperationID = nil
+                refreshingSubscriptionID = nil
+                discardedRefreshSubscriptionID = nil
+                return
+            }
+        }
         subscriptionUpdatePlan = nil
 
         do {
@@ -624,7 +656,20 @@ final class VPNDashboardViewModel {
             }
 
             let plan = try await subscriptionUpdater.planRefresh(subscription, existingProfiles: profiles, url: url)
-            guard subscriptionOperationID == operationID else { return }
+            if discardedRefreshSubscriptionID == subscription.id {
+                try await deleteUnreferencedCredentialReferences(incomingCredentialReferences(in: plan))
+                subscriptionUpdatePlan = nil
+                subscriptionRefreshState = .cancelled
+                importErrorMessage = nil
+                subscriptionOperationID = nil
+                refreshingSubscriptionID = nil
+                discardedRefreshSubscriptionID = nil
+                return
+            }
+            guard subscriptionOperationID == operationID else {
+                try await deleteUnreferencedCredentialReferences(incomingCredentialReferences(in: plan))
+                return
+            }
 
             subscriptionUpdatePlan = plan
             subscriptionRefreshState = .reviewing
@@ -641,6 +686,8 @@ final class VPNDashboardViewModel {
 
         if subscriptionOperationID == operationID {
             subscriptionOperationID = nil
+            refreshingSubscriptionID = nil
+            discardedRefreshSubscriptionID = nil
         }
     }
 
@@ -651,31 +698,163 @@ final class VPNDashboardViewModel {
         subscriptionOperationID = operationID
         subscriptionRefreshState = .saving
 
+        let profilesBeforeUpdate: [VPNProfile]
+        let subscriptionsBeforeUpdate: [VPNSubscription]
         do {
-            for change in plan.changes where change.isSelected {
-                try await applySubscriptionChange(change, missingPolicy: missingPolicy)
-            }
-
-            var updatedSubscription = plan.subscription
-            updatedSubscription.lastRefreshAt = Date()
-            updatedSubscription.lastSuccessfulRefreshAt = Date()
-            updatedSubscription.lastError = nil
-            updatedSubscription.refreshState = .completed
-            updatedSubscription.profileCount = (try await profileRepository.profiles()).filter { $0.sourceSubscriptionID == plan.subscription.id }.count
-            try await subscriptionRepository.save(updatedSubscription)
-
-            profiles = try await profileRepository.profiles()
-            subscriptions = try await subscriptionRepository.subscriptions()
-            subscriptionUpdatePlan = nil
-            subscriptionRefreshState = .completed
-            importErrorMessage = nil
+            profilesBeforeUpdate = try await profileRepository.profiles()
+            subscriptionsBeforeUpdate = try await subscriptionRepository.subscriptions()
         } catch {
             importErrorMessage = error.localizedDescription
             subscriptionRefreshState = .failed
+            subscriptionOperationID = nil
+            return
+        }
+
+        let referencesBeforeUpdate = credentialReferences(
+            profiles: profilesBeforeUpdate,
+            subscriptions: subscriptionsBeforeUpdate
+        )
+        let preparedReferences = incomingCredentialReferences(in: plan)
+            .subtracting(referencesBeforeUpdate)
+        let supersededReferences = supersededCredentialReferences(
+            in: plan,
+            missingPolicy: missingPolicy
+        )
+        var savedProfileIDs: Set<UUID> = []
+        var deletedProfileIDs: Set<UUID> = []
+        var operationError: (any Error)?
+
+        do {
+            for change in plan.changes where change.isSelected {
+                switch try await applySubscriptionChange(change, missingPolicy: missingPolicy) {
+                case .saved(let profileID):
+                    savedProfileIDs.insert(profileID)
+                case .deleted(let profileID):
+                    deletedProfileIDs.insert(profileID)
+                case .none:
+                    break
+                }
+            }
+        } catch {
+            operationError = error
+        }
+
+        var committedProfiles: [VPNProfile]?
+        do {
+            let storedProfiles = try await profileRepository.profiles()
+            committedProfiles = storedProfiles
+            profiles = storedProfiles
+            subscriptions = try await subscriptionRepository.subscriptions()
+        } catch {
+            operationError = error
+        }
+
+        var runtimeReferences: Set<String>?
+        if let runtimeProfileSynchronizer, let committedProfiles {
+            do {
+                for profileID in savedProfileIDs.sorted(by: { $0.uuidString < $1.uuidString }) {
+                    guard let profile = committedProfiles.first(where: { $0.id == profileID }) else {
+                        continue
+                    }
+                    guard profile.isEnabled else {
+                        try await runtimeProfileSynchronizer.profileDeleted(id: profileID)
+                        continue
+                    }
+                    let summary = try await runtimeProfileSynchronizer.profileSaved(profile)
+                    if summary.publishedProfileIDs.contains(profileID) == false {
+                        throw SubscriptionApplicationError.runtimePublicationFailed
+                    }
+                }
+                for profileID in deletedProfileIDs.sorted(by: { $0.uuidString < $1.uuidString }) {
+                    try await runtimeProfileSynchronizer.profileDeleted(id: profileID)
+                }
+                runtimeReferences = try await runtimeProfileSynchronizer.credentialReferences()
+            } catch {
+                operationError = error
+                // Publication failure does not roll durable state back. If the
+                // runtime store is still readable, use its actual references as
+                // cleanup guards; otherwise retain superseded credentials.
+                runtimeReferences = try? await runtimeProfileSynchronizer.credentialReferences()
+            }
+        }
+
+        do {
+            // Prepared references are published only after a durable profile save,
+            // so any one not referenced by durable state is safe to roll back.
+            try await deleteUnreferencedCredentialReferences(preparedReferences)
+        } catch {
+            operationError = error
+        }
+
+        if let runtimeReferences {
+            do {
+                try await deleteUnreferencedCredentialReferences(
+                    supersededReferences,
+                    additionalReferences: runtimeReferences
+                )
+            } catch {
+                operationError = error
+            }
+        }
+
+        do {
+            var finalizedSubscription = plan.subscription
+            finalizedSubscription.lastRefreshAt = Date()
+            finalizedSubscription.profileCount = (committedProfiles ?? profilesBeforeUpdate).filter {
+                $0.sourceSubscriptionID == plan.subscription.id
+            }.count
+            if let currentError = operationError {
+                finalizedSubscription.lastError = currentError.localizedDescription
+                finalizedSubscription.refreshState = .failed
+            } else {
+                finalizedSubscription.lastSuccessfulRefreshAt = Date()
+                finalizedSubscription.lastError = nil
+                finalizedSubscription.refreshState = .completed
+            }
+            try await subscriptionRepository.save(finalizedSubscription)
+            subscriptions = try await subscriptionRepository.subscriptions()
+        } catch {
+            operationError = error
+        }
+
+        // A failed application may have rolled back prepared references. Force a
+        // fresh provider fetch rather than retaining a plan with invalid handles.
+        subscriptionUpdatePlan = nil
+        if let operationError {
+            importErrorMessage = operationError.localizedDescription
+            subscriptionRefreshState = .failed
+        } else {
+            subscriptionRefreshState = .completed
+            importErrorMessage = nil
         }
 
         if subscriptionOperationID == operationID {
             subscriptionOperationID = nil
+        }
+    }
+
+    func discardSubscriptionUpdate(for subscriptionID: UUID) async {
+        if subscriptionOperationID != nil,
+           refreshingSubscriptionID == subscriptionID,
+           subscriptionRefreshState == .downloading {
+            discardedRefreshSubscriptionID = subscriptionID
+            subscriptionRefreshState = .cancelled
+            return
+        }
+
+        guard subscriptionOperationID == nil,
+              let plan = subscriptionUpdatePlan,
+              plan.subscription.id == subscriptionID else {
+            return
+        }
+
+        do {
+            try await deleteUnreferencedCredentialReferences(incomingCredentialReferences(in: plan))
+            subscriptionUpdatePlan = nil
+            subscriptionRefreshState = .cancelled
+        } catch {
+            importErrorMessage = error.localizedDescription
+            subscriptionRefreshState = .failed
         }
     }
 
@@ -701,8 +880,8 @@ final class VPNDashboardViewModel {
             for profile in linkedProfiles {
                 switch mode {
                 case .deleteProfiles:
-                    try await deleteProfileCredentials(profile)
                     try await profileRepository.delete(id: profile.id)
+                    try await deleteProfileCredentials(profile)
                     if activeProfileID == profile.id {
                         setActiveProfileID(nil)
                     }
@@ -718,7 +897,7 @@ final class VPNDashboardViewModel {
 
             try await subscriptionRepository.delete(id: subscription.id)
             if let reference = subscription.credentialReference {
-                try await credentialStore.delete(reference: reference)
+                try await deleteUnreferencedCredentialReferences([reference])
             }
             profiles = try await profileRepository.profiles()
             subscriptions = try await subscriptionRepository.subscriptions()
@@ -765,14 +944,33 @@ final class VPNDashboardViewModel {
     }
 
     func cancelSubscriptionFlow() async {
+        var candidateReferences = Set<String>()
         if let reference = subscriptionPreview?.providerURLReference, reference.isEmpty == false {
-            try? await credentialStore.delete(reference: reference)
+            candidateReferences.insert(reference)
         }
-        subscriptionPreview = nil
-        subscriptionUpdatePlan = nil
-        subscriptionPreviewProfiles = []
-        subscriptionRefreshState = .cancelled
+        if let preview = subscriptionPreview {
+            candidateReferences.formUnion(
+                preview.profiles.reduce(into: Set<String>()) { references, item in
+                    references.formUnion(item.profile.credentialReferences)
+                }
+            )
+        }
+        if let plan = subscriptionUpdatePlan {
+            candidateReferences.formUnion(incomingCredentialReferences(in: plan))
+        }
+        do {
+            try await deleteUnreferencedCredentialReferences(candidateReferences)
+            subscriptionPreview = nil
+            subscriptionUpdatePlan = nil
+            subscriptionPreviewProfiles = []
+            subscriptionRefreshState = .cancelled
+        } catch {
+            importErrorMessage = error.localizedDescription
+            subscriptionRefreshState = .failed
+        }
         subscriptionOperationID = nil
+        refreshingSubscriptionID = nil
+        discardedRefreshSubscriptionID = nil
     }
 
     private func makeSubscriptionDraft(name: String, urlText: String, allowInsecureHTTP: Bool = false) async throws -> (VPNSubscription, URL) {
@@ -797,33 +995,40 @@ final class VPNDashboardViewModel {
         return (subscription, url)
     }
 
-    private func applySubscriptionChange(_ change: SubscriptionProfileChange, missingPolicy: MissingSubscriptionProfilePolicy) async throws {
+    private func applySubscriptionChange(
+        _ change: SubscriptionProfileChange,
+        missingPolicy: MissingSubscriptionProfilePolicy
+    ) async throws -> SubscriptionProfileMutation {
         switch change.kind {
         case .added:
             if let incomingProfile = change.incomingProfile {
                 try await profileRepository.save(incomingProfile)
+                return .saved(incomingProfile.id)
             }
         case .updated:
             if let incomingProfile = change.incomingProfile, let existingProfile = change.existingProfile {
                 try await profileRepository.save(mergeProviderUpdate(existing: existingProfile, incoming: incomingProfile))
+                return .saved(existingProfile.id)
             }
         case .missing:
-            guard let existingProfile = change.existingProfile else { return }
+            guard let existingProfile = change.existingProfile else { return .none }
             switch missingPolicy {
             case .keep:
                 break
             case .disable:
                 try await profileRepository.setEnabled(false, id: existingProfile.id)
+                return .saved(existingProfile.id)
             case .remove:
-                try await deleteProfileCredentials(existingProfile)
                 try await profileRepository.delete(id: existingProfile.id)
                 if activeProfileID == existingProfile.id {
                     setActiveProfileID(nil)
                 }
+                return .deleted(existingProfile.id)
             }
         case .unchanged, .invalid, .duplicate:
             break
         }
+        return .none
     }
 
     private func mergeProviderUpdate(existing: VPNProfile, incoming: VPNProfile) -> VPNProfile {
@@ -840,11 +1045,73 @@ final class VPNDashboardViewModel {
     }
 
     private func deleteProfileCredentials(_ profile: VPNProfile) async throws {
-        if let credentialReference = profile.credentialReference {
-            try await credentialStore.delete(reference: credentialReference)
+        try await deleteUnreferencedCredentialReferences(profile.credentialReferences)
+    }
+
+    private func incomingCredentialReferences(in plan: SubscriptionUpdatePlan) -> Set<String> {
+        plan.changes.reduce(into: Set<String>()) { references, change in
+            if let incomingProfile = change.incomingProfile {
+                references.formUnion(incomingProfile.credentialReferences)
+            }
         }
-        if let publicKeyReference = profile.tlsSettings.publicKeyReference {
-            try await credentialStore.delete(reference: publicKeyReference)
+    }
+
+    private func supersededCredentialReferences(
+        in plan: SubscriptionUpdatePlan,
+        missingPolicy: MissingSubscriptionProfilePolicy
+    ) -> Set<String> {
+        plan.changes.reduce(into: Set<String>()) { references, change in
+            guard change.isSelected, let existingProfile = change.existingProfile else {
+                return
+            }
+            switch change.kind {
+            case .updated:
+                let incomingReferences = change.incomingProfile?.credentialReferences ?? []
+                references.formUnion(existingProfile.credentialReferences.subtracting(incomingReferences))
+            case .missing where missingPolicy == .remove:
+                references.formUnion(existingProfile.credentialReferences)
+            case .added, .unchanged, .missing, .invalid, .duplicate:
+                break
+            }
+        }
+    }
+
+    private func credentialReferences(
+        profiles: [VPNProfile],
+        subscriptions: [VPNSubscription]
+    ) -> Set<String> {
+        var references = profiles.reduce(into: Set<String>()) { references, profile in
+            references.formUnion(profile.credentialReferences)
+        }
+        references.formUnion(subscriptions.compactMap(\.credentialReference))
+        return references
+    }
+
+    private func deleteUnreferencedCredentialReferences(
+        _ candidates: Set<String>,
+        additionalReferences: Set<String> = []
+    ) async throws {
+        guard candidates.isEmpty == false else { return }
+        let storedProfiles = try await profileRepository.profiles()
+        let storedSubscriptions = try await subscriptionRepository.subscriptions()
+        var referenced = credentialReferences(
+            profiles: storedProfiles,
+            subscriptions: storedSubscriptions
+        )
+        referenced.formUnion(additionalReferences)
+
+        var firstError: (any Error)?
+        for reference in candidates.subtracting(referenced).sorted() {
+            do {
+                try await credentialStore.delete(reference: reference)
+            } catch {
+                if firstError == nil {
+                    firstError = error
+                }
+            }
+        }
+        if let firstError {
+            throw firstError
         }
     }
 

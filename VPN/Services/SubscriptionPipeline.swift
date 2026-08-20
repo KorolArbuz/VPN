@@ -272,6 +272,7 @@ nonisolated struct DefaultSubscriptionUpdatePlanner: SubscriptionUpdatePlanning 
         existing.protocolType != incoming.protocolType ||
             existing.serverAddress != incoming.serverAddress ||
             existing.port != incoming.port ||
+            existing.credentialReference != incoming.credentialReference ||
             existing.transportSettings != incoming.transportSettings ||
             existing.tlsSettings != incoming.tlsSettings ||
             existing.protocolConfiguration != incoming.protocolConfiguration

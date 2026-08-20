@@ -1820,7 +1820,7 @@ struct XrayConfigurationValidationIPCTests {
     @Test
     func handlerRespondsExactlyOnceWithXrayValidationPayload() async throws {
         let correlationID = UUID()
-        let validator = MockXrayConfigurationValidator(
+        let validator = await MockXrayConfigurationValidator(
             response: .success(
                 correlationID: correlationID,
                 protocolName: "vless",
@@ -4653,7 +4653,8 @@ private actor MockValidationLoader: RuntimeConfigurationValidationLoading {
     }
 }
 
-private actor MockXrayConfigurationValidator: XrayConfigurationValidating {
+@MainActor
+private final class MockXrayConfigurationValidator: XrayConfigurationValidating {
     private let response: TunnelXrayConfigurationValidationResponse
     private(set) var callCount = 0
 

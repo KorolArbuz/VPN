@@ -128,12 +128,8 @@ actor FileVPNProfileRepository: VPNProfileRepository {
             return []
         }
 
-        do {
-            let data = try Data(contentsOf: fileURL)
-            return try decoder.decode([VPNProfile].self, from: data)
-        } catch {
-            return []
-        }
+        let data = try Data(contentsOf: fileURL)
+        return try decoder.decode([VPNProfile].self, from: data)
     }
 
     private func writeProfiles(_ profiles: [VPNProfile]) throws {
