@@ -161,6 +161,7 @@ nonisolated struct SharedRuntimeSecurity: Codable, Equatable, Sendable {
     var serverName: String?
     var allowInsecure: Bool
     var fingerprint: String?
+    var alpn: [String]?
     var shortID: String?
     var reality: SharedRuntimeRealityPublicParameters?
 
@@ -169,6 +170,7 @@ nonisolated struct SharedRuntimeSecurity: Codable, Equatable, Sendable {
         serverName: String? = nil,
         allowInsecure: Bool = false,
         fingerprint: String? = nil,
+        alpn: [String]? = nil,
         shortID: String? = nil,
         reality: SharedRuntimeRealityPublicParameters? = nil
     ) {
@@ -176,6 +178,7 @@ nonisolated struct SharedRuntimeSecurity: Codable, Equatable, Sendable {
         self.serverName = serverName
         self.allowInsecure = allowInsecure
         self.fingerprint = fingerprint
+        self.alpn = alpn
         self.shortID = shortID
         self.reality = reality
     }
@@ -774,6 +777,450 @@ nonisolated struct SharedRuntimeProfileMapper {
     }
 }
 
+nonisolated enum VPNRuntimeUnsupportedFeature: String, Equatable, Sendable {
+    case shadowsocksPlugin
+    case shadowsocksMethod
+    case hysteria2Bandwidth
+    case hysteria2CertificatePinning
+    case hysteria2ECH
+    case hysteria2PortHopping
+    case hysteria2Obfuscation
+    case tcpHeader
+    case packetEncoding
+    case mux
+    case realityALPN
+    case vlessEncryption
+    case vlessFlow
+    case vmessCipher
+    case runtimeConfiguration
+}
+
+nonisolated enum VPNRuntimeCapabilityIssue: Equatable, Sendable {
+    case unsupportedProtocol(VPNProtocol)
+    case unsupportedTransport(protocolType: VPNProtocol, transport: String)
+    case unsupportedSecurity(protocolType: VPNProtocol, security: String)
+    case unsupportedFeature(
+        protocolType: VPNProtocol,
+        feature: VPNRuntimeUnsupportedFeature,
+        detail: String? = nil
+    )
+    case invalidConfiguration(protocolType: VPNProtocol, component: String)
+
+    var message: String {
+        switch self {
+        case .unsupportedProtocol(let protocolType):
+            if protocolType == .tuic {
+                return "TUIC runtime is not available in this build."
+            }
+            return "\(protocolType.displayName) runtime is not available in this build."
+        case .unsupportedTransport(let protocolType, let transport):
+            return "\(protocolType.displayName) transport \"\(transport)\" is not supported by this build."
+        case .unsupportedSecurity(let protocolType, let security):
+            return "\(protocolType.displayName) security mode \"\(security)\" is not supported by this build."
+        case .unsupportedFeature(let protocolType, let feature, let detail):
+            switch feature {
+            case .shadowsocksPlugin:
+                if let detail {
+                    return "Shadowsocks plugin \"\(detail)\" is not supported by this build."
+                }
+                return "Shadowsocks plugins are not supported by this build."
+            case .shadowsocksMethod:
+                return "The imported Shadowsocks encryption method is not supported by this build."
+            case .hysteria2Bandwidth:
+                return "Hysteria2 bandwidth hints are not supported by this build."
+            case .hysteria2CertificatePinning:
+                return "Hysteria2 certificate pinning is not supported by this build."
+            case .hysteria2ECH:
+                return "Hysteria2 ECH is not supported by this build."
+            case .hysteria2PortHopping:
+                return "Hysteria2 port hopping is not supported by this build."
+            case .hysteria2Obfuscation:
+                return "The requested Hysteria2 obfuscation is not supported by this build."
+            case .tcpHeader:
+                return "The requested \(protocolType.displayName) TCP header mode is not supported by this build."
+            case .packetEncoding:
+                return "The requested \(protocolType.displayName) packet encoding is not supported by this build."
+            case .mux:
+                return "The requested \(protocolType.displayName) mux setting is not supported by this build."
+            case .realityALPN:
+                return "Custom ALPN values with \(protocolType.displayName) REALITY are not supported by this build."
+            case .vlessEncryption:
+                return "The requested VLESS encryption mode is not supported by this build."
+            case .vlessFlow:
+                return "The requested VLESS flow is not supported for this configuration."
+            case .vmessCipher:
+                return "The requested VMess cipher is not supported by this build."
+            case .runtimeConfiguration:
+                return "This \(protocolType.displayName) configuration is not supported by the current runtime."
+            }
+        case .invalidConfiguration(let protocolType, let component):
+            return "The \(protocolType.displayName) \(component) configuration is invalid."
+        }
+    }
+}
+
+nonisolated enum VPNRuntimeCapability: Equatable, Sendable {
+    case ready
+    case incomplete([String])
+    case unsupported(VPNRuntimeCapabilityIssue)
+    case invalid(VPNRuntimeCapabilityIssue)
+
+    var isReady: Bool {
+        self == .ready
+    }
+
+    var statusText: String {
+        switch self {
+        case .ready:
+            return "Ready"
+        case .incomplete(let fields):
+            return "Incomplete: \(fields.joined(separator: ", "))"
+        case .unsupported(let issue):
+            return "Unsupported: \(issue.message)"
+        case .invalid(let issue):
+            return "Invalid: \(issue.message)"
+        }
+    }
+
+    var issue: VPNRuntimeCapabilityIssue? {
+        switch self {
+        case .ready, .incomplete:
+            return nil
+        case .unsupported(let issue), .invalid(let issue):
+            return issue
+        }
+    }
+}
+
+nonisolated struct VPNRuntimeCapabilityEvaluator {
+    private let mapper: SharedRuntimeProfileMapper
+    private let builder: XrayConfigurationBuilder
+
+    init(
+        mapper: SharedRuntimeProfileMapper = SharedRuntimeProfileMapper(),
+        builder: XrayConfigurationBuilder = XrayConfigurationBuilder()
+    ) {
+        self.mapper = mapper
+        self.builder = builder
+    }
+
+    func evaluate(_ profile: VPNProfile) -> VPNRuntimeCapability {
+        guard profile.isComplete else {
+            return .incomplete(profile.missingRequiredFields)
+        }
+        if let capability = explicitCapabilityFailure(in: profile) {
+            return capability
+        }
+
+        var enabledProfile = profile
+        enabledProfile.isEnabled = true
+
+        do {
+            let record = try mapper.record(from: enabledProfile)
+            let resolved = resolvedConfiguration(forCapabilityCheck: record)
+            _ = try builder.build(from: resolved, options: XrayBuildOptions())
+            return .ready
+        } catch let error as RuntimeConfigurationError {
+            return capability(for: error, profile: profile)
+        } catch let error as XrayConfigurationBuilderError {
+            return capability(for: error, profile: profile)
+        } catch {
+            return .invalid(.invalidConfiguration(protocolType: profile.protocolType, component: "runtime"))
+        }
+    }
+
+    private func explicitCapabilityFailure(in profile: VPNProfile) -> VPNRuntimeCapability? {
+        switch profile.protocolType {
+        case .wireGuard, .ikev2, .tuic:
+            return .unsupported(.unsupportedProtocol(profile.protocolType))
+        case .vless, .vmess, .trojan, .shadowsocks, .hysteria2:
+            break
+        }
+
+        if let headerType = metadataValue(in: profile, keys: ["headerType", "header-type"]),
+           ["", "none"].contains(headerType.lowercased()) == false {
+            return .unsupported(.unsupportedFeature(
+                protocolType: profile.protocolType,
+                feature: .tcpHeader
+            ))
+        }
+        if let packetEncoding = metadataValue(in: profile, keys: ["packetEncoding", "packet-encoding"]),
+           ["", "none"].contains(packetEncoding.lowercased()) == false {
+            return .unsupported(.unsupportedFeature(
+                protocolType: profile.protocolType,
+                feature: .packetEncoding
+            ))
+        }
+        if let mux = metadataValue(in: profile, keys: ["mux"]),
+           ["", "0", "false", "none", "off"].contains(mux.lowercased()) == false {
+            return .unsupported(.unsupportedFeature(protocolType: profile.protocolType, feature: .mux))
+        }
+        if normalizedSecurity(profile) == "reality", hasCustomRealityALPN(in: profile) {
+            return .unsupported(.unsupportedFeature(protocolType: profile.protocolType, feature: .realityALPN))
+        }
+        let requestedSecurity = normalizedSecurity(profile)
+        let supportedSecurities: Set<String>?
+        switch profile.protocolType {
+        case .vless:
+            supportedSecurities = ["tls", "reality"]
+        case .vmess:
+            supportedSecurities = ["none", "tls", "reality"]
+        case .trojan:
+            supportedSecurities = ["tls", "reality"]
+        case .wireGuard, .ikev2, .shadowsocks, .hysteria2, .tuic:
+            supportedSecurities = nil
+        }
+        if let supportedSecurities, supportedSecurities.contains(requestedSecurity) == false {
+            return .unsupported(.unsupportedSecurity(
+                protocolType: profile.protocolType,
+                security: sanitizedLabel(requestedSecurity)
+            ))
+        }
+
+        switch profile.protocolConfiguration {
+        case .vless(let configuration):
+            let encryption = normalized(configuration.encryption)?.lowercased()
+            if let encryption, encryption != "none" {
+                return .unsupported(.unsupportedFeature(protocolType: .vless, feature: .vlessEncryption))
+            }
+            if let flow = normalized(configuration.flow)?.lowercased() {
+                guard flow == "xtls-rprx-vision" else {
+                    return .unsupported(.unsupportedFeature(protocolType: .vless, feature: .vlessFlow))
+                }
+                let network = normalizedNetwork(profile)
+                guard ["tcp", "xhttp", "splithttp"].contains(network) else {
+                    return .unsupported(.unsupportedFeature(protocolType: .vless, feature: .vlessFlow))
+                }
+            }
+        case .vmess(let configuration):
+            if let alterID = configuration.alterID, alterID < 0 {
+                return .invalid(.invalidConfiguration(protocolType: .vmess, component: "alter ID"))
+            }
+            if let cipher = normalized(configuration.security)?.lowercased(),
+               ["auto", "aes-128-gcm", "chacha20-poly1305", "none", "zero"].contains(cipher) == false {
+                return .unsupported(.unsupportedFeature(protocolType: .vmess, feature: .vmessCipher))
+            }
+        case .trojan:
+            break
+        case .shadowsocks(let configuration):
+            let plugin = normalized(configuration.plugin)
+                ?? metadataValue(in: profile, keys: ["plugin"])
+            if let plugin {
+                return .unsupported(.unsupportedFeature(
+                    protocolType: .shadowsocks,
+                    feature: .shadowsocksPlugin,
+                    detail: sanitizedPluginName(plugin)
+                ))
+            }
+        case .hysteria2(let configuration):
+            if normalized(configuration.bandwidthHint) != nil {
+                return .unsupported(.unsupportedFeature(protocolType: .hysteria2, feature: .hysteria2Bandwidth))
+            }
+            if metadataValue(in: profile, keys: ["pinSHA256", "pin-sha256"]) != nil {
+                return .unsupported(.unsupportedFeature(protocolType: .hysteria2, feature: .hysteria2CertificatePinning))
+            }
+            if profile.metadata.merging(profile.transportSettings.metadata, uniquingKeysWith: { current, _ in current }).contains(where: { key, value in
+                guard normalized(value) != nil else { return false }
+                let normalizedKey = key
+                    .replacingOccurrences(of: "-", with: "")
+                    .replacingOccurrences(of: "_", with: "")
+                    .lowercased()
+                return ["ech", "echconfig", "echconfiglist"].contains(normalizedKey)
+            }) {
+                return .unsupported(.unsupportedFeature(protocolType: .hysteria2, feature: .hysteria2ECH))
+            }
+            if metadataValue(in: profile, keys: ["mport"]) != nil {
+                return .unsupported(.unsupportedFeature(protocolType: .hysteria2, feature: .hysteria2PortHopping))
+            }
+            if let alpn = metadataValue(in: profile, keys: ["alpn"]) {
+                let values = alpn.split(separator: ",").map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+                if values.isEmpty == false, values != ["h3"] {
+                    return .unsupported(.unsupportedFeature(protocolType: .hysteria2, feature: .runtimeConfiguration))
+                }
+            }
+            if let obfs = normalized(configuration.obfs)?.lowercased() {
+                guard obfs == "salamander" else {
+                    return .unsupported(.unsupportedFeature(protocolType: .hysteria2, feature: .hysteria2Obfuscation))
+                }
+                guard normalized(configuration.obfsPasswordReference) != nil else {
+                    return .invalid(.invalidConfiguration(protocolType: .hysteria2, component: "obfuscation password"))
+                }
+            }
+        case .wireGuard, .ikev2, .tuic:
+            break
+        }
+
+        return nil
+    }
+
+    private func hasCustomRealityALPN(in profile: VPNProfile) -> Bool {
+        let tlsALPN = profile.tlsSettings.alpn ?? []
+        let protocolALPN: [String]
+        if case .trojan(let configuration) = profile.protocolConfiguration {
+            protocolALPN = configuration.alpn
+        } else {
+            protocolALPN = []
+        }
+        return (tlsALPN + protocolALPN).contains { normalized($0) != nil }
+    }
+
+    private func resolvedConfiguration(forCapabilityCheck record: SharedRuntimeProfileRecord) -> ResolvedVLESSRuntimeConfiguration {
+        let primaryCredential: String
+        switch record.protocolKind {
+        case .vless, .vmess:
+            primaryCredential = "00000000-0000-4000-8000-000000000001"
+        case .trojan, .shadowsocks, .hysteria2:
+            primaryCredential = "runtime-capability-check"
+        }
+        let obfsPassword = record.hysteria2?.obfsPasswordReference == nil
+            ? nil
+            : SensitiveRuntimeCredential("runtime-capability-check")
+
+        return ResolvedVLESSRuntimeConfiguration(
+            profileID: record.profileID,
+            recordRevision: record.recordRevision,
+            protocolKind: record.protocolKind,
+            endpoint: ResolvedRuntimeEndpoint(host: record.endpoint.host, port: record.endpoint.port),
+            transport: record.transport,
+            security: record.security,
+            vless: record.vless,
+            vmess: record.vmess,
+            trojan: record.trojan,
+            shadowsocks: record.shadowsocks,
+            hysteria2: record.hysteria2,
+            credential: SensitiveRuntimeCredential(primaryCredential),
+            hysteria2ObfsPassword: obfsPassword
+        )
+    }
+
+    private func capability(for error: RuntimeConfigurationError, profile: VPNProfile) -> VPNRuntimeCapability {
+        switch error {
+        case .profileIncomplete:
+            return .incomplete(profile.missingRequiredFields)
+        case .unsupportedProtocol:
+            return unsupportedRuntimeConfiguration(for: profile)
+        case .unsupportedTransport:
+            return .unsupported(.unsupportedTransport(
+                protocolType: profile.protocolType,
+                transport: sanitizedLabel(normalizedNetwork(profile))
+            ))
+        case .invalidSecurityConfiguration:
+            return .invalid(.invalidConfiguration(protocolType: profile.protocolType, component: "security"))
+        case .invalidXHTTPConfiguration, .invalidXHTTPMode, .invalidXHTTPPath, .invalidXHTTPHost:
+            return .invalid(.invalidConfiguration(protocolType: profile.protocolType, component: "XHTTP"))
+        case .invalidEndpoint:
+            return .invalid(.invalidConfiguration(protocolType: profile.protocolType, component: "endpoint"))
+        case .missingCredentialReference, .malformedCredentialReference, .credentialUnavailable, .credentialMalformed:
+            return .invalid(.invalidConfiguration(protocolType: profile.protocolType, component: "credential"))
+        default:
+            return .invalid(.invalidConfiguration(protocolType: profile.protocolType, component: "runtime"))
+        }
+    }
+
+    private func capability(for error: XrayConfigurationBuilderError, profile: VPNProfile) -> VPNRuntimeCapability {
+        switch error {
+        case .unsupportedProtocol:
+            return unsupportedRuntimeConfiguration(for: profile)
+        case .unsupportedTransport:
+            return .unsupported(.unsupportedTransport(
+                protocolType: profile.protocolType,
+                transport: sanitizedLabel(normalizedNetwork(profile))
+            ))
+        case .unsupportedSecurity:
+            return .unsupported(.unsupportedSecurity(
+                protocolType: profile.protocolType,
+                security: sanitizedLabel(normalizedSecurity(profile))
+            ))
+        case .invalidTLSConfiguration:
+            return .invalid(.invalidConfiguration(protocolType: profile.protocolType, component: "TLS"))
+        case .invalidRealityConfiguration:
+            return .invalid(.invalidConfiguration(protocolType: profile.protocolType, component: "REALITY"))
+        case .invalidXHTTPConfiguration, .invalidXHTTPMode, .invalidXHTTPPath, .invalidXHTTPHost:
+            return .invalid(.invalidConfiguration(protocolType: profile.protocolType, component: "XHTTP"))
+        case .invalidEndpoint:
+            return .invalid(.invalidConfiguration(protocolType: profile.protocolType, component: "endpoint"))
+        case .invalidCredential:
+            return .invalid(.invalidConfiguration(protocolType: profile.protocolType, component: "credential"))
+        case .encodingFailed:
+            return .invalid(.invalidConfiguration(protocolType: profile.protocolType, component: "runtime encoding"))
+        }
+    }
+
+    private func unsupportedRuntimeConfiguration(for profile: VPNProfile) -> VPNRuntimeCapability {
+        switch profile.protocolConfiguration {
+        case .shadowsocks(let configuration):
+            if normalized(configuration.plugin) != nil || metadataValue(in: profile, keys: ["plugin"]) != nil {
+                return .unsupported(.unsupportedFeature(protocolType: .shadowsocks, feature: .shadowsocksPlugin))
+            }
+            return .unsupported(.unsupportedFeature(protocolType: .shadowsocks, feature: .shadowsocksMethod))
+        case .hysteria2(let configuration):
+            if normalized(configuration.bandwidthHint) != nil {
+                return .unsupported(.unsupportedFeature(protocolType: .hysteria2, feature: .hysteria2Bandwidth))
+            }
+            return .unsupported(.unsupportedFeature(protocolType: .hysteria2, feature: .hysteria2Obfuscation))
+        case .wireGuard, .ikev2, .tuic:
+            return .unsupported(.unsupportedProtocol(profile.protocolType))
+        case .vless, .vmess, .trojan:
+            return .unsupported(.unsupportedFeature(protocolType: profile.protocolType, feature: .runtimeConfiguration))
+        }
+    }
+
+    private func metadataValue(in profile: VPNProfile, keys: Set<String>) -> String? {
+        let normalizedKeys = Set(keys.map { $0.lowercased() })
+        for metadata in [profile.transportSettings.metadata, profile.metadata] {
+            for (key, value) in metadata where normalizedKeys.contains(key.lowercased()) {
+                if let value = normalized(value) {
+                    return value
+                }
+            }
+        }
+        return nil
+    }
+
+    private func normalizedNetwork(_ profile: VPNProfile) -> String {
+        normalized(profile.transportSettings.network)?.lowercased() ?? (profile.protocolType == .hysteria2 ? "udp" : "tcp")
+    }
+
+    private func normalizedSecurity(_ profile: VPNProfile) -> String {
+        if let security = normalized(profile.transportSettings.security ?? profile.metadata["security"])?.lowercased() {
+            return security
+        }
+        return profile.tlsSettings.isEnabled ? "tls" : "none"
+    }
+
+    private func normalized(_ value: String?) -> String? {
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed?.isEmpty == false ? trimmed : nil
+    }
+
+    private func sanitizedPluginName(_ value: String) -> String? {
+        let name = value.split(separator: ";", maxSplits: 1).first.map(String.init) ?? value
+        let sanitized = name.unicodeScalars.filter { scalar in
+            CharacterSet.alphanumerics.contains(scalar) || ".-_".unicodeScalars.contains(scalar)
+        }
+        let label = String(String.UnicodeScalarView(sanitized)).prefix(64)
+        return label.isEmpty ? nil : String(label)
+    }
+
+    private func sanitizedLabel(_ value: String) -> String {
+        let sanitized = value.unicodeScalars.filter { scalar in
+            CharacterSet.alphanumerics.contains(scalar) || ".-_".unicodeScalars.contains(scalar)
+        }
+        let label = String(String.UnicodeScalarView(sanitized)).prefix(32)
+        return label.isEmpty ? "requested" : String(label)
+    }
+}
+
+nonisolated extension VPNProfile {
+    var runtimeCapability: VPNRuntimeCapability {
+        VPNRuntimeCapabilityEvaluator().evaluate(self)
+    }
+
+    var isRuntimeReady: Bool {
+        runtimeCapability.isReady
+    }
+}
+
 private extension SharedRuntimeEndpoint {
     nonisolated init(_ endpoint: CoreEndpoint) {
         self.init(host: endpoint.host, port: endpoint.port)
@@ -954,7 +1401,14 @@ private extension SharedRuntimeSecurity {
         case .none:
             self.init(kind: .none, serverName: nil, allowInsecure: false, fingerprint: nil, shortID: nil)
         case .tls(let tls):
-            self.init(kind: .tls, serverName: tls.serverName, allowInsecure: tls.allowInsecure, fingerprint: tls.fingerprint, shortID: nil)
+            self.init(
+                kind: .tls,
+                serverName: tls.serverName,
+                allowInsecure: tls.allowInsecure,
+                fingerprint: tls.fingerprint,
+                alpn: tls.alpn,
+                shortID: nil
+            )
         case .reality(let reality):
             let publicParameters = SharedRuntimeRealityPublicParameters(
                 serverName: reality.serverName,
@@ -2768,8 +3222,8 @@ nonisolated struct SensitiveXrayConfiguration: CustomStringConvertible, CustomDe
     }
 }
 
-protocol XrayConfigurationBuilding: Sendable {
-    func build(
+nonisolated protocol XrayConfigurationBuilding: Sendable {
+    nonisolated func build(
         from configuration: ResolvedVLESSRuntimeConfiguration,
         options: XrayBuildOptions
     ) throws -> SensitiveXrayConfiguration
@@ -2780,7 +3234,7 @@ nonisolated struct XrayConfigurationBuilder: XrayConfigurationBuilding {
         "chrome", "firefox", "safari", "ios", "android", "edge", "360", "qq", "random", "randomized", "randomizednoalpn"
     ]
 
-    func build(
+    nonisolated func build(
         from configuration: ResolvedVLESSRuntimeConfiguration,
         options: XrayBuildOptions = XrayBuildOptions()
     ) throws -> SensitiveXrayConfiguration {
@@ -2797,7 +3251,12 @@ nonisolated struct XrayConfigurationBuilder: XrayConfigurationBuilding {
         }
 
         let transport = try streamTransport(for: configuration.transport)
-        let security = try streamSecurity(for: configuration.security, protocolKind: configuration.protocolKind)
+        var security = try streamSecurity(for: configuration.security, protocolKind: configuration.protocolKind)
+        if configuration.protocolKind == .trojan,
+           security.security == "tls",
+           let alpn = try normalizedALPN(configuration.trojan?.alpn) {
+            security.tlsSettings?.alpn = alpn
+        }
         let outbound = try outboundConfiguration(
             for: configuration,
             credential: credential,
@@ -2843,24 +3302,59 @@ nonisolated struct XrayConfigurationBuilder: XrayConfigurationBuilding {
         }
     }
 
+    private func normalizedALPN(_ values: [String]?) throws -> [String]? {
+        guard let values else { return nil }
+        let normalized = values.compactMap { value -> String? in
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        }
+        guard normalized.allSatisfy({ value in
+            value.utf8.count <= 255
+                && value.rangeOfCharacter(from: .whitespacesAndNewlines) == nil
+                && value.rangeOfCharacter(from: .controlCharacters) == nil
+        }) else {
+            throw XrayConfigurationBuilderError.invalidTLSConfiguration
+        }
+        return normalized.isEmpty ? nil : normalized
+    }
+
     private func validateProtocolMatrix(_ configuration: ResolvedVLESSRuntimeConfiguration) throws {
         switch configuration.protocolKind {
         case .vless:
-            guard [.tcp, .xhttp].contains(configuration.transport.kind) else {
+            guard [.tcp, .websocket, .grpc, .httpUpgrade, .xhttp].contains(configuration.transport.kind) else {
                 throw XrayConfigurationBuilderError.unsupportedTransport
             }
             guard [.tls, .reality].contains(configuration.security.kind) else {
                 throw XrayConfigurationBuilderError.unsupportedSecurity
             }
+            let encryption = normalizedOptional(configuration.vless.encryption)?.lowercased()
+            guard encryption == nil || encryption == "none" else {
+                throw XrayConfigurationBuilderError.unsupportedProtocol
+            }
+            if let flow = normalizedOptional(configuration.vless.flow)?.lowercased() {
+                guard flow == "xtls-rprx-vision",
+                      [.tcp, .xhttp].contains(configuration.transport.kind) else {
+                    throw XrayConfigurationBuilderError.unsupportedProtocol
+                }
+            }
         case .vmess:
-            guard [.tcp, .websocket, .grpc, .xhttp].contains(configuration.transport.kind) else {
+            guard [.tcp, .websocket, .grpc, .httpUpgrade, .xhttp].contains(configuration.transport.kind) else {
                 throw XrayConfigurationBuilderError.unsupportedTransport
             }
             guard [.none, .tls, .reality].contains(configuration.security.kind) else {
                 throw XrayConfigurationBuilderError.unsupportedSecurity
             }
+            if let vmess = configuration.vmess {
+                guard vmess.alterID.map({ $0 >= 0 }) ?? true else {
+                    throw XrayConfigurationBuilderError.unsupportedProtocol
+                }
+                let cipher = normalizedOptional(vmess.security)?.lowercased()
+                if let cipher, ["auto", "aes-128-gcm", "chacha20-poly1305", "none", "zero"].contains(cipher) == false {
+                    throw XrayConfigurationBuilderError.unsupportedProtocol
+                }
+            }
         case .trojan:
-            guard [.tcp, .websocket, .grpc, .xhttp].contains(configuration.transport.kind) else {
+            guard [.tcp, .websocket, .grpc, .httpUpgrade, .xhttp].contains(configuration.transport.kind) else {
                 throw XrayConfigurationBuilderError.unsupportedTransport
             }
             guard [.tls, .reality].contains(configuration.security.kind) else {
@@ -3158,7 +3652,7 @@ nonisolated struct XrayConfigurationBuilder: XrayConfigurationBuilding {
                     serverName: serverName,
                     allowInsecure: security.allowInsecure,
                     fingerprint: fingerprint,
-                    alpn: nil
+                    alpn: try normalizedALPN(security.alpn)
                 ),
                 realitySettings: nil
             )

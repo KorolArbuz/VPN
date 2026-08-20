@@ -680,6 +680,23 @@
         }
       }
     },
+    "diagnostics.data_plane.network_settings" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Network settings applied"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сетевые настройки применены"
+          }
+        }
+      }
+    },
     "diagnostics.data_plane.start" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -782,6 +799,414 @@
         }
       }
     },
+    "diagnostics.libxray_ping_only.diagnostics" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ping-only mode diagnostics"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Диагностика ping-only режима"
+          }
+        }
+      }
+    },
+    "diagnostics.libxray_ping_only.error.no_profile" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Select a profile before starting ping-only diagnostic mode."
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Выберите профиль перед запуском ping-only diagnostic mode."
+          }
+        }
+      }
+    },
+    "diagnostics.libxray_ping_only.error.shared_container" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ping-only diagnostic service is unavailable."
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сервис ping-only diagnostic недоступен."
+          }
+        }
+      }
+    },
+    "diagnostics.libxray_ping_only.error.unsupported_protocol" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ping-only diagnostic mode supports only K3B4 Xray-backed profiles."
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ping-only diagnostic mode поддерживает только K3B4 Xray-backed профили."
+          }
+        }
+      }
+    },
+    "diagnostics.libxray_ping_only.failed" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ping-only diagnostic mode failed."
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ping-only diagnostic mode не запущен."
+          }
+        }
+      }
+    },
+    "diagnostics.libxray_ping_only.start" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Start LibXray Ping-Only Mode"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Запустить LibXray ping-only mode"
+          }
+        }
+      }
+    },
+    "diagnostics.libxray_ping_only.stop" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Stop LibXray Ping-Only Mode"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Остановить LibXray ping-only mode"
+          }
+        }
+      }
+    },
+    "diagnostics.libxray_ping_only.warning" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Keeps PacketTunnelProvider alive only for isolated LibXray ping IPC. It does not call runXray, start Tun2Socks, apply network settings, or route device traffic."
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Держит PacketTunnelProvider активным только для IPC isolated LibXray ping. Не вызывает runXray, не запускает Tun2Socks, не применяет сетевые настройки и не маршрутизирует трафик устройства."
+          }
+        }
+      }
+    },
+    "diagnostics.libxray_ping.accepted" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ping accepted"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ping принят"
+          }
+        }
+      }
+    },
+    "diagnostics.libxray_ping.category" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sanitized category"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Санитизированная категория"
+          }
+        }
+      }
+    },
+    "diagnostics.libxray_ping.completed" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ping completed"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ping завершен"
+          }
+        }
+      }
+    },
+    "diagnostics.libxray_ping.config_built" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Xray configuration built"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Конфигурация Xray собрана"
+          }
+        }
+      }
+    },
+    "diagnostics.libxray_ping.delay" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Delay"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Задержка"
+          }
+        }
+      }
+    },
+    "diagnostics.libxray_ping.diagnostics" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "LibXray ping diagnostics"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Диагностика LibXray ping"
+          }
+        }
+      }
+    },
+    "diagnostics.libxray_ping.error.no_profile" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Select a profile before running LibXray ping."
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Выберите профиль перед запуском LibXray ping."
+          }
+        }
+      }
+    },
+    "diagnostics.libxray_ping.error.not_ping_only" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Start LibXray ping-only diagnostic mode before running this probe."
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сначала запустите LibXray ping-only diagnostic mode."
+          }
+        }
+      }
+    },
+    "diagnostics.libxray_ping.error.provider_unavailable" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "LibXray ping provider is unavailable."
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Провайдер LibXray ping недоступен."
+          }
+        }
+      }
+    },
+    "diagnostics.libxray_ping.error.unsupported_protocol" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "LibXray ping supports only K3B4 Xray-backed profiles."
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "LibXray ping поддерживает только K3B4 Xray-backed профили."
+          }
+        }
+      }
+    },
+    "diagnostics.libxray_ping.failed" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "LibXray ping failed."
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "LibXray ping не пройден."
+          }
+        }
+      }
+    },
+    "diagnostics.libxray_ping.native_error" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Native error present"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Есть native error"
+          }
+        }
+      }
+    },
+    "diagnostics.libxray_ping.passed" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "LibXray ping passed."
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "LibXray ping пройден."
+          }
+        }
+      }
+    },
+    "diagnostics.libxray_ping.run" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Run Isolated LibXray Ping"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Запустить isolated LibXray ping"
+          }
+        }
+      }
+    },
+    "diagnostics.libxray_ping.succeeded" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ping succeeded"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ping успешен"
+          }
+        }
+      }
+    },
+    "diagnostics.libxray_ping.timed_out" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Timed out"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Timeout"
+          }
+        }
+      }
+    },
     "diagnostics.passive_notice" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -795,193 +1220,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Рекомендации пассивные. VPN не переключится автоматически."
-          }
-        }
-      }
-    },
-    "diagnostics.provider_mode.dataPlane" : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Data plane"
-          }
-        },
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Data plane"
-          }
-        }
-      }
-    },
-    "diagnostics.provider_mode.idle" : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Idle"
-          }
-        },
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Ожидание"
-          }
-        }
-      }
-    },
-    "diagnostics.provider_mode.label" : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Diagnostic provider mode"
-          }
-        },
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Режим диагностического provider"
-          }
-        }
-      }
-    },
-    "diagnostics.provider_mode.libXrayPingOnly" : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "LibXray ping-only"
-          }
-        },
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "LibXray ping-only"
-          }
-        }
-      }
-    },
-    "diagnostics.provider_mode.lifecycleSmoke" : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Lifecycle smoke"
-          }
-        },
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Lifecycle smoke"
-          }
-        }
-      }
-    },
-    "diagnostics.provider_mode.reconcile" : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Refresh Diagnostic Provider State"
-          }
-        },
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Обновить состояние diagnostic provider"
-          }
-        }
-      }
-    },
-    "diagnostics.provider_mode.recover" : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Recover Diagnostic Provider"
-          }
-        },
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Восстановить diagnostic provider"
-          }
-        }
-      }
-    },
-    "diagnostics.provider_mode.recovery_failed" : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Diagnostic provider recovery failed."
-          }
-        },
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Не удалось восстановить diagnostic provider."
-          }
-        }
-      }
-    },
-    "diagnostics.provider_mode.runtimeOnly" : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Runtime-only"
-          }
-        },
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Runtime-only"
-          }
-        }
-      }
-    },
-    "diagnostics.provider_mode.unknown" : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Unknown"
-          }
-        },
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Неизвестно"
-          }
-        }
-      }
-    },
-    "diagnostics.provider_mode.unsynchronized" : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Diagnostic provider state is not synchronized."
-          }
-        },
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Состояние diagnostic provider не синхронизировано."
           }
         }
       }
@@ -1305,6 +1543,193 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Включить проверки транспорта"
+          }
+        }
+      }
+    },
+    "diagnostics.provider_mode.dataPlane" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Data plane"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Data plane"
+          }
+        }
+      }
+    },
+    "diagnostics.provider_mode.idle" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Idle"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ожидание"
+          }
+        }
+      }
+    },
+    "diagnostics.provider_mode.label" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Diagnostic provider mode"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Режим диагностического provider"
+          }
+        }
+      }
+    },
+    "diagnostics.provider_mode.libXrayPingOnly" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "LibXray ping-only"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "LibXray ping-only"
+          }
+        }
+      }
+    },
+    "diagnostics.provider_mode.lifecycleSmoke" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Lifecycle smoke"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Lifecycle smoke"
+          }
+        }
+      }
+    },
+    "diagnostics.provider_mode.reconcile" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Refresh Diagnostic Provider State"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Обновить состояние diagnostic provider"
+          }
+        }
+      }
+    },
+    "diagnostics.provider_mode.recover" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Recover Diagnostic Provider"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Восстановить diagnostic provider"
+          }
+        }
+      }
+    },
+    "diagnostics.provider_mode.recovery_failed" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Diagnostic provider recovery failed."
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не удалось восстановить diagnostic provider."
+          }
+        }
+      }
+    },
+    "diagnostics.provider_mode.runtimeOnly" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Runtime-only"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Runtime-only"
+          }
+        }
+      }
+    },
+    "diagnostics.provider_mode.unknown" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Unknown"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Неизвестно"
+          }
+        }
+      }
+    },
+    "diagnostics.provider_mode.unsynchronized" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Diagnostic provider state is not synchronized."
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Состояние diagnostic provider не синхронизировано."
           }
         }
       }
@@ -4165,431 +4590,6 @@
         }
       }
     },
-    "diagnostics.data_plane.network_settings" : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Network settings applied"
-          }
-        },
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Сетевые настройки применены"
-          }
-        }
-      }
-    },
-    "diagnostics.libxray_ping.accepted" : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Ping accepted"
-          }
-        },
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Ping принят"
-          }
-        }
-      }
-    },
-    "diagnostics.libxray_ping.category" : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Sanitized category"
-          }
-        },
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Санитизированная категория"
-          }
-        }
-      }
-    },
-    "diagnostics.libxray_ping.completed" : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Ping completed"
-          }
-        },
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Ping завершен"
-          }
-        }
-      }
-    },
-    "diagnostics.libxray_ping.config_built" : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Xray configuration built"
-          }
-        },
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Конфигурация Xray собрана"
-          }
-        }
-      }
-    },
-    "diagnostics.libxray_ping.delay" : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Delay"
-          }
-        },
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Задержка"
-          }
-        }
-      }
-    },
-    "diagnostics.libxray_ping.diagnostics" : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "LibXray ping diagnostics"
-          }
-        },
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Диагностика LibXray ping"
-          }
-        }
-      }
-    },
-    "diagnostics.libxray_ping.error.no_profile" : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Select a profile before running LibXray ping."
-          }
-        },
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Выберите профиль перед запуском LibXray ping."
-          }
-        }
-      }
-    },
-    "diagnostics.libxray_ping.error.not_ping_only" : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Start LibXray ping-only diagnostic mode before running this probe."
-          }
-        },
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Сначала запустите LibXray ping-only diagnostic mode."
-          }
-        }
-      }
-    },
-    "diagnostics.libxray_ping.error.provider_unavailable" : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "LibXray ping provider is unavailable."
-          }
-        },
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Провайдер LibXray ping недоступен."
-          }
-        }
-      }
-    },
-    "diagnostics.libxray_ping.error.unsupported_protocol" : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "LibXray ping supports only K3B4 Xray-backed profiles."
-          }
-        },
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "LibXray ping поддерживает только K3B4 Xray-backed профили."
-          }
-        }
-      }
-    },
-    "diagnostics.libxray_ping.failed" : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "LibXray ping failed."
-          }
-        },
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "LibXray ping не пройден."
-          }
-        }
-      }
-    },
-    "diagnostics.libxray_ping.native_error" : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Native error present"
-          }
-        },
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Есть native error"
-          }
-        }
-      }
-    },
-    "diagnostics.libxray_ping.passed" : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "LibXray ping passed."
-          }
-        },
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "LibXray ping пройден."
-          }
-        }
-      }
-    },
-    "diagnostics.libxray_ping.run" : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Run Isolated LibXray Ping"
-          }
-        },
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Запустить isolated LibXray ping"
-          }
-        }
-      }
-    },
-    "diagnostics.libxray_ping.succeeded" : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Ping succeeded"
-          }
-        },
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Ping успешен"
-          }
-        }
-      }
-    },
-    "diagnostics.libxray_ping.timed_out" : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Timed out"
-          }
-        },
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Timeout"
-          }
-        }
-      }
-    },
-    "diagnostics.libxray_ping_only.diagnostics" : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Ping-only mode diagnostics"
-          }
-        },
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Диагностика ping-only режима"
-          }
-        }
-      }
-    },
-    "diagnostics.libxray_ping_only.error.no_profile" : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Select a profile before starting ping-only diagnostic mode."
-          }
-        },
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Выберите профиль перед запуском ping-only diagnostic mode."
-          }
-        }
-      }
-    },
-    "diagnostics.libxray_ping_only.error.shared_container" : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Ping-only diagnostic service is unavailable."
-          }
-        },
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Сервис ping-only diagnostic недоступен."
-          }
-        }
-      }
-    },
-    "diagnostics.libxray_ping_only.error.unsupported_protocol" : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Ping-only diagnostic mode supports only K3B4 Xray-backed profiles."
-          }
-        },
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Ping-only diagnostic mode поддерживает только K3B4 Xray-backed профили."
-          }
-        }
-      }
-    },
-    "diagnostics.libxray_ping_only.failed" : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Ping-only diagnostic mode failed."
-          }
-        },
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Ping-only diagnostic mode не запущен."
-          }
-        }
-      }
-    },
-    "diagnostics.libxray_ping_only.start" : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Start LibXray Ping-Only Mode"
-          }
-        },
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Запустить LibXray ping-only mode"
-          }
-        }
-      }
-    },
-    "diagnostics.libxray_ping_only.stop" : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Stop LibXray Ping-Only Mode"
-          }
-        },
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Остановить LibXray ping-only mode"
-          }
-        }
-      }
-    },
-    "diagnostics.libxray_ping_only.warning" : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Keeps PacketTunnelProvider alive only for isolated LibXray ping IPC. It does not call runXray, start Tun2Socks, apply network settings, or route device traffic."
-          }
-        },
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Держит PacketTunnelProvider активным только для IPC isolated LibXray ping. Не вызывает runXray, не запускает Tun2Socks, не применяет сетевые настройки и не маршрутизирует трафик устройства."
-          }
-        }
-      }
-    },
     "diagnostics.value.none" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -7005,6 +7005,10 @@
       "comment" : "The title of a view that lets a user review and save multiple VPN profiles.",
       "isCommentAutoGenerated" : true
     },
+    "Runtime capability" : {
+      "comment" : "A section that displays any runtime errors related to a profile.",
+      "isCommentAutoGenerated" : true
+    },
     "Save Selected Profiles" : {
       "comment" : "A button label that saves the selected VPN profiles.",
       "isCommentAutoGenerated" : true
@@ -7196,6 +7200,14 @@
     },
     "Unchanged" : {
       "comment" : "A label for the number of unchanged profiles in a subscription update.",
+      "isCommentAutoGenerated" : true
+    },
+    "Unsupported" : {
+      "comment" : "A warning about a profile that is not supported.",
+      "isCommentAutoGenerated" : true
+    },
+    "Unsupported configuration" : {
+      "comment" : "A section that displays warnings about unsupported configurations.",
       "isCommentAutoGenerated" : true
     },
     "Updated" : {

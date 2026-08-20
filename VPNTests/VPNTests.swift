@@ -63,6 +63,83 @@ struct VPNTests {
     }
 
     @Test
+    func trojanGRPCServiceNameMapsToRuntime() async throws {
+        let credentialStore = RecordingCredentialStore()
+        let result = try await VPNLinkParser(credentialStore: credentialStore).parse(
+            "trojan://test-password@trojan-grpc.example.invalid:443?type=grpc&security=tls&sni=trojan-grpc.example.invalid&serviceName=current-service#Trojan%20gRPC"
+        )
+        let profile = try importedProfile(from: result)
+
+        #expect(profile.transportSettings.serviceName == "current-service")
+        let runtime = try SharedRuntimeProfileMapper().record(from: profile)
+        #expect(runtime.transport.kind == .grpc)
+        #expect(runtime.transport.serviceName == "current-service")
+    }
+
+    @Test
+    func vmessGRPCPathMapsToRuntimeServiceName() async throws {
+        let credentialStore = RecordingCredentialStore()
+        let payload = """
+        {"ps":"VMess gRPC","add":"vmess-grpc.example.invalid","port":"443","id":"11111111-1111-4111-8111-111111111111","aid":"0","scy":"auto","net":"grpc","type":"none","host":"","path":"current-service","tls":"tls","sni":"vmess-grpc.example.invalid"}
+        """
+        let result = try await VPNLinkParser(credentialStore: credentialStore).parse(
+            "vmess://\(Data(payload.utf8).base64EncodedString())"
+        )
+        let profile = try importedProfile(from: result)
+
+        #expect(profile.transportSettings.serviceName == "current-service")
+        let runtime = try SharedRuntimeProfileMapper().record(from: profile)
+        #expect(runtime.transport.kind == .grpc)
+        #expect(runtime.transport.serviceName == "current-service")
+    }
+
+    @Test
+    func trojanRealityPublicParametersMapToRuntime() async throws {
+        let credentialStore = RecordingCredentialStore()
+        let publicKey = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        let result = try await VPNLinkParser(credentialStore: credentialStore).parse(
+            "trojan://test-password@trojan-reality.example.invalid:443?type=tcp&security=reality&sni=cover.example.invalid&fp=chrome&pbk=\(publicKey)&sid=abcd&spx=%2Fcurrent#Trojan%20Reality"
+        )
+        let profile = try importedProfile(from: result)
+
+        #expect(profile.tlsSettings.fingerprint == "chrome")
+        #expect(profile.tlsSettings.realityPublicKey == publicKey)
+        #expect(profile.tlsSettings.shortID == "abcd")
+        #expect(profile.tlsSettings.spiderX == "/current")
+        let runtime = try SharedRuntimeProfileMapper().record(from: profile)
+        #expect(runtime.security.kind == .reality)
+        #expect(runtime.security.reality?.publicKey == publicKey)
+        #expect(runtime.security.reality?.shortID == "abcd")
+        #expect(runtime.security.reality?.spiderX == "/current")
+    }
+
+    @Test
+    @MainActor
+    func trojanALPNMapsToXrayTLSSettings() async throws {
+        let credentialStore = RecordingCredentialStore()
+        let result = try await VPNLinkParser(credentialStore: credentialStore).parse(
+            "trojan://test-password@trojan-alpn.example.invalid:443?type=tcp&security=tls&sni=trojan-alpn.example.invalid&alpn=h2,http%2F1.1#Trojan%20ALPN"
+        )
+        let profile = try importedProfile(from: result)
+        guard case .trojan(let configuration) = profile.protocolConfiguration else {
+            Issue.record("Expected Trojan protocol configuration")
+            return
+        }
+        #expect(configuration.alpn == ["h2", "http/1.1"])
+
+        let record = try SharedRuntimeProfileMapper().record(from: profile)
+        let json = try await xrayJSON(record: record, credentialStore: credentialStore)
+        let data = try #require(json.data(using: .utf8))
+        let root = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let outbounds = try #require(root["outbounds"] as? [[String: Any]])
+        let outbound = try #require(outbounds.first)
+        let streamSettings = try #require(outbound["streamSettings"] as? [String: Any])
+        let tlsSettings = try #require(streamSettings["tlsSettings"] as? [String: Any])
+        let alpn = try #require(tlsSettings["alpn"] as? [String])
+        #expect(alpn == ["h2", "http/1.1"])
+    }
+
+    @Test
     func validHysteria2() async throws {
         let parser = VPNLinkParser(credentialStore: InMemoryCredentialStore())
         let result = try await parser.parse("hysteria2://sample-password@hy.example.com:8443?sni=hy.example.com&obfs=salamander&bandwidth=100mbps#Hysteria")
@@ -123,6 +200,24 @@ struct VPNTests {
         #expect(profile.protocolType == .tuic)
         #expect(profile.serverAddress == "tuic.example.invalid")
         #expect(profile.credentialReference != nil)
+    }
+
+    @Test(arguments: ["password", "token", "privateKey"])
+    func tuicQueryCredentialIsStoredOnlyByReference(queryName: String) async throws {
+        let credential = "test-tuic-query-credential"
+        let credentialStore = RecordingCredentialStore()
+        let parser = VPNLinkParser(credentialStore: credentialStore)
+        let result = try await parser.parse(
+            "tuic://tuic.example.invalid:443?\(queryName)=\(credential)&congestion=bbr&udpRelayMode=native#TUIC"
+        )
+        let profile = try importedProfile(from: result)
+        let reference = try #require(profile.credentialReference)
+
+        #expect(try await credentialStore.secret(for: reference) == credential)
+        #expect(profile.metadata[queryName] == nil)
+        #expect(profile.transportSettings.metadata[queryName] == nil)
+        #expect(profile.metadata.values.contains(credential) == false)
+        #expect(profile.transportSettings.metadata.values.contains(credential) == false)
     }
 
     @Test
@@ -292,6 +387,251 @@ struct VPNTests {
     }
 
     @Test
+    func subscriptionRefreshReclassifiesSupportedAndUnsupportedRuntimeCapabilities() throws {
+        let subscription = makeSubscription()
+        let merger = DefaultSubscriptionMerger()
+        let planner = DefaultSubscriptionUpdatePlanner()
+        let base = VPNProfile.draft(
+            name: "Provider Shadowsocks",
+            protocolType: .shadowsocks,
+            serverAddress: "capability-refresh.example.invalid",
+            port: 8388,
+            credentialReference: "keychain://test.credentials/shared-capability-reference",
+            protocolConfiguration: .shadowsocks(ShadowsocksProfileConfiguration(
+                method: "aes-256-gcm",
+                plugin: nil
+            )),
+            source: .subscription
+        )
+        let supported = merger.makeSubscriptionProfile(
+            base,
+            subscriptionID: subscription.id,
+            now: Date(timeIntervalSince1970: 1_800_000_000)
+        )
+        var unsupported = supported
+        unsupported.protocolConfiguration = .shadowsocks(ShadowsocksProfileConfiguration(
+            method: "aes-256-gcm",
+            plugin: "v2ray-plugin;obfs=http"
+        ))
+        unsupported.externalIdentity = supported.externalIdentity
+
+        let becomingUnsupported = planner.planUpdate(
+            subscription: subscription,
+            incoming: [unsupported],
+            existing: [supported]
+        )
+        let rejectedChange = try #require(becomingUnsupported.changes.first)
+        #expect(rejectedChange.kind == .invalid)
+        #expect(rejectedChange.existingProfile?.id == supported.id)
+        #expect(rejectedChange.isSelected == false)
+        #expect(rejectedChange.message?.contains("v2ray-plugin") == true)
+
+        var becomingSupported = supported
+        becomingSupported.externalIdentity = unsupported.externalIdentity
+        let recovered = planner.planUpdate(
+            subscription: subscription,
+            incoming: [becomingSupported],
+            existing: [unsupported]
+        )
+        let recoveredChange = try #require(recovered.changes.first)
+        #expect(recoveredChange.kind == .updated)
+        #expect(recoveredChange.incomingProfile?.runtimeCapability == .ready)
+        #expect(recoveredChange.isSelected)
+    }
+
+    @Test
+    func vlessPortOnlyRefreshMatchesExistingProviderEntry() async throws {
+        let credentialStore = RecordingCredentialStore()
+        let subscription = makeSubscription()
+        let credential = "11111111-1111-4111-8111-111111111111"
+        let oldURI = "vless://\(credential)@field-refresh.example.invalid:443?type=tcp&security=tls&sni=field-refresh.example.invalid&encryption=none#Field%20Refresh"
+        let currentURI = "vless://\(credential)@field-refresh.example.invalid:8443?type=tcp&security=tls&sni=field-refresh.example.invalid&encryption=none#Field%20Refresh"
+        let parsed = try await VPNLinkParser(credentialStore: credentialStore).parse(oldURI)
+        let existing = DefaultSubscriptionMerger().makeSubscriptionProfile(
+            try importedProfile(from: parsed),
+            subscriptionID: subscription.id,
+            now: Date(timeIntervalSince1970: 1_800_000_000)
+        )
+        let updater = URLSessionSubscriptionUpdater(
+            client: StubSubscriptionClient(result: .success(Data(currentURI.utf8))),
+            credentialStore: credentialStore
+        )
+
+        let plan = try await updater.planRefresh(
+            subscription,
+            existingProfiles: [existing],
+            url: try #require(URL(string: "https://subscription.example.invalid/list"))
+        )
+
+        let change = try #require(plan.changes.first)
+        #expect(plan.changes.count == 1)
+        #expect(change.kind == .updated)
+        #expect(change.existingProfile?.id == existing.id)
+        #expect(change.incomingProfile?.port == 8443)
+    }
+
+    @Test(arguments: ProviderManagedNonSecretRefreshCase.cases)
+    @MainActor
+    func providerManagedNonSecretRefreshIsDetectedMergedAndPublished(
+        fieldCase: ProviderManagedNonSecretRefreshCase
+    ) async throws {
+        let credentialStore = RecordingCredentialStore()
+        let profileRepository = InMemoryVPNProfileRepository()
+        let subscriptionRepository = InMemorySubscriptionRepository()
+        let subscriptionReference = try await credentialStore.store(
+            "https://subscription.example.invalid/list",
+            label: "Subscription URL"
+        )
+        var subscription = makeSubscription()
+        subscription.credentialReference = subscriptionReference
+        let existing = try await makeSubscriptionProfile(
+            uri: fieldCase.oldURI,
+            subscriptionID: subscription.id,
+            credentialStore: credentialStore
+        )
+        try await profileRepository.save(existing)
+        try await subscriptionRepository.save(subscription)
+        let oldReference = try #require(existing.credentialReference)
+        let activeReferencesBeforeRefresh = await credentialStore.activeReferenceCount
+        let runtimeSynchronizer = ReferenceTrackingRuntimeProfileSynchronizer()
+        _ = try await runtimeSynchronizer.profileSaved(existing)
+        let viewModel = makeCredentialRefreshViewModel(
+            profileRepository: profileRepository,
+            subscriptionRepository: subscriptionRepository,
+            credentialStore: credentialStore,
+            runtimeSynchronizer: runtimeSynchronizer,
+            refreshedURI: fieldCase.currentURI
+        )
+
+        await viewModel.loadInitialData()
+        await viewModel.refreshSubscription(subscription)
+
+        let plan = try #require(viewModel.subscriptionUpdatePlan)
+        let change = try #require(plan.changes.first)
+        let prepared = try #require(change.incomingProfile)
+        #expect(plan.changes.count == 1, Comment(rawValue: fieldCase.name))
+        #expect(change.existingProfile?.id == existing.id, Comment(rawValue: fieldCase.name))
+        #expect(prepared.credentialReference == oldReference, Comment(rawValue: fieldCase.name))
+        #expect(
+            ProviderManagedProfileSnapshot(existing) != ProviderManagedProfileSnapshot(prepared),
+            Comment(rawValue: fieldCase.name)
+        )
+        #expect(
+            await credentialStore.activeReferenceCount == activeReferencesBeforeRefresh,
+            Comment(rawValue: fieldCase.name)
+        )
+
+        switch fieldCase.runtimeExpectation {
+        case .builderSupported(let marker):
+            #expect(change.kind == .updated, Comment(rawValue: fieldCase.name))
+            await viewModel.applySubscriptionUpdate()
+
+            let persisted = try #require(try await profileRepository.profiles().first)
+            #expect(viewModel.subscriptionRefreshState == .completed, Comment(rawValue: fieldCase.name))
+            #expect(persisted.id == existing.id, Comment(rawValue: fieldCase.name))
+            #expect(
+                ProviderManagedProfileSnapshot(persisted) == ProviderManagedProfileSnapshot(prepared),
+                Comment(rawValue: fieldCase.name)
+            )
+            #expect(persisted.credentialReference == oldReference, Comment(rawValue: fieldCase.name))
+            #expect(try await credentialStore.secret(for: oldReference) != nil, Comment(rawValue: fieldCase.name))
+            #expect(
+                await credentialStore.activeReferenceCount == activeReferencesBeforeRefresh,
+                Comment(rawValue: fieldCase.name)
+            )
+
+            let mapper = SharedRuntimeProfileMapper(now: { Date(timeIntervalSince1970: 1_900_000_000) })
+            let oldRecord = try mapper.record(from: existing)
+            let currentRecord = try mapper.record(from: persisted)
+            #expect(oldRecord.recordRevision != currentRecord.recordRevision, Comment(rawValue: fieldCase.name))
+            let json = try await xrayJSON(
+                record: currentRecord,
+                credentialStore: credentialStore
+            )
+            if let marker {
+                #expect(
+                    try xrayJSON(json, containsSemanticMarker: marker),
+                    Comment(rawValue: fieldCase.name)
+                )
+            }
+        case .builderRejected, .mapperRejected, .runtimeUnsupported:
+            #expect(change.kind == .invalid, Comment(rawValue: fieldCase.name))
+            #expect(change.isSelected == false, Comment(rawValue: fieldCase.name))
+            #expect(prepared.runtimeCapability.isReady == false, Comment(rawValue: fieldCase.name))
+
+            await viewModel.applySubscriptionUpdate()
+
+            let persisted = try #require(try await profileRepository.profiles().first)
+            #expect(viewModel.subscriptionRefreshState == .completed, Comment(rawValue: fieldCase.name))
+            #expect(persisted.id == existing.id, Comment(rawValue: fieldCase.name))
+            #expect(
+                ProviderManagedProfileSnapshot(persisted) == ProviderManagedProfileSnapshot(existing),
+                Comment(rawValue: fieldCase.name)
+            )
+            #expect(persisted.credentialReference == oldReference, Comment(rawValue: fieldCase.name))
+            #expect(try await credentialStore.secret(for: oldReference) != nil, Comment(rawValue: fieldCase.name))
+            #expect(
+                await credentialStore.activeReferenceCount == activeReferencesBeforeRefresh,
+                Comment(rawValue: fieldCase.name)
+            )
+        }
+    }
+
+    @Test
+    @MainActor
+    func providerRefreshPreservesUserManagedProfileState() async throws {
+        let credentialStore = RecordingCredentialStore()
+        let profileRepository = InMemoryVPNProfileRepository()
+        let subscriptionRepository = InMemorySubscriptionRepository()
+        let subscriptionReference = try await credentialStore.store(
+            "https://subscription.example.invalid/list",
+            label: "Subscription URL"
+        )
+        var subscription = makeSubscription()
+        subscription.credentialReference = subscriptionReference
+        let credential = "11111111-1111-4111-8111-111111111111"
+        let oldURI = "vless://\(credential)@local-state.example.invalid:443?type=tcp&security=tls&sni=local-state.example.invalid&encryption=none#Provider%20Name"
+        let currentURI = "vless://\(credential)@local-state.example.invalid:8443?type=tcp&security=tls&sni=local-state.example.invalid&encryption=none#Renamed%20By%20Provider"
+        var existing = try await makeSubscriptionProfile(
+            uri: oldURI,
+            subscriptionID: subscription.id,
+            credentialStore: credentialStore
+        )
+        existing.name = "Local Name"
+        existing.customDisplayName = "Local Name"
+        existing.isFavorite = true
+        existing.localNotes = "Local notes"
+        existing.routingSettings = VPNRoutingSettings(
+            routeAllTraffic: false,
+            dnsServers: ["192.0.2.53"],
+            excludedRoutes: ["198.51.100.0/24"]
+        )
+        try await profileRepository.save(existing)
+        try await subscriptionRepository.save(subscription)
+        let viewModel = makeCredentialRefreshViewModel(
+            profileRepository: profileRepository,
+            subscriptionRepository: subscriptionRepository,
+            credentialStore: credentialStore,
+            runtimeSynchronizer: nil,
+            refreshedURI: currentURI
+        )
+
+        await viewModel.loadInitialData()
+        await viewModel.refreshSubscription(subscription)
+        #expect(viewModel.subscriptionUpdatePlan?.changes.first?.kind == .updated)
+        await viewModel.applySubscriptionUpdate()
+
+        let persisted = try #require(try await profileRepository.profiles().first)
+        #expect(persisted.id == existing.id)
+        #expect(persisted.name == "Local Name")
+        #expect(persisted.customDisplayName == "Local Name")
+        #expect(persisted.isFavorite == true)
+        #expect(persisted.localNotes == "Local notes")
+        #expect(persisted.routingSettings == existing.routingSettings)
+        #expect(persisted.port == 8443)
+    }
+
+    @Test
     func removedProviderProfileClassifiedAsMissing() {
         let planner = DefaultSubscriptionUpdatePlanner()
         let subscription = makeSubscription()
@@ -362,12 +702,12 @@ struct VPNTests {
     @Test
     @MainActor
     func subscriptionPreviewAndSaveCreatesProfiles() async {
-        let credentialStore = InMemoryCredentialStore()
+        let credentialStore = RecordingCredentialStore()
         let viewModel = VPNDashboardViewModel(
             profileRepository: InMemoryVPNProfileRepository(),
             subscriptionRepository: InMemorySubscriptionRepository(),
             subscriptionUpdater: URLSessionSubscriptionUpdater(
-                client: StubSubscriptionClient(result: .success(Data("trojan://sample-password@sub.example.invalid:443#Sub".utf8))),
+                client: StubSubscriptionClient(result: .success(Data("trojan://sample-password@sub.example.invalid:443?security=tls&sni=sub.example.invalid#Sub".utf8))),
                 credentialStore: credentialStore
             ),
             credentialStore: credentialStore,
@@ -388,12 +728,12 @@ struct VPNTests {
     func repeatedRefreshDoesNotCreateDuplicates() async {
         let repository = InMemoryVPNProfileRepository()
         let subscriptionRepository = InMemorySubscriptionRepository()
-        let credentialStore = InMemoryCredentialStore()
+        let credentialStore = RecordingCredentialStore()
         let viewModel = VPNDashboardViewModel(
             profileRepository: repository,
             subscriptionRepository: subscriptionRepository,
             subscriptionUpdater: URLSessionSubscriptionUpdater(
-                client: StubSubscriptionClient(result: .success(Data("vless://sample-user-id@dup.example.invalid:443#Dup".utf8))),
+                client: StubSubscriptionClient(result: .success(Data("vless://sample-user-id@dup.example.invalid:443?type=tcp&security=tls&sni=dup.example.invalid&encryption=none#Dup".utf8))),
                 credentialStore: credentialStore
             ),
             credentialStore: credentialStore,
@@ -409,6 +749,176 @@ struct VPNTests {
         await viewModel.applySubscriptionUpdate()
 
         #expect((try? await repository.profiles().count) == 1)
+    }
+
+    @Test
+    @MainActor
+    func vlessCredentialOnlyRefreshAdoptsCommittedCredentialInXray() async throws {
+        try await assertPrimaryCredentialRefresh(
+            protocolUnderTest: .vless,
+            oldCredential: "00000000-0000-4000-8000-000000000001",
+            currentCredential: "00000000-0000-4000-8000-000000000002"
+        )
+    }
+
+    @Test
+    @MainActor
+    func identicalVLESSCredentialRefreshIsSemanticNoOp() async throws {
+        try await assertIdenticalPrimaryCredentialRefresh(
+            protocolUnderTest: .vless,
+            credential: "00000000-0000-4000-8000-000000000003"
+        )
+    }
+
+    @Test
+    @MainActor
+    func vmessCredentialOnlyRefreshAdoptsCommittedCredentialInXray() async throws {
+        try await assertPrimaryCredentialRefresh(
+            protocolUnderTest: .vmess,
+            oldCredential: "10000000-0000-4000-8000-000000000001",
+            currentCredential: "10000000-0000-4000-8000-000000000002"
+        )
+    }
+
+    @Test
+    @MainActor
+    func identicalVMessCredentialRefreshIsSemanticNoOp() async throws {
+        try await assertIdenticalPrimaryCredentialRefresh(
+            protocolUnderTest: .vmess,
+            credential: "10000000-0000-4000-8000-000000000003"
+        )
+    }
+
+    @Test
+    @MainActor
+    func trojanCredentialOnlyRefreshAdoptsCommittedCredentialInXray() async throws {
+        try await assertPrimaryCredentialRefresh(
+            protocolUnderTest: .trojan,
+            oldCredential: "test-old-trojan-password",
+            currentCredential: "test-current-trojan-password"
+        )
+    }
+
+    @Test
+    @MainActor
+    func identicalTrojanCredentialRefreshIsSemanticNoOp() async throws {
+        try await assertIdenticalPrimaryCredentialRefresh(
+            protocolUnderTest: .trojan,
+            credential: "test-same-trojan-password"
+        )
+    }
+
+    @Test
+    @MainActor
+    func shadowsocksCredentialOnlyRefreshAdoptsCommittedCredentialInXray() async throws {
+        try await assertPrimaryCredentialRefresh(
+            protocolUnderTest: .shadowsocks,
+            oldCredential: "test-old-shadowsocks-password",
+            currentCredential: "test-current-shadowsocks-password"
+        )
+    }
+
+    @Test
+    @MainActor
+    func identicalShadowsocksCredentialRefreshIsSemanticNoOp() async throws {
+        try await assertIdenticalPrimaryCredentialRefresh(
+            protocolUnderTest: .shadowsocks,
+            credential: "test-same-shadowsocks-password"
+        )
+    }
+
+    @Test
+    @MainActor
+    func tuicUserCredentialRefreshIsRejectedBeforeAdoption() async throws {
+        try await assertPrimaryCredentialRefresh(
+            protocolUnderTest: .tuic,
+            oldCredential: "test-old-tuic-user-credential",
+            currentCredential: "test-current-tuic-user-credential"
+        )
+    }
+
+    @Test
+    @MainActor
+    func identicalTUICUserCredentialRefreshIsRejectedWithoutOrphan() async throws {
+        try await assertIdenticalPrimaryCredentialRefresh(
+            protocolUnderTest: .tuic,
+            credential: "test-same-tuic-user-credential"
+        )
+    }
+
+    @Test(arguments: ["password", "token", "privateKey"])
+    @MainActor
+    func tuicQueryCredentialRefreshIsRejectedBeforeAdoption(queryName: String) async throws {
+        let oldCredential = "test-old-tuic-query-credential"
+        let currentCredential = "test-current-tuic-query-credential"
+        try await assertPrimaryCredentialRefresh(
+            protocolUnderTest: .tuic,
+            oldCredential: oldCredential,
+            currentCredential: currentCredential,
+            oldURI: tuicQueryCredentialURI(queryName: queryName, credential: oldCredential),
+            currentURI: tuicQueryCredentialURI(queryName: queryName, credential: currentCredential)
+        )
+    }
+
+    @Test(arguments: ["password", "token", "privateKey"])
+    @MainActor
+    func identicalTUICQueryCredentialRefreshIsRejectedWithoutOrphan(queryName: String) async throws {
+        let credential = "test-same-tuic-query-credential"
+        let uri = tuicQueryCredentialURI(queryName: queryName, credential: credential)
+        try await assertIdenticalPrimaryCredentialRefresh(
+            protocolUnderTest: .tuic,
+            credential: credential,
+            oldURI: uri,
+            currentURI: uri
+        )
+    }
+
+    @Test
+    func subscriptionPlannerObservesSupportedSecondaryCredentialSlotsAndRejectsUnsupportedProtocols() {
+        let subscription = makeSubscription()
+        let merger = DefaultSubscriptionMerger()
+        let planner = DefaultSubscriptionUpdatePlanner()
+        let secondarySlots = VPNProfileCredentialSlot.allCases.filter { $0 != .primary }
+
+        #expect(Set(secondarySlots) == Set([
+            .tlsPublicKey,
+            .wireGuardPeerPublicKey,
+            .wireGuardPresharedKey,
+            .hysteria2ObfsPassword
+        ]))
+
+        for slot in secondarySlots {
+            let existing = merger.makeSubscriptionProfile(
+                makeProfile(for: slot, reference: "keychain://test.credentials/secondary-old"),
+                subscriptionID: subscription.id,
+                now: Date(timeIntervalSince1970: 1_800_000_000)
+            )
+            var changed = existing
+            changed.setCredentialReference("keychain://test.credentials/secondary-current", for: slot)
+
+            let changedPlan = planner.planUpdate(
+                subscription: subscription,
+                incoming: [changed],
+                existing: [existing]
+            )
+            let identicalPlan = planner.planUpdate(
+                subscription: subscription,
+                incoming: [existing],
+                existing: [existing]
+            )
+
+            switch slot {
+            case .tlsPublicKey, .wireGuardPeerPublicKey, .wireGuardPresharedKey:
+                #expect(changedPlan.changes.first?.kind == .invalid, "Changed unsupported slot: \(slot)")
+                #expect(identicalPlan.changes.first?.kind == .invalid, "Identical unsupported slot: \(slot)")
+            case .hysteria2ObfsPassword:
+                #expect(changedPlan.changes.first?.kind == .updated, "Changed slot: \(slot)")
+                #expect(identicalPlan.changes.first?.kind == .unchanged, "Identical slot: \(slot)")
+            case .primary:
+                Issue.record("Primary credential must not appear in the secondary-slot matrix")
+            }
+            #expect(merger.stableIdentity(for: changed) == merger.stableIdentity(for: existing))
+        }
     }
 
     @Test
@@ -539,6 +1049,157 @@ struct VPNTests {
         #expect(persistedProfile.updatedAt == committedProfile.updatedAt)
         #expect(persistedSecret == unchangedAuth)
         #expect(activeReferenceCountAfterApply == activeReferenceCountBeforeRefresh)
+    }
+
+    @Test
+    @MainActor
+    func hysteriaObfsPasswordOnlyRefreshAdoptsCommittedCredentialInXray() async throws {
+        let auth = "test-stable-hysteria-auth"
+        let oldObfsPassword = "test-old-hysteria-obfs-password"
+        let currentObfsPassword = "test-current-hysteria-obfs-password"
+        let credentialStore = RecordingCredentialStore()
+        let profileRepository = InMemoryVPNProfileRepository()
+        let subscriptionRepository = InMemorySubscriptionRepository()
+        let subscriptionReference = try await credentialStore.store(
+            "https://subscription.example.invalid/list",
+            label: "Subscription URL"
+        )
+        var subscription = makeSubscription()
+        subscription.credentialReference = subscriptionReference
+        let oldProfile = try await makeHysteriaSubscriptionProfile(
+            auth: auth,
+            obfsPassword: oldObfsPassword,
+            subscriptionID: subscription.id,
+            credentialStore: credentialStore
+        )
+        try await profileRepository.save(oldProfile)
+        try await subscriptionRepository.save(subscription)
+        let committedOldProfile = try #require(try await profileRepository.profiles().first)
+        let primaryReference = try #require(committedOldProfile.credentialReference)
+        let oldObfsReference = try hysteriaObfsPasswordReference(from: committedOldProfile)
+        let runtimeStore = RefreshRuntimeProfileStore()
+        let runtimeSynchronizer = RuntimeProfileSynchronizer(
+            profileRepository: profileRepository,
+            store: runtimeStore,
+            credentialStore: credentialStore
+        )
+        _ = try await runtimeSynchronizer.profileSaved(committedOldProfile)
+        let oldRuntimeRecord = try await runtimeStore.read(profileID: committedOldProfile.id)
+        let viewModel = makeSubscriptionRefreshViewModel(
+            profileRepository: profileRepository,
+            subscriptionRepository: subscriptionRepository,
+            credentialStore: credentialStore,
+            runtimeSynchronizer: runtimeSynchronizer,
+            refreshedAuth: auth,
+            refreshedObfsPassword: currentObfsPassword
+        )
+
+        await viewModel.loadInitialData()
+        await viewModel.refreshSubscription(subscription)
+
+        let change = try #require(viewModel.subscriptionUpdatePlan?.changes.first)
+        let preparedProfile = try #require(change.incomingProfile)
+        let preparedObfsReference = try hysteriaObfsPasswordReference(from: preparedProfile)
+        #expect(change.kind == .updated)
+        #expect(preparedProfile.credentialReference == primaryReference)
+        #expect(preparedObfsReference != oldObfsReference)
+
+        await viewModel.applySubscriptionUpdate()
+
+        let persistedProfile = try #require(try await profileRepository.profiles().first)
+        let currentObfsReference = try hysteriaObfsPasswordReference(from: persistedProfile)
+        let persistedAuth = try await credentialStore.secret(for: primaryReference)
+        let currentObfsSecret = try await credentialStore.secret(for: currentObfsReference)
+        let supersededObfsSecret = try await credentialStore.secret(for: oldObfsReference)
+        #expect(viewModel.subscriptionRefreshState == .completed)
+        #expect(persistedProfile.credentialReference == primaryReference)
+        #expect(currentObfsReference == preparedObfsReference)
+        #expect(persistedAuth == auth)
+        #expect(currentObfsSecret == currentObfsPassword)
+        #expect(supersededObfsSecret == nil)
+        #expect(await credentialStore.activeReferenceCount == 3)
+
+        let runtimeRecord = try await runtimeStore.read(profileID: persistedProfile.id)
+        #expect(runtimeRecord.credentialReference == primaryReference)
+        #expect(runtimeRecord.hysteria2?.obfsPasswordReference == currentObfsReference)
+        #expect(runtimeRecord.recordRevision != oldRuntimeRecord.recordRevision)
+        let providerConfiguration = try RuntimeProviderConfiguration(
+            profileID: runtimeRecord.profileID,
+            sharedRecordRevision: runtimeRecord.recordRevision
+        )
+        let resolved = try await RuntimeConfigurationLoader(
+            store: runtimeStore,
+            credentialResolver: CredentialStoreRuntimeCredentialResolver(credentialStore: credentialStore)
+        ).load(providerConfiguration: providerConfiguration.propertyList)
+        let json = try XrayConfigurationBuilder()
+            .build(from: resolved, options: XrayBuildOptions())
+            .withJSONString { $0 }
+        #expect(try hysteriaObfsPassword(fromXrayJSON: json) == currentObfsPassword)
+    }
+
+    @Test
+    @MainActor
+    func identicalHysteriaObfsPasswordRefreshIsSemanticNoOp() async throws {
+        let auth = "test-stable-hysteria-auth"
+        let obfsPassword = "test-same-hysteria-obfs-password"
+        let credentialStore = RecordingCredentialStore()
+        let profileRepository = InMemoryVPNProfileRepository()
+        let subscriptionRepository = InMemorySubscriptionRepository()
+        let subscriptionReference = try await credentialStore.store(
+            "https://subscription.example.invalid/list",
+            label: "Subscription URL"
+        )
+        var subscription = makeSubscription()
+        subscription.credentialReference = subscriptionReference
+        let profile = try await makeHysteriaSubscriptionProfile(
+            auth: auth,
+            obfsPassword: obfsPassword,
+            subscriptionID: subscription.id,
+            credentialStore: credentialStore
+        )
+        try await profileRepository.save(profile)
+        try await subscriptionRepository.save(subscription)
+        let committedProfile = try #require(try await profileRepository.profiles().first)
+        let committedPrimaryReference = try #require(committedProfile.credentialReference)
+        let committedObfsReference = try hysteriaObfsPasswordReference(from: committedProfile)
+        let activeReferenceCountBeforeRefresh = await credentialStore.activeReferenceCount
+        let runtimeStore = RefreshRuntimeProfileStore()
+        let runtimeSynchronizer = RuntimeProfileSynchronizer(
+            profileRepository: profileRepository,
+            store: runtimeStore,
+            credentialStore: credentialStore
+        )
+        _ = try await runtimeSynchronizer.profileSaved(committedProfile)
+        let committedRuntimeRecord = try await runtimeStore.read(profileID: committedProfile.id)
+        let viewModel = makeSubscriptionRefreshViewModel(
+            profileRepository: profileRepository,
+            subscriptionRepository: subscriptionRepository,
+            credentialStore: credentialStore,
+            runtimeSynchronizer: runtimeSynchronizer,
+            refreshedAuth: auth,
+            refreshedObfsPassword: obfsPassword
+        )
+
+        await viewModel.loadInitialData()
+        await viewModel.refreshSubscription(subscription)
+
+        let change = try #require(viewModel.subscriptionUpdatePlan?.changes.first)
+        let incomingProfile = try #require(change.incomingProfile)
+        #expect(change.kind == .unchanged)
+        #expect(incomingProfile.credentialReference == committedPrimaryReference)
+        #expect(try hysteriaObfsPasswordReference(from: incomingProfile) == committedObfsReference)
+        #expect(await credentialStore.activeReferenceCount == activeReferenceCountBeforeRefresh)
+
+        await viewModel.applySubscriptionUpdate()
+
+        let persistedProfile = try #require(try await profileRepository.profiles().first)
+        let persistedRuntimeRecord = try await runtimeStore.read(profileID: persistedProfile.id)
+        #expect(persistedProfile.credentialReference == committedPrimaryReference)
+        #expect(try hysteriaObfsPasswordReference(from: persistedProfile) == committedObfsReference)
+        #expect(persistedProfile.updatedAt == committedProfile.updatedAt)
+        #expect(persistedRuntimeRecord.recordRevision == committedRuntimeRecord.recordRevision)
+        #expect(try await credentialStore.secret(for: committedObfsReference) == obfsPassword)
+        #expect(await credentialStore.activeReferenceCount == activeReferenceCountBeforeRefresh)
     }
 
     @Test
@@ -933,6 +1594,277 @@ struct VPNTests {
             return
         }
         #expect(profile.protocolType == .hysteria2)
+    }
+
+    @Test
+    @MainActor
+    func outlineSingleReviewSavesExactRoutedResult() async throws {
+        let credential = "test-outline-review-password"
+        let credentialStore = RecordingCredentialStore()
+        let profileRepository = InMemoryVPNProfileRepository()
+        let activeProfileStore = InMemoryActiveProfileStore()
+        let viewModel = VPNDashboardViewModel(
+            profileRepository: profileRepository,
+            subscriptionRepository: InMemorySubscriptionRepository(),
+            credentialStore: credentialStore,
+            activeProfileStore: activeProfileStore
+        )
+        let userInfo = Data("aes-256-gcm:\(credential)".utf8).base64EncodedString()
+        let route = try await viewModel.routeImportPayload(
+            text: "ss://\(userInfo)@outline.example.invalid:443?outline=1#Outline",
+            title: "Paste"
+        )
+
+        guard case .single(let reviewedResult) = route,
+              case .profile(let reviewedProfile) = reviewedResult.kind else {
+            Issue.record("Expected a single Shadowsocks profile review")
+            return
+        }
+        let parserReference = try #require(reviewedProfile.credentialReference)
+        #expect(reviewedProfile.isComplete)
+        #expect(reviewedProfile.runtimeCapability == .ready)
+        #expect(reviewedProfile.metadata["outline"] == "1")
+        #expect(viewModel.importResult == nil)
+
+        let didSave = await viewModel.saveImportResultAndSelect(reviewedResult)
+
+        let persistedProfile = try #require((try await profileRepository.profiles()).first)
+        #expect(didSave)
+        #expect(persistedProfile.id == reviewedProfile.id)
+        #expect(persistedProfile.credentialReference == parserReference)
+        #expect(try await credentialStore.secret(for: parserReference) == credential)
+        #expect(await credentialStore.storeCount == 1)
+        #expect(viewModel.activeProfileID == reviewedProfile.id)
+        #expect(await activeProfileStore.activeProfileID() == reviewedProfile.id)
+
+        let runtimeRecord = try SharedRuntimeProfileMapper().record(from: persistedProfile)
+        #expect(runtimeRecord.shadowsocks?.isOutlineStaticKey == true)
+        let json = try await xrayJSON(record: runtimeRecord, credentialStore: credentialStore)
+        let object = try #require(JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any])
+        let outbounds = try #require(object["outbounds"] as? [[String: Any]])
+        let outbound = try #require(outbounds.first)
+        let settings = try #require(outbound["settings"] as? [String: Any])
+        let servers = try #require(settings["servers"] as? [[String: Any]])
+        let server = try #require(servers.first)
+        let streamSettings = try #require(outbound["streamSettings"] as? [String: Any])
+        #expect(outbound["protocol"] as? String == "shadowsocks")
+        #expect(server["method"] as? String == "aes-256-gcm")
+        #expect(server["password"] as? String == credential)
+        #expect(streamSettings["network"] as? String == "tcp")
+        #expect(streamSettings["security"] as? String == "none")
+    }
+
+    @Test
+    @MainActor
+    func unsupportedShadowsocksPluginIsRejectedBeforeSaveAndPreparedCredentialIsCompensated() async throws {
+        let credential = "test-plugin-review-password"
+        let hiddenPluginOption = "test-hidden-plugin-option"
+        let credentialStore = RecordingCredentialStore()
+        let profileRepository = InMemoryVPNProfileRepository()
+        let viewModel = VPNDashboardViewModel(
+            profileRepository: profileRepository,
+            subscriptionRepository: InMemorySubscriptionRepository(),
+            credentialStore: credentialStore,
+            activeProfileStore: InMemoryActiveProfileStore()
+        )
+        let userInfo = Data("aes-256-gcm:\(credential)".utf8).base64EncodedString()
+        let plugin = "v2ray-plugin;obfs=http;obfs-host=\(hiddenPluginOption)"
+        var components = URLComponents()
+        components.scheme = "ss"
+        components.user = userInfo
+        components.host = "plugin-outline.example.invalid"
+        components.port = 443
+        components.queryItems = [
+            URLQueryItem(name: "outline", value: "1"),
+            URLQueryItem(name: "plugin", value: plugin)
+        ]
+        components.fragment = "Unsupported plugin"
+        let uri = try #require(components.string)
+
+        let route = try await viewModel.routeImportPayload(text: uri, title: "Paste")
+        guard case .single(let reviewedResult) = route,
+              case .profile(let reviewedProfile) = reviewedResult.kind else {
+            Issue.record("Expected a single Shadowsocks profile review")
+            return
+        }
+        let preparedReference = try #require(reviewedProfile.credentialReference)
+        let status = reviewedProfile.runtimeCapability.statusText
+        #expect(reviewedProfile.isComplete)
+        #expect(reviewedProfile.runtimeCapability.isReady == false)
+        #expect(status.contains("v2ray-plugin"))
+        #expect(status.contains(hiddenPluginOption) == false)
+
+        let didSave = await viewModel.saveImportResultAndSelect(reviewedResult)
+
+        #expect(didSave == false)
+        #expect((try await profileRepository.profiles()).isEmpty)
+        #expect(try await credentialStore.secret(for: preparedReference) == nil)
+        #expect(await credentialStore.activeReferenceCount == 0)
+        #expect(await credentialStore.storeCount == 1)
+    }
+
+    @Test
+    @MainActor
+    func abandoningSingleReviewDeletesEveryPreparedCredentialSlot() async throws {
+        let credentialStore = RecordingCredentialStore()
+        let profileRepository = InMemoryVPNProfileRepository()
+        let viewModel = VPNDashboardViewModel(
+            profileRepository: profileRepository,
+            subscriptionRepository: InMemorySubscriptionRepository(),
+            credentialStore: credentialStore,
+            activeProfileStore: InMemoryActiveProfileStore()
+        )
+        let route = try await viewModel.routeImportPayload(
+            text: "hy2://test-review-auth@review-hy2.example.invalid:443?obfs=salamander&obfs-password=test-review-obfs#Review",
+            title: "Paste"
+        )
+        guard case .single(let reviewedResult) = route,
+              case .profile(let reviewedProfile) = reviewedResult.kind else {
+            Issue.record("Expected a single Hysteria 2 profile review")
+            return
+        }
+        let preparedReferences = reviewedProfile.credentialReferences
+        #expect(preparedReferences.count == 2)
+
+        let didDiscard = await viewModel.discardImportResult(reviewedResult)
+
+        #expect(didDiscard)
+        #expect((try await profileRepository.profiles()).isEmpty)
+        #expect(await credentialStore.activeReferenceCount == 0)
+        for reference in preparedReferences {
+            #expect(try await credentialStore.secret(for: reference) == nil)
+        }
+    }
+
+    @Test
+    @MainActor
+    func supersededSingleImportRouteCompensatesPreparedCredential() async throws {
+        let credentialStore = RecordingCredentialStore()
+        let viewModel = VPNDashboardViewModel(
+            profileRepository: InMemoryVPNProfileRepository(),
+            subscriptionRepository: InMemorySubscriptionRepository(),
+            credentialStore: credentialStore,
+            activeProfileStore: InMemoryActiveProfileStore()
+        )
+        let userInfo = Data("aes-256-gcm:test-superseded-outline-password".utf8).base64EncodedString()
+        let route = try await viewModel.routeImportPayload(
+            text: "ss://\(userInfo)@superseded-outline.example.invalid:443#Superseded",
+            title: "Paste"
+        )
+        guard case .single(let reviewedResult) = route,
+              case .profile(let reviewedProfile) = reviewedResult.kind else {
+            Issue.record("Expected a single Shadowsocks profile review")
+            return
+        }
+        let preparedReference = try #require(reviewedProfile.credentialReference)
+
+        let didDiscard = await viewModel.discardImportRoute(route)
+
+        #expect(didDiscard)
+        #expect(try await credentialStore.secret(for: preparedReference) == nil)
+        #expect(await credentialStore.activeReferenceCount == 0)
+    }
+
+    @Test
+    @MainActor
+    func failedOutlineSingleReviewSaveCompensatesPreparedCredential() async throws {
+        let credentialStore = RecordingCredentialStore()
+        let activeProfileStore = InMemoryActiveProfileStore()
+        let viewModel = VPNDashboardViewModel(
+            profileRepository: FailingProfileRepository(),
+            subscriptionRepository: InMemorySubscriptionRepository(),
+            credentialStore: credentialStore,
+            activeProfileStore: activeProfileStore
+        )
+        let userInfo = Data("aes-256-gcm:test-outline-failure-password".utf8).base64EncodedString()
+        let route = try await viewModel.routeImportPayload(
+            text: "ss://\(userInfo)@failure-outline.example.invalid:443#Failure",
+            title: "Paste"
+        )
+        guard case .single(let reviewedResult) = route,
+              case .profile(let reviewedProfile) = reviewedResult.kind else {
+            Issue.record("Expected a single Shadowsocks profile review")
+            return
+        }
+        let preparedReference = try #require(reviewedProfile.credentialReference)
+
+        let didSave = await viewModel.saveImportResultAndSelect(reviewedResult)
+
+        #expect(didSave == false)
+        #expect(try await credentialStore.secret(for: preparedReference) == nil)
+        #expect(await credentialStore.activeReferenceCount == 0)
+        #expect(viewModel.activeProfileID == nil)
+        #expect(await activeProfileStore.activeProfileID() == nil)
+    }
+
+    @Test
+    @MainActor
+    func abandoningSingleReviewRetainsCredentialReferencedByCommittedProfile() async throws {
+        let credentialStore = RecordingCredentialStore()
+        let profileRepository = InMemoryVPNProfileRepository()
+        let viewModel = VPNDashboardViewModel(
+            profileRepository: profileRepository,
+            subscriptionRepository: InMemorySubscriptionRepository(),
+            credentialStore: credentialStore,
+            activeProfileStore: InMemoryActiveProfileStore()
+        )
+        let userInfo = Data("aes-256-gcm:test-shared-outline-password".utf8).base64EncodedString()
+        let route = try await viewModel.routeImportPayload(
+            text: "ss://\(userInfo)@shared-outline.example.invalid:443#Shared",
+            title: "Paste"
+        )
+        guard case .single(let reviewedResult) = route,
+              case .profile(let reviewedProfile) = reviewedResult.kind else {
+            Issue.record("Expected a single Shadowsocks profile review")
+            return
+        }
+        let sharedReference = try #require(reviewedProfile.credentialReference)
+        var committedProfile = reviewedProfile
+        committedProfile.id = UUID()
+        committedProfile.name = "Committed owner"
+        try await profileRepository.save(committedProfile)
+
+        let didDiscard = await viewModel.discardImportResult(reviewedResult)
+
+        #expect(didDiscard)
+        #expect(try await credentialStore.secret(for: sharedReference) == "test-shared-outline-password")
+        #expect(await credentialStore.activeReferenceCount == 1)
+        #expect(await credentialStore.deletedReferences.contains(sharedReference) == false)
+    }
+
+    @Test
+    @MainActor
+    func leavingDuringSingleReviewSaveCannotDeleteInFlightCredential() async throws {
+        let credentialStore = RecordingCredentialStore()
+        let profileRepository = SlowSaveProfileRepository()
+        let viewModel = VPNDashboardViewModel(
+            profileRepository: profileRepository,
+            subscriptionRepository: InMemorySubscriptionRepository(),
+            credentialStore: credentialStore,
+            activeProfileStore: InMemoryActiveProfileStore()
+        )
+        let userInfo = Data("aes-256-gcm:test-in-flight-outline-password".utf8).base64EncodedString()
+        let route = try await viewModel.routeImportPayload(
+            text: "ss://\(userInfo)@in-flight-outline.example.invalid:443#InFlight",
+            title: "Paste"
+        )
+        guard case .single(let reviewedResult) = route,
+              case .profile(let reviewedProfile) = reviewedResult.kind else {
+            Issue.record("Expected a single Shadowsocks profile review")
+            return
+        }
+        let preparedReference = try #require(reviewedProfile.credentialReference)
+
+        let saveTask = Task { @MainActor in
+            await viewModel.saveImportResultAndSelect(reviewedResult)
+        }
+        try await Task.sleep(for: .milliseconds(20))
+        _ = await viewModel.discardImportResult(reviewedResult)
+        let didSave = await saveTask.value
+
+        #expect(didSave)
+        #expect(try await credentialStore.secret(for: preparedReference) == "test-in-flight-outline-password")
+        #expect((try await profileRepository.profiles()).first?.credentialReference == preparedReference)
     }
 
     @Test
@@ -1681,6 +2613,46 @@ struct VPNTests {
 
     @Test
     @MainActor
+    func persistedUnsupportedProfileRemainsStoredButCannotBecomeActive() async throws {
+        let manager = RecordingConnectionManager()
+        let repository = InMemoryVPNProfileRepository()
+        let activeStore = InMemoryActiveProfileStore()
+        let profile = VPNProfile.draft(
+            name: "Legacy plugin profile",
+            protocolType: .shadowsocks,
+            serverAddress: "legacy-plugin.example.invalid",
+            port: 8388,
+            credentialReference: "keychain://test.credentials/legacy-plugin",
+            protocolConfiguration: .shadowsocks(ShadowsocksProfileConfiguration(
+                method: "aes-256-gcm",
+                plugin: "v2ray-plugin;obfs=http"
+            )),
+            source: .importedURL
+        )
+        try await repository.save(profile)
+        await activeStore.saveActiveProfileID(profile.id)
+        let viewModel = VPNDashboardViewModel(
+            connectionManager: manager,
+            profileRepository: repository,
+            subscriptionRepository: InMemorySubscriptionRepository(),
+            credentialStore: InMemoryCredentialStore(),
+            activeProfileStore: activeStore
+        )
+
+        await viewModel.loadInitialData()
+        #expect(viewModel.profiles.contains(where: { $0.id == profile.id }))
+        #expect(viewModel.activeProfileID == nil)
+
+        viewModel.selectProfile(profile)
+
+        #expect(viewModel.selectedProfile == nil)
+        #expect(viewModel.errorMessage?.contains("v2ray-plugin") == true)
+        #expect(await manager.connectCount == 0)
+        #expect(await manager.currentState() == .disconnected)
+    }
+
+    @Test
+    @MainActor
     func cancelsStaleAsyncOperation() async throws {
         let provider = SlowServerProvider()
         let viewModel = VPNDashboardViewModel(
@@ -2065,7 +3037,7 @@ struct VPNTests {
         #expect(configuration.protocolType == .vless)
         #expect(configuration.endpoint.host == "profile.example.com")
         #expect(configuration.endpoint.port == 443)
-        #expect(configuration.credentialReference == "test-reference")
+        #expect(configuration.credentialReference == "keychain://test.credentials/test-reference")
     }
 
     @Test
@@ -2267,13 +3239,422 @@ struct VPNTests {
         #expect(viewModel.connectionState == .disconnected)
     }
 
+    private enum PrimaryCredentialProtocol {
+        case vless
+        case vmess
+        case trojan
+        case shadowsocks
+        case tuic
+
+        var supportsSharedRuntime: Bool {
+            self != .tuic
+        }
+    }
+
+    @MainActor
+    private func assertPrimaryCredentialRefresh(
+        protocolUnderTest: PrimaryCredentialProtocol,
+        oldCredential: String,
+        currentCredential: String,
+        oldURI suppliedOldURI: String? = nil,
+        currentURI suppliedCurrentURI: String? = nil
+    ) async throws {
+        let oldURI = suppliedOldURI ?? subscriptionCredentialURI(
+            protocolUnderTest: protocolUnderTest,
+            credential: oldCredential
+        )
+        let currentURI = suppliedCurrentURI ?? subscriptionCredentialURI(
+            protocolUnderTest: protocolUnderTest,
+            credential: currentCredential
+        )
+        let credentialStore = RecordingCredentialStore()
+        let profileRepository = InMemoryVPNProfileRepository()
+        let subscriptionRepository = InMemorySubscriptionRepository()
+        let subscriptionReference = try await credentialStore.store(
+            "https://subscription.example.invalid/list",
+            label: "Subscription URL"
+        )
+        var subscription = makeSubscription()
+        subscription.credentialReference = subscriptionReference
+        let oldProfile = try await makeSubscriptionProfile(
+            uri: oldURI,
+            subscriptionID: subscription.id,
+            credentialStore: credentialStore
+        )
+        try await profileRepository.save(oldProfile)
+        try await subscriptionRepository.save(subscription)
+        let committedOldProfile = try #require(try await profileRepository.profiles().first)
+        let oldReference = try #require(committedOldProfile.credentialReference)
+        let runtimeStore = RefreshRuntimeProfileStore()
+        let runtimeSynchronizer: any RuntimeProfileSynchronizing
+        var oldRuntimeRecord: SharedRuntimeProfileRecord?
+        if protocolUnderTest.supportsSharedRuntime {
+            let synchronizer = RuntimeProfileSynchronizer(
+                profileRepository: profileRepository,
+                store: runtimeStore,
+                credentialStore: credentialStore
+            )
+            _ = try await synchronizer.profileSaved(committedOldProfile)
+            oldRuntimeRecord = try await runtimeStore.read(profileID: committedOldProfile.id)
+            runtimeSynchronizer = synchronizer
+        } else {
+            let synchronizer = ReferenceTrackingRuntimeProfileSynchronizer()
+            _ = try await synchronizer.profileSaved(committedOldProfile)
+            runtimeSynchronizer = synchronizer
+        }
+        let viewModel = makeCredentialRefreshViewModel(
+            profileRepository: profileRepository,
+            subscriptionRepository: subscriptionRepository,
+            credentialStore: credentialStore,
+            runtimeSynchronizer: runtimeSynchronizer,
+            refreshedURI: currentURI
+        )
+
+        await viewModel.loadInitialData()
+        await viewModel.refreshSubscription(subscription)
+
+        let change = try #require(viewModel.subscriptionUpdatePlan?.changes.first)
+        let preparedProfile = try #require(change.incomingProfile)
+        let preparedReference = try #require(preparedProfile.credentialReference)
+        if case .tuic = protocolUnderTest {
+            #expect(change.kind == .invalid)
+            #expect(change.isSelected == false)
+            #expect(preparedProfile.runtimeCapability == .unsupported(.unsupportedProtocol(.tuic)))
+            #expect(preparedReference != oldReference)
+
+            await viewModel.applySubscriptionUpdate()
+
+            let persistedProfile = try #require(try await profileRepository.profiles().first)
+            let runtimeReferences = try await runtimeSynchronizer.credentialReferences()
+            let deletedReferences = await credentialStore.deletedReferences
+            #expect(viewModel.subscriptionRefreshState == .completed)
+            #expect(persistedProfile.id == committedOldProfile.id)
+            #expect(persistedProfile.credentialReference == oldReference)
+            #expect(try await credentialStore.secret(for: oldReference) == oldCredential)
+            #expect(try await credentialStore.secret(for: preparedReference) == nil)
+            #expect(deletedReferences.contains(preparedReference))
+            #expect(deletedReferences.contains(oldReference) == false)
+            #expect(runtimeReferences.contains(oldReference))
+            #expect(await credentialStore.activeReferenceCount == 2)
+            return
+        }
+        #expect(change.kind == .updated)
+        #expect(preparedProfile.protocolType == committedOldProfile.protocolType)
+        #expect(preparedReference != oldReference)
+
+        await viewModel.applySubscriptionUpdate()
+
+        let persistedProfile = try #require(try await profileRepository.profiles().first)
+        let currentReference = try #require(persistedProfile.credentialReference)
+        let runtimeReferences = try await runtimeSynchronizer.credentialReferences()
+        let deletedReferences = await credentialStore.deletedReferences
+        #expect(viewModel.subscriptionRefreshState == .completed)
+        #expect(persistedProfile.id == committedOldProfile.id)
+        #expect(currentReference == preparedReference)
+        #expect(try await credentialStore.secret(for: currentReference) == currentCredential)
+        #expect(try await credentialStore.secret(for: oldReference) == nil)
+        #expect(deletedReferences.contains(oldReference))
+        #expect(runtimeReferences.contains(currentReference))
+        #expect(runtimeReferences.contains(oldReference) == false)
+        #expect(await credentialStore.activeReferenceCount == 2)
+
+        guard protocolUnderTest.supportsSharedRuntime else { return }
+
+        let previousRuntimeRecord = try #require(oldRuntimeRecord)
+        let runtimeRecord = try await runtimeStore.read(profileID: persistedProfile.id)
+        #expect(runtimeRecord.credentialReference == currentReference)
+        #expect(runtimeRecord.recordRevision != previousRuntimeRecord.recordRevision)
+        let providerConfiguration = try RuntimeProviderConfiguration(
+            profileID: runtimeRecord.profileID,
+            sharedRecordRevision: runtimeRecord.recordRevision
+        )
+        let resolved = try await RuntimeConfigurationLoader(
+            store: runtimeStore,
+            credentialResolver: CredentialStoreRuntimeCredentialResolver(credentialStore: credentialStore)
+        ).load(providerConfiguration: providerConfiguration.propertyList)
+        let json = try XrayConfigurationBuilder()
+            .build(from: resolved, options: XrayBuildOptions())
+            .withJSONString { $0 }
+        #expect(try primaryCredential(fromXrayJSON: json, protocolUnderTest: protocolUnderTest) == currentCredential)
+    }
+
+    @MainActor
+    private func assertIdenticalPrimaryCredentialRefresh(
+        protocolUnderTest: PrimaryCredentialProtocol,
+        credential: String,
+        oldURI suppliedOldURI: String? = nil,
+        currentURI suppliedCurrentURI: String? = nil
+    ) async throws {
+        let oldURI = suppliedOldURI ?? subscriptionCredentialURI(
+            protocolUnderTest: protocolUnderTest,
+            credential: credential
+        )
+        let currentURI = suppliedCurrentURI ?? oldURI
+        let credentialStore = RecordingCredentialStore()
+        let profileRepository = InMemoryVPNProfileRepository()
+        let subscriptionRepository = InMemorySubscriptionRepository()
+        let subscriptionReference = try await credentialStore.store(
+            "https://subscription.example.invalid/list",
+            label: "Subscription URL"
+        )
+        var subscription = makeSubscription()
+        subscription.credentialReference = subscriptionReference
+        let profile = try await makeSubscriptionProfile(
+            uri: oldURI,
+            subscriptionID: subscription.id,
+            credentialStore: credentialStore
+        )
+        try await profileRepository.save(profile)
+        try await subscriptionRepository.save(subscription)
+        let committedProfile = try #require(try await profileRepository.profiles().first)
+        let committedReference = try #require(committedProfile.credentialReference)
+        let activeReferenceCountBeforeRefresh = await credentialStore.activeReferenceCount
+        let runtimeStore = RefreshRuntimeProfileStore()
+        let runtimeSynchronizer: any RuntimeProfileSynchronizing
+        var committedRuntimeRecord: SharedRuntimeProfileRecord?
+        if protocolUnderTest.supportsSharedRuntime {
+            let synchronizer = RuntimeProfileSynchronizer(
+                profileRepository: profileRepository,
+                store: runtimeStore,
+                credentialStore: credentialStore
+            )
+            _ = try await synchronizer.profileSaved(committedProfile)
+            committedRuntimeRecord = try await runtimeStore.read(profileID: committedProfile.id)
+            runtimeSynchronizer = synchronizer
+        } else {
+            let synchronizer = ReferenceTrackingRuntimeProfileSynchronizer()
+            _ = try await synchronizer.profileSaved(committedProfile)
+            runtimeSynchronizer = synchronizer
+        }
+        let viewModel = makeCredentialRefreshViewModel(
+            profileRepository: profileRepository,
+            subscriptionRepository: subscriptionRepository,
+            credentialStore: credentialStore,
+            runtimeSynchronizer: runtimeSynchronizer,
+            refreshedURI: currentURI
+        )
+
+        await viewModel.loadInitialData()
+        await viewModel.refreshSubscription(subscription)
+
+        let change = try #require(viewModel.subscriptionUpdatePlan?.changes.first)
+        if case .tuic = protocolUnderTest {
+            #expect(change.kind == .invalid)
+            #expect(change.isSelected == false)
+            #expect(change.incomingProfile?.runtimeCapability == .unsupported(.unsupportedProtocol(.tuic)))
+            #expect(change.incomingProfile?.credentialReference == committedReference)
+            #expect(await credentialStore.activeReferenceCount == activeReferenceCountBeforeRefresh)
+
+            await viewModel.applySubscriptionUpdate()
+
+            let persistedProfile = try #require(try await profileRepository.profiles().first)
+            let runtimeReferences = try await runtimeSynchronizer.credentialReferences()
+            let deletedReferences = await credentialStore.deletedReferences
+            #expect(viewModel.subscriptionRefreshState == .completed)
+            #expect(persistedProfile.credentialReference == committedReference)
+            #expect(persistedProfile.updatedAt == committedProfile.updatedAt)
+            #expect(try await credentialStore.secret(for: committedReference) == credential)
+            #expect(deletedReferences.contains(committedReference) == false)
+            #expect(runtimeReferences.contains(committedReference))
+            #expect(await credentialStore.activeReferenceCount == activeReferenceCountBeforeRefresh)
+            return
+        }
+        #expect(change.kind == .unchanged)
+        #expect(change.incomingProfile?.credentialReference == committedReference)
+        #expect(await credentialStore.activeReferenceCount == activeReferenceCountBeforeRefresh)
+
+        await viewModel.applySubscriptionUpdate()
+
+        let persistedProfile = try #require(try await profileRepository.profiles().first)
+        let runtimeReferences = try await runtimeSynchronizer.credentialReferences()
+        let deletedReferences = await credentialStore.deletedReferences
+        #expect(viewModel.subscriptionRefreshState == .completed)
+        #expect(persistedProfile.credentialReference == committedReference)
+        #expect(persistedProfile.updatedAt == committedProfile.updatedAt)
+        #expect(try await credentialStore.secret(for: committedReference) == credential)
+        #expect(deletedReferences.contains(committedReference) == false)
+        #expect(runtimeReferences.contains(committedReference))
+        #expect(await credentialStore.activeReferenceCount == activeReferenceCountBeforeRefresh)
+
+        guard protocolUnderTest.supportsSharedRuntime else { return }
+
+        let originalRuntimeRecord = try #require(committedRuntimeRecord)
+        let persistedRuntimeRecord = try await runtimeStore.read(profileID: persistedProfile.id)
+        #expect(persistedRuntimeRecord.recordRevision == originalRuntimeRecord.recordRevision)
+        let providerConfiguration = try RuntimeProviderConfiguration(
+            profileID: persistedRuntimeRecord.profileID,
+            sharedRecordRevision: persistedRuntimeRecord.recordRevision
+        )
+        let resolved = try await RuntimeConfigurationLoader(
+            store: runtimeStore,
+            credentialResolver: CredentialStoreRuntimeCredentialResolver(credentialStore: credentialStore)
+        ).load(providerConfiguration: providerConfiguration.propertyList)
+        let json = try XrayConfigurationBuilder()
+            .build(from: resolved, options: XrayBuildOptions())
+            .withJSONString { $0 }
+        #expect(try primaryCredential(fromXrayJSON: json, protocolUnderTest: protocolUnderTest) == credential)
+    }
+
+    private func makeSubscriptionProfile(
+        uri: String,
+        subscriptionID: UUID,
+        credentialStore: any CredentialStoring
+    ) async throws -> VPNProfile {
+        let result = try await VPNLinkParser(credentialStore: credentialStore).parse(uri)
+        let profile = try importedProfile(from: result)
+        return DefaultSubscriptionMerger().makeSubscriptionProfile(
+            profile,
+            subscriptionID: subscriptionID,
+            now: Date(timeIntervalSince1970: 1_800_000_000)
+        )
+    }
+
+    @MainActor
+    private func makeCredentialRefreshViewModel(
+        profileRepository: any VPNProfileRepository,
+        subscriptionRepository: any SubscriptionRepository,
+        credentialStore: RecordingCredentialStore,
+        runtimeSynchronizer: (any RuntimeProfileSynchronizing)?,
+        refreshedURI: String
+    ) -> VPNDashboardViewModel {
+        VPNDashboardViewModel(
+            profileRepository: profileRepository,
+            subscriptionRepository: subscriptionRepository,
+            subscriptionUpdater: URLSessionSubscriptionUpdater(
+                client: StubSubscriptionClient(result: .success(Data(refreshedURI.utf8))),
+                credentialStore: credentialStore
+            ),
+            credentialStore: credentialStore,
+            activeProfileStore: InMemoryActiveProfileStore(),
+            runtimeProfileSynchronizer: runtimeSynchronizer
+        )
+    }
+
+    private func subscriptionCredentialURI(
+        protocolUnderTest: PrimaryCredentialProtocol,
+        credential: String
+    ) -> String {
+        switch protocolUnderTest {
+        case .vless:
+            return "vless://\(credential)@refresh-vless.example.invalid:443?type=tcp&security=tls&sni=refresh-vless.example.invalid&encryption=none#Credential%20Refresh"
+        case .vmess:
+            let payload = """
+            {"ps":"Credential Refresh","add":"refresh-vmess.example.invalid","port":"443","id":"\(credential)","aid":"0","scy":"auto","net":"tcp","type":"none","host":"","path":"","tls":"tls","sni":"refresh-vmess.example.invalid"}
+            """
+            return "vmess://\(Data(payload.utf8).base64EncodedString())"
+        case .trojan:
+            return "trojan://\(credential)@refresh-trojan.example.invalid:443?type=tcp&security=tls&sni=refresh-trojan.example.invalid#Credential%20Refresh"
+        case .shadowsocks:
+            let user = Data("aes-256-gcm:\(credential)".utf8).base64EncodedString()
+            return "ss://\(user)@refresh-shadowsocks.example.invalid:8388#Credential%20Refresh"
+        case .tuic:
+            return "tuic://\(credential)@refresh-tuic.example.invalid:443?congestion=bbr&udpRelayMode=native#Credential%20Refresh"
+        }
+    }
+
+    private func tuicQueryCredentialURI(queryName: String, credential: String) -> String {
+        "tuic://refresh-tuic.example.invalid:443?\(queryName)=\(credential)&congestion=bbr&udpRelayMode=native#Credential%20Refresh"
+    }
+
+    private func primaryCredential(
+        fromXrayJSON json: String,
+        protocolUnderTest: PrimaryCredentialProtocol
+    ) throws -> String {
+        let object = try #require(
+            JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any]
+        )
+        let outbounds = try #require(object["outbounds"] as? [[String: Any]])
+        let outbound = try #require(outbounds.first)
+        let settings = try #require(outbound["settings"] as? [String: Any])
+
+        switch protocolUnderTest {
+        case .vless, .vmess:
+            let servers = try #require(settings["vnext"] as? [[String: Any]])
+            let server = try #require(servers.first)
+            let users = try #require(server["users"] as? [[String: Any]])
+            return try #require(users.first?["id"] as? String)
+        case .trojan, .shadowsocks:
+            let servers = try #require(settings["servers"] as? [[String: Any]])
+            return try #require(servers.first?["password"] as? String)
+        case .tuic:
+            throw TestError.expectedProfile
+        }
+    }
+
+    private func makeProfile(for slot: VPNProfileCredentialSlot, reference: String) -> VPNProfile {
+        switch slot {
+        case .primary:
+            return VPNProfile.draft(
+                name: "Primary",
+                protocolType: .vless,
+                serverAddress: "primary.example.invalid",
+                port: 443,
+                credentialReference: reference,
+                protocolConfiguration: .vless(VLESSProfileConfiguration(flow: nil, encryption: "none")),
+                source: .importedURL
+            )
+        case .tlsPublicKey:
+            return VPNProfile.draft(
+                name: "Legacy Reality Public Key",
+                protocolType: .vless,
+                serverAddress: "reality.example.invalid",
+                port: 443,
+                credentialReference: "keychain://test.credentials/primary",
+                transportSettings: VPNTransportSettings(network: "tcp", security: "reality"),
+                tlsSettings: VPNTLSSettings(
+                    isEnabled: true,
+                    serverName: "reality.example.invalid",
+                    publicKeyReference: reference,
+                    shortID: "abcd"
+                ),
+                protocolConfiguration: .vless(VLESSProfileConfiguration(flow: nil, encryption: "none")),
+                source: .importedURL
+            )
+        case .wireGuardPeerPublicKey, .wireGuardPresharedKey:
+            return VPNProfile.draft(
+                name: "WireGuard",
+                protocolType: .wireGuard,
+                serverAddress: "wireguard.example.invalid",
+                port: 51820,
+                credentialReference: "keychain://test.credentials/wireguard-private-key",
+                protocolConfiguration: .wireGuard(WireGuardProfileConfiguration(
+                    peerPublicKeyReference: slot == .wireGuardPeerPublicKey
+                        ? reference
+                        : "keychain://test.credentials/wireguard-peer-public-key",
+                    presharedKeyReference: slot == .wireGuardPresharedKey
+                        ? reference
+                        : "keychain://test.credentials/wireguard-preshared-key",
+                    allowedIPs: ["0.0.0.0/0"]
+                )),
+                source: .importedURL
+            )
+        case .hysteria2ObfsPassword:
+            return VPNProfile.draft(
+                name: "Hysteria 2",
+                protocolType: .hysteria2,
+                serverAddress: "hysteria.example.invalid",
+                port: 443,
+                credentialReference: "keychain://test.credentials/hysteria-auth",
+                transportSettings: VPNTransportSettings(network: "udp", security: "tls"),
+                tlsSettings: VPNTLSSettings(isEnabled: true, serverName: "hysteria.example.invalid"),
+                protocolConfiguration: .hysteria2(Hysteria2ProfileConfiguration(
+                    obfs: "salamander",
+                    bandwidthHint: nil,
+                    obfsPasswordReference: reference
+                )),
+                source: .importedURL
+            )
+        }
+    }
+
     private func makeHysteriaSubscriptionProfile(
         auth: String,
+        obfsPassword: String = "test-static-obfs",
         subscriptionID: UUID,
         credentialStore: any CredentialStoring
     ) async throws -> VPNProfile {
         let result = try await Hysteria2LinkParser(credentialStore: credentialStore)
-            .parse(hysteriaSubscriptionURI(auth: auth))
+            .parse(hysteriaSubscriptionURI(auth: auth, obfsPassword: obfsPassword))
         let profile = try importedProfile(from: result)
         return DefaultSubscriptionMerger().makeSubscriptionProfile(
             profile,
@@ -2288,14 +3669,18 @@ struct VPNTests {
         subscriptionRepository: any SubscriptionRepository,
         credentialStore: RecordingCredentialStore,
         runtimeSynchronizer: (any RuntimeProfileSynchronizing)?,
-        refreshedAuth: String
+        refreshedAuth: String,
+        refreshedObfsPassword: String = "test-static-obfs"
     ) -> VPNDashboardViewModel {
         VPNDashboardViewModel(
             profileRepository: profileRepository,
             subscriptionRepository: subscriptionRepository,
             subscriptionUpdater: URLSessionSubscriptionUpdater(
                 client: StubSubscriptionClient(
-                    result: .success(Data(hysteriaSubscriptionURI(auth: refreshedAuth).utf8))
+                    result: .success(Data(hysteriaSubscriptionURI(
+                        auth: refreshedAuth,
+                        obfsPassword: refreshedObfsPassword
+                    ).utf8))
                 ),
                 credentialStore: credentialStore
             ),
@@ -2305,8 +3690,11 @@ struct VPNTests {
         )
     }
 
-    private func hysteriaSubscriptionURI(auth: String) -> String {
-        "hy2://\(auth)@refresh-hy2.example.invalid:443?sni=refresh-hy2.example.invalid&obfs=salamander&obfs-password=test-static-obfs#Credential%20Refresh"
+    private func hysteriaSubscriptionURI(
+        auth: String,
+        obfsPassword: String = "test-static-obfs"
+    ) -> String {
+        "hy2://\(auth)@refresh-hy2.example.invalid:443?sni=refresh-hy2.example.invalid&obfs=salamander&obfs-password=\(obfsPassword)#Credential%20Refresh"
     }
 
     private func hysteriaAuth(fromXrayJSON json: String) throws -> String {
@@ -2318,6 +3706,70 @@ struct VPNTests {
         let streamSettings = try #require(outbound["streamSettings"] as? [String: Any])
         let hysteriaSettings = try #require(streamSettings["hysteriaSettings"] as? [String: Any])
         return try #require(hysteriaSettings["auth"] as? String)
+    }
+
+    private func hysteriaObfsPasswordReference(from profile: VPNProfile) throws -> String {
+        guard case .hysteria2(let configuration) = profile.protocolConfiguration else {
+            throw TestError.expectedProfile
+        }
+        return try #require(configuration.obfsPasswordReference)
+    }
+
+    private func hysteriaObfsPassword(fromXrayJSON json: String) throws -> String {
+        let object = try #require(
+            JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any]
+        )
+        let outbounds = try #require(object["outbounds"] as? [[String: Any]])
+        let outbound = try #require(outbounds.first)
+        let streamSettings = try #require(outbound["streamSettings"] as? [String: Any])
+        let finalMask = try #require(streamSettings["finalmask"] as? [String: Any])
+        let udpLayers = try #require(finalMask["udp"] as? [[String: Any]])
+        let layer = try #require(udpLayers.first)
+        let settings = try #require(layer["settings"] as? [String: Any])
+        return try #require(settings["password"] as? String)
+    }
+
+    @MainActor
+    private func xrayJSON(
+        record: SharedRuntimeProfileRecord,
+        credentialStore: any CredentialStoring
+    ) async throws -> String {
+        let runtimeStore = RefreshRuntimeProfileStore()
+        try await runtimeStore.write(record)
+        let providerConfiguration = try RuntimeProviderConfiguration(
+            profileID: record.profileID,
+            sharedRecordRevision: record.recordRevision
+        )
+        let resolved = try await RuntimeConfigurationLoader(
+            store: runtimeStore,
+            credentialResolver: CredentialStoreRuntimeCredentialResolver(credentialStore: credentialStore)
+        ).load(providerConfiguration: providerConfiguration.propertyList)
+        return try XrayConfigurationBuilder()
+            .build(from: resolved, options: XrayBuildOptions())
+            .withJSONString { $0 }
+    }
+
+    private func xrayJSON(_ json: String, containsSemanticMarker marker: String) throws -> Bool {
+        let object = try JSONSerialization.jsonObject(with: Data(json.utf8))
+        return jsonValue(object, containsSemanticMarker: marker)
+    }
+
+    private func jsonValue(_ value: Any, containsSemanticMarker marker: String) -> Bool {
+        if let dictionary = value as? [String: Any] {
+            return dictionary.contains { key, nestedValue in
+                key.contains(marker) || jsonValue(nestedValue, containsSemanticMarker: marker)
+            }
+        }
+        if let array = value as? [Any] {
+            return array.contains { jsonValue($0, containsSemanticMarker: marker) }
+        }
+        if let string = value as? String {
+            return string.contains(marker)
+        }
+        if let number = value as? NSNumber {
+            return number.stringValue.contains(marker)
+        }
+        return false
     }
 
     private func importedProfile(from result: VPNImportResult) throws -> VPNProfile {
@@ -2334,7 +3786,9 @@ struct VPNTests {
             protocolType: .vless,
             serverAddress: "profile.example.com",
             port: 443,
-            credentialReference: "test-reference",
+            credentialReference: "keychain://test.credentials/test-reference",
+            transportSettings: VPNTransportSettings(network: "tcp", security: "tls"),
+            tlsSettings: VPNTLSSettings(isEnabled: true, serverName: "profile.example.com"),
             protocolConfiguration: .vless(VLESSProfileConfiguration(flow: nil, encryption: "none")),
             source: .manual
         )
@@ -2347,6 +3801,8 @@ struct VPNTests {
             serverAddress: "manual.example.invalid",
             port: 443,
             credentialReference: nil,
+            transportSettings: VPNTransportSettings(network: "tcp", security: "tls"),
+            tlsSettings: VPNTLSSettings(isEnabled: true, serverName: "manual.example.invalid"),
             protocolConfiguration: .vless(VLESSProfileConfiguration(flow: nil, encryption: "none")),
             source: .manual
         )
@@ -2380,7 +3836,9 @@ struct VPNTests {
             protocolType: .vless,
             serverAddress: host,
             port: 443,
-            credentialReference: "test-reference",
+            credentialReference: "keychain://test.credentials/test-reference",
+            transportSettings: VPNTransportSettings(network: "tcp", security: "tls"),
+            tlsSettings: VPNTLSSettings(isEnabled: true, serverName: host),
             protocolConfiguration: .vless(VLESSProfileConfiguration(flow: nil, encryption: "none")),
             source: .subscription
         )
@@ -2434,6 +3892,751 @@ struct VPNTests {
         }
 
         return profile.name
+    }
+}
+
+private nonisolated struct ProviderManagedProfileSnapshot: Equatable {
+    let protocolType: VPNProtocol
+    let serverAddress: String
+    let port: Int?
+    let username: String?
+    let transportSettings: VPNTransportSettings
+    let tlsSettings: VPNTLSSettings
+    let protocolConfiguration: VPNProtocolConfiguration
+    let metadata: [String: String]
+
+    init(_ profile: VPNProfile) {
+        protocolType = profile.protocolType
+        serverAddress = profile.serverAddress
+        port = profile.port
+        username = profile.username
+        transportSettings = profile.transportSettings
+        tlsSettings = profile.tlsSettings
+        protocolConfiguration = profile.protocolConfiguration
+        metadata = profile.metadata
+    }
+}
+
+nonisolated enum ProviderFieldRuntimeExpectation: Sendable {
+    case builderSupported(marker: String?)
+    case builderRejected
+    case mapperRejected
+    case runtimeUnsupported
+}
+
+nonisolated struct ProviderManagedNonSecretRefreshCase: Sendable, CustomTestStringConvertible {
+    let name: String
+    let oldURI: String
+    let currentURI: String
+    let runtimeExpectation: ProviderFieldRuntimeExpectation
+
+    var testDescription: String { name }
+
+    static var cases: [ProviderManagedNonSecretRefreshCase] {
+        vlessCases + trojanCases + vmessCases + shadowsocksCases + hysteria2Cases + tuicCases
+    }
+
+    private static var vlessCases: [ProviderManagedNonSecretRefreshCase] {
+        let user = "11111111-1111-4111-8111-111111111111"
+        let host = "vless-field.example.invalid"
+        let tlsQuery = [
+            "type": "tcp",
+            "security": "tls",
+            "sni": "vless-cover.example.invalid",
+            "encryption": "none"
+        ]
+        let xhttpQuery = [
+            "type": "xhttp",
+            "security": "tls",
+            "sni": "vless-cover.example.invalid",
+            "encryption": "none",
+            "path": "/old-path",
+            "host": "old-cdn.example.invalid",
+            "mode": "auto"
+        ]
+        let realityQuery = [
+            "type": "tcp",
+            "security": "reality",
+            "sni": "vless-cover.example.invalid",
+            "encryption": "none",
+            "fp": "chrome",
+            "pbk": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "sid": "abcd",
+            "spx": "/old-spider"
+        ]
+
+        return [
+            endpointCase(
+                name: "VLESS server",
+                scheme: "vless",
+                user: user,
+                oldHost: host,
+                currentHost: "current-vless.example.invalid",
+                oldPort: 443,
+                currentPort: 443,
+                query: tlsQuery,
+                runtime: .builderSupported(marker: "current-vless.example.invalid")
+            ),
+            endpointCase(
+                name: "VLESS port",
+                scheme: "vless",
+                user: user,
+                oldHost: host,
+                currentHost: host,
+                oldPort: 443,
+                currentPort: 8443,
+                query: tlsQuery,
+                runtime: .builderSupported(marker: "8443")
+            ),
+            queryCase(
+                name: "VLESS transport type",
+                scheme: "vless",
+                user: user,
+                host: host,
+                port: 443,
+                baseQuery: xhttpQuery,
+                key: "type",
+                oldValue: "tcp",
+                currentValue: "xhttp",
+                runtime: .builderSupported(marker: "xhttp")
+            ),
+            queryCase(
+                name: "VLESS transport path",
+                scheme: "vless",
+                user: user,
+                host: host,
+                port: 443,
+                baseQuery: xhttpQuery,
+                key: "path",
+                oldValue: "/old-path",
+                currentValue: "/current-path",
+                runtime: .builderSupported(marker: "/current-path")
+            ),
+            queryCase(
+                name: "VLESS transport host",
+                scheme: "vless",
+                user: user,
+                host: host,
+                port: 443,
+                baseQuery: xhttpQuery,
+                key: "host",
+                oldValue: "old-cdn.example.invalid",
+                currentValue: "current-cdn.example.invalid",
+                runtime: .builderSupported(marker: "current-cdn.example.invalid")
+            ),
+            queryCase(
+                name: "VLESS gRPC service name",
+                scheme: "vless",
+                user: user,
+                host: host,
+                port: 443,
+                baseQuery: tlsQuery.merging(["type": "grpc", "serviceName": "old-service"]) { _, current in current },
+                key: "serviceName",
+                oldValue: "old-service",
+                currentValue: "current-service",
+                runtime: .builderSupported(marker: "current-service")
+            ),
+            queryCase(
+                name: "VLESS XHTTP mode",
+                scheme: "vless",
+                user: user,
+                host: host,
+                port: 443,
+                baseQuery: xhttpQuery,
+                key: "mode",
+                oldValue: "auto",
+                currentValue: "stream-one",
+                runtime: .builderSupported(marker: "stream-one")
+            ),
+            queryCase(
+                name: "VLESS security mode",
+                scheme: "vless",
+                user: user,
+                host: host,
+                port: 443,
+                baseQuery: tlsQuery,
+                key: "security",
+                oldValue: "tls",
+                currentValue: "none",
+                runtime: .builderRejected
+            ),
+            queryCase(
+                name: "VLESS TLS SNI",
+                scheme: "vless",
+                user: user,
+                host: host,
+                port: 443,
+                baseQuery: tlsQuery,
+                key: "sni",
+                oldValue: "old-cover.example.invalid",
+                currentValue: "current-cover.example.invalid",
+                runtime: .builderSupported(marker: "current-cover.example.invalid")
+            ),
+            queryCase(
+                name: "VLESS allow insecure",
+                scheme: "vless",
+                user: user,
+                host: host,
+                port: 443,
+                baseQuery: tlsQuery,
+                key: "allowInsecure",
+                oldValue: "0",
+                currentValue: "1",
+                runtime: .builderRejected
+            ),
+            queryCase(
+                name: "VLESS TLS fingerprint",
+                scheme: "vless",
+                user: user,
+                host: host,
+                port: 443,
+                baseQuery: tlsQuery,
+                key: "fp",
+                oldValue: "chrome",
+                currentValue: "firefox",
+                runtime: .builderSupported(marker: "firefox")
+            ),
+            queryCase(
+                name: "VLESS Reality public key",
+                scheme: "vless",
+                user: user,
+                host: host,
+                port: 443,
+                baseQuery: realityQuery,
+                key: "pbk",
+                oldValue: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                currentValue: "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+                runtime: .builderSupported(marker: "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB")
+            ),
+            queryCase(
+                name: "VLESS Reality short ID",
+                scheme: "vless",
+                user: user,
+                host: host,
+                port: 443,
+                baseQuery: realityQuery,
+                key: "sid",
+                oldValue: "abcd",
+                currentValue: "ef01",
+                runtime: .builderSupported(marker: "ef01")
+            ),
+            queryCase(
+                name: "VLESS Reality spider X",
+                scheme: "vless",
+                user: user,
+                host: host,
+                port: 443,
+                baseQuery: realityQuery,
+                key: "spx",
+                oldValue: "/old-spider",
+                currentValue: "/current-spider",
+                runtime: .builderSupported(marker: "/current-spider")
+            ),
+            queryCase(
+                name: "VLESS flow",
+                scheme: "vless",
+                user: user,
+                host: host,
+                port: 443,
+                baseQuery: tlsQuery,
+                key: "flow",
+                oldValue: nil,
+                currentValue: "xtls-rprx-vision",
+                runtime: .builderSupported(marker: "xtls-rprx-vision")
+            ),
+            queryCase(
+                name: "VLESS encryption",
+                scheme: "vless",
+                user: user,
+                host: host,
+                port: 443,
+                baseQuery: tlsQuery,
+                key: "encryption",
+                oldValue: "none",
+                currentValue: "zero",
+                runtime: .builderRejected
+            )
+        ]
+    }
+
+    private static var trojanCases: [ProviderManagedNonSecretRefreshCase] {
+        let user = "test-trojan-password"
+        let host = "trojan-field.example.invalid"
+        let tlsQuery = [
+            "type": "tcp",
+            "security": "tls",
+            "sni": "trojan-cover.example.invalid"
+        ]
+        let websocketQuery = [
+            "type": "ws",
+            "security": "tls",
+            "sni": "trojan-cover.example.invalid",
+            "path": "/old-path",
+            "host": "old-cdn.example.invalid"
+        ]
+        let xhttpQuery = [
+            "type": "xhttp",
+            "security": "tls",
+            "sni": "trojan-cover.example.invalid",
+            "path": "/xhttp",
+            "host": "cdn.example.invalid",
+            "mode": "auto"
+        ]
+        let realityQuery = [
+            "type": "tcp",
+            "security": "reality",
+            "sni": "trojan-cover.example.invalid",
+            "fp": "chrome",
+            "pbk": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "sid": "abcd",
+            "spx": "/old-spider"
+        ]
+
+        return [
+            endpointCase(
+                name: "Trojan server",
+                scheme: "trojan",
+                user: user,
+                oldHost: host,
+                currentHost: "current-trojan.example.invalid",
+                oldPort: 443,
+                currentPort: 443,
+                query: tlsQuery,
+                runtime: .builderSupported(marker: "current-trojan.example.invalid")
+            ),
+            endpointCase(
+                name: "Trojan port",
+                scheme: "trojan",
+                user: user,
+                oldHost: host,
+                currentHost: host,
+                oldPort: 443,
+                currentPort: 8443,
+                query: tlsQuery,
+                runtime: .builderSupported(marker: "8443")
+            ),
+            queryCase(
+                name: "Trojan transport type",
+                scheme: "trojan",
+                user: user,
+                host: host,
+                port: 443,
+                baseQuery: tlsQuery.merging(["serviceName": "stable-service"]) { _, current in current },
+                key: "type",
+                oldValue: "tcp",
+                currentValue: "grpc",
+                runtime: .builderSupported(marker: "stable-service")
+            ),
+            queryCase(
+                name: "Trojan transport path",
+                scheme: "trojan",
+                user: user,
+                host: host,
+                port: 443,
+                baseQuery: websocketQuery,
+                key: "path",
+                oldValue: "/old-path",
+                currentValue: "/current-path",
+                runtime: .builderSupported(marker: "/current-path")
+            ),
+            queryCase(
+                name: "Trojan transport host",
+                scheme: "trojan",
+                user: user,
+                host: host,
+                port: 443,
+                baseQuery: websocketQuery,
+                key: "host",
+                oldValue: "old-cdn.example.invalid",
+                currentValue: "current-cdn.example.invalid",
+                runtime: .builderSupported(marker: "current-cdn.example.invalid")
+            ),
+            queryCase(
+                name: "Trojan gRPC service name",
+                scheme: "trojan",
+                user: user,
+                host: host,
+                port: 443,
+                baseQuery: tlsQuery.merging(["type": "grpc", "serviceName": "old-service"]) { _, current in current },
+                key: "serviceName",
+                oldValue: "old-service",
+                currentValue: "current-service",
+                runtime: .builderSupported(marker: "current-service")
+            ),
+            queryCase(
+                name: "Trojan XHTTP mode",
+                scheme: "trojan",
+                user: user,
+                host: host,
+                port: 443,
+                baseQuery: xhttpQuery,
+                key: "mode",
+                oldValue: "auto",
+                currentValue: "stream-one",
+                runtime: .builderSupported(marker: "stream-one")
+            ),
+            queryCase(
+                name: "Trojan security mode",
+                scheme: "trojan",
+                user: user,
+                host: host,
+                port: 443,
+                baseQuery: tlsQuery,
+                key: "security",
+                oldValue: "tls",
+                currentValue: "reality",
+                runtime: .mapperRejected
+            ),
+            queryCase(
+                name: "Trojan TLS SNI",
+                scheme: "trojan",
+                user: user,
+                host: host,
+                port: 443,
+                baseQuery: tlsQuery,
+                key: "sni",
+                oldValue: "old-cover.example.invalid",
+                currentValue: "current-cover.example.invalid",
+                runtime: .builderSupported(marker: "current-cover.example.invalid")
+            ),
+            queryCase(
+                name: "Trojan allow insecure",
+                scheme: "trojan",
+                user: user,
+                host: host,
+                port: 443,
+                baseQuery: tlsQuery,
+                key: "allowInsecure",
+                oldValue: "0",
+                currentValue: "1",
+                runtime: .builderSupported(marker: "allowInsecure")
+            ),
+            queryCase(
+                name: "Trojan TLS fingerprint",
+                scheme: "trojan",
+                user: user,
+                host: host,
+                port: 443,
+                baseQuery: tlsQuery,
+                key: "fp",
+                oldValue: "chrome",
+                currentValue: "firefox",
+                runtime: .builderSupported(marker: "firefox")
+            ),
+            queryCase(
+                name: "Trojan Reality public key",
+                scheme: "trojan",
+                user: user,
+                host: host,
+                port: 443,
+                baseQuery: realityQuery,
+                key: "pbk",
+                oldValue: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                currentValue: "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+                runtime: .builderSupported(marker: "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB")
+            ),
+            queryCase(
+                name: "Trojan Reality short ID",
+                scheme: "trojan",
+                user: user,
+                host: host,
+                port: 443,
+                baseQuery: realityQuery,
+                key: "sid",
+                oldValue: "abcd",
+                currentValue: "ef01",
+                runtime: .builderSupported(marker: "ef01")
+            ),
+            queryCase(
+                name: "Trojan Reality spider X",
+                scheme: "trojan",
+                user: user,
+                host: host,
+                port: 443,
+                baseQuery: realityQuery,
+                key: "spx",
+                oldValue: "/old-spider",
+                currentValue: "/current-spider",
+                runtime: .builderSupported(marker: "/current-spider")
+            ),
+            queryCase(
+                name: "Trojan ALPN",
+                scheme: "trojan",
+                user: user,
+                host: host,
+                port: 443,
+                baseQuery: tlsQuery,
+                key: "alpn",
+                oldValue: "h2",
+                currentValue: "h2,http/1.1",
+                runtime: .builderSupported(marker: "http/1.1")
+            )
+        ]
+    }
+
+    private static var vmessCases: [ProviderManagedNonSecretRefreshCase] {
+        let base = [
+            "ps": "VMess Field",
+            "add": "vmess-field.example.invalid",
+            "port": "443",
+            "id": "11111111-1111-4111-8111-111111111111",
+            "aid": "0",
+            "scy": "auto",
+            "net": "tcp",
+            "type": "none",
+            "host": "",
+            "path": "",
+            "tls": "tls",
+            "sni": "vmess-cover.example.invalid"
+        ]
+
+        return [
+            vmessCase(name: "VMess server", base: base, key: "add", oldValue: "vmess-field.example.invalid", currentValue: "current-vmess.example.invalid", runtime: .builderSupported(marker: "current-vmess.example.invalid")),
+            vmessCase(name: "VMess port", base: base, key: "port", oldValue: "443", currentValue: "8443", runtime: .builderSupported(marker: "8443")),
+            vmessCase(
+                name: "VMess transport type",
+                base: base.merging(["path": "/ws", "host": "cdn.example.invalid"]) { _, current in current },
+                key: "net",
+                oldValue: "tcp",
+                currentValue: "ws",
+                runtime: .builderSupported(marker: "ws")
+            ),
+            vmessCase(
+                name: "VMess transport path",
+                base: base.merging(["net": "ws", "path": "/old-path", "host": "cdn.example.invalid"]) { _, current in current },
+                key: "path",
+                oldValue: "/old-path",
+                currentValue: "/current-path",
+                runtime: .builderSupported(marker: "/current-path")
+            ),
+            vmessCase(
+                name: "VMess transport host",
+                base: base.merging(["net": "ws", "path": "/ws", "host": "old-cdn.example.invalid"]) { _, current in current },
+                key: "host",
+                oldValue: "old-cdn.example.invalid",
+                currentValue: "current-cdn.example.invalid",
+                runtime: .builderSupported(marker: "current-cdn.example.invalid")
+            ),
+            vmessCase(
+                name: "VMess gRPC service path",
+                base: base.merging(["net": "grpc", "path": "old-service"]) { _, current in current },
+                key: "path",
+                oldValue: "old-service",
+                currentValue: "current-service",
+                runtime: .builderSupported(marker: "current-service")
+            ),
+            vmessCase(
+                name: "VMess TLS mode",
+                base: base,
+                key: "tls",
+                oldValue: "",
+                currentValue: "tls",
+                runtime: .builderSupported(marker: "tls")
+            ),
+            vmessCase(name: "VMess TLS SNI", base: base, key: "sni", oldValue: "old-cover.example.invalid", currentValue: "current-cover.example.invalid", runtime: .builderSupported(marker: "current-cover.example.invalid")),
+            vmessCase(name: "VMess alter ID", base: base, key: "aid", oldValue: "0", currentValue: "1", runtime: .builderSupported(marker: "alterId")),
+            vmessCase(name: "VMess cipher", base: base, key: "scy", oldValue: "auto", currentValue: "aes-128-gcm", runtime: .builderSupported(marker: "aes-128-gcm"))
+        ]
+    }
+
+    private static var shadowsocksCases: [ProviderManagedNonSecretRefreshCase] {
+        let password = "test-shadowsocks-password"
+        let host = "shadowsocks-field.example.invalid"
+        return [
+            ProviderManagedNonSecretRefreshCase(
+                name: "Shadowsocks server",
+                oldURI: shadowsocksURI(method: "aes-256-gcm", password: password, host: host, port: 8388),
+                currentURI: shadowsocksURI(method: "aes-256-gcm", password: password, host: "current-shadowsocks.example.invalid", port: 8388),
+                runtimeExpectation: .builderSupported(marker: "current-shadowsocks.example.invalid")
+            ),
+            ProviderManagedNonSecretRefreshCase(
+                name: "Shadowsocks port",
+                oldURI: shadowsocksURI(method: "aes-256-gcm", password: password, host: host, port: 8388),
+                currentURI: shadowsocksURI(method: "aes-256-gcm", password: password, host: host, port: 8389),
+                runtimeExpectation: .builderSupported(marker: "8389")
+            ),
+            ProviderManagedNonSecretRefreshCase(
+                name: "Shadowsocks method",
+                oldURI: shadowsocksURI(method: "aes-128-gcm", password: password, host: host, port: 8388),
+                currentURI: shadowsocksURI(method: "chacha20-ietf-poly1305", password: password, host: host, port: 8388),
+                runtimeExpectation: .builderSupported(marker: "chacha20-ietf-poly1305")
+            ),
+            ProviderManagedNonSecretRefreshCase(
+                name: "Shadowsocks plugin and options",
+                oldURI: shadowsocksURI(method: "aes-256-gcm", password: password, host: host, port: 8388),
+                currentURI: shadowsocksURI(
+                    method: "aes-256-gcm",
+                    password: password,
+                    host: host,
+                    port: 8388,
+                    query: ["plugin": "v2ray-plugin;tls;host=current-plugin.example.invalid"]
+                ),
+                runtimeExpectation: .mapperRejected
+            ),
+            ProviderManagedNonSecretRefreshCase(
+                name: "Shadowsocks Outline marker",
+                oldURI: shadowsocksURI(method: "aes-256-gcm", password: password, host: host, port: 8388, query: ["outline": "0"]),
+                currentURI: shadowsocksURI(method: "aes-256-gcm", password: password, host: host, port: 8388, query: ["outline": "1"]),
+                runtimeExpectation: .builderSupported(marker: nil)
+            )
+        ]
+    }
+
+    private static var hysteria2Cases: [ProviderManagedNonSecretRefreshCase] {
+        let user = "test-hysteria-auth"
+        let host = "hysteria-field.example.invalid"
+        let base = ["sni": "hysteria-cover.example.invalid"]
+        return [
+            endpointCase(name: "Hysteria2 server", scheme: "hy2", user: user, oldHost: host, currentHost: "current-hysteria.example.invalid", oldPort: 443, currentPort: 443, query: base, runtime: .builderSupported(marker: "current-hysteria.example.invalid")),
+            endpointCase(name: "Hysteria2 port", scheme: "hy2", user: user, oldHost: host, currentHost: host, oldPort: 443, currentPort: 8443, query: base, runtime: .builderSupported(marker: "8443")),
+            queryCase(name: "Hysteria2 TLS SNI", scheme: "hy2", user: user, host: host, port: 443, baseQuery: base, key: "sni", oldValue: "old-cover.example.invalid", currentValue: "current-cover.example.invalid", runtime: .builderSupported(marker: "current-cover.example.invalid")),
+            queryCase(name: "Hysteria2 insecure TLS", scheme: "hy2", user: user, host: host, port: 443, baseQuery: base, key: "insecure", oldValue: "0", currentValue: "1", runtime: .builderSupported(marker: "allowInsecure")),
+            queryCase(
+                name: "Hysteria2 obfuscation type",
+                scheme: "hy2",
+                user: user,
+                host: host,
+                port: 443,
+                baseQuery: base.merging(["obfs-password": "test-static-obfs"]) { _, current in current },
+                key: "obfs",
+                oldValue: nil,
+                currentValue: "salamander",
+                runtime: .builderSupported(marker: "salamander")
+            ),
+            queryCase(name: "Hysteria2 bandwidth hint", scheme: "hy2", user: user, host: host, port: 443, baseQuery: base, key: "bandwidth", oldValue: nil, currentValue: "100mbps", runtime: .builderRejected),
+            queryCase(name: "Hysteria2 certificate pin", scheme: "hy2", user: user, host: host, port: 443, baseQuery: base, key: "pinSHA256", oldValue: nil, currentValue: "test-public-pin", runtime: .mapperRejected),
+            queryCase(name: "Hysteria2 ECH", scheme: "hy2", user: user, host: host, port: 443, baseQuery: base, key: "ech", oldValue: nil, currentValue: "test-public-ech-config", runtime: .mapperRejected),
+            queryCase(name: "Hysteria2 port hopping", scheme: "hy2", user: user, host: host, port: 443, baseQuery: base, key: "mport", oldValue: nil, currentValue: "20000-30000", runtime: .mapperRejected)
+        ]
+    }
+
+    private static var tuicCases: [ProviderManagedNonSecretRefreshCase] {
+        let user = "test-tuic-credential"
+        let host = "tuic-field.example.invalid"
+        let base = [
+            "username": "stable-user",
+            "type": "tcp",
+            "security": "tls",
+            "tls": "1",
+            "sni": "tuic-cover.example.invalid",
+            "congestion": "bbr",
+            "udpRelayMode": "native"
+        ]
+        return [
+            endpointCase(name: "TUIC server", scheme: "tuic", user: user, oldHost: host, currentHost: "current-tuic.example.invalid", oldPort: 443, currentPort: 443, query: base, runtime: .runtimeUnsupported),
+            endpointCase(name: "TUIC port", scheme: "tuic", user: user, oldHost: host, currentHost: host, oldPort: 443, currentPort: 8443, query: base, runtime: .runtimeUnsupported),
+            queryCase(name: "TUIC username", scheme: "tuic", user: user, host: host, port: 443, baseQuery: base, key: "username", oldValue: "old-user", currentValue: "current-user", runtime: .runtimeUnsupported),
+            queryCase(name: "TUIC transport type", scheme: "tuic", user: user, host: host, port: 443, baseQuery: base, key: "type", oldValue: "tcp", currentValue: "udp", runtime: .runtimeUnsupported),
+            queryCase(name: "TUIC security mode", scheme: "tuic", user: user, host: host, port: 443, baseQuery: base, key: "security", oldValue: "tls", currentValue: "none", runtime: .runtimeUnsupported),
+            queryCase(name: "TUIC TLS flag", scheme: "tuic", user: user, host: host, port: 443, baseQuery: base.merging(["security": "none"]) { _, current in current }, key: "tls", oldValue: "0", currentValue: "1", runtime: .runtimeUnsupported),
+            queryCase(name: "TUIC TLS SNI", scheme: "tuic", user: user, host: host, port: 443, baseQuery: base, key: "sni", oldValue: "old-cover.example.invalid", currentValue: "current-cover.example.invalid", runtime: .runtimeUnsupported),
+            queryCase(name: "TUIC allow insecure", scheme: "tuic", user: user, host: host, port: 443, baseQuery: base, key: "allowInsecure", oldValue: "0", currentValue: "1", runtime: .runtimeUnsupported),
+            queryCase(name: "TUIC congestion control", scheme: "tuic", user: user, host: host, port: 443, baseQuery: base, key: "congestion", oldValue: "bbr", currentValue: "cubic", runtime: .runtimeUnsupported),
+            queryCase(name: "TUIC UDP relay mode", scheme: "tuic", user: user, host: host, port: 443, baseQuery: base, key: "udpRelayMode", oldValue: "native", currentValue: "quic", runtime: .runtimeUnsupported)
+        ]
+    }
+
+    private static func endpointCase(
+        name: String,
+        scheme: String,
+        user: String,
+        oldHost: String,
+        currentHost: String,
+        oldPort: Int,
+        currentPort: Int,
+        query: [String: String],
+        runtime: ProviderFieldRuntimeExpectation
+    ) -> ProviderManagedNonSecretRefreshCase {
+        ProviderManagedNonSecretRefreshCase(
+            name: name,
+            oldURI: standardURI(scheme: scheme, user: user, host: oldHost, port: oldPort, query: query),
+            currentURI: standardURI(scheme: scheme, user: user, host: currentHost, port: currentPort, query: query),
+            runtimeExpectation: runtime
+        )
+    }
+
+    private static func queryCase(
+        name: String,
+        scheme: String,
+        user: String,
+        host: String,
+        port: Int,
+        baseQuery: [String: String],
+        key: String,
+        oldValue: String?,
+        currentValue: String?,
+        runtime: ProviderFieldRuntimeExpectation
+    ) -> ProviderManagedNonSecretRefreshCase {
+        var oldQuery = baseQuery
+        var currentQuery = baseQuery
+        oldQuery[key] = oldValue
+        currentQuery[key] = currentValue
+        return ProviderManagedNonSecretRefreshCase(
+            name: name,
+            oldURI: standardURI(scheme: scheme, user: user, host: host, port: port, query: oldQuery),
+            currentURI: standardURI(scheme: scheme, user: user, host: host, port: port, query: currentQuery),
+            runtimeExpectation: runtime
+        )
+    }
+
+    private static func vmessCase(
+        name: String,
+        base: [String: String],
+        key: String,
+        oldValue: String,
+        currentValue: String,
+        runtime: ProviderFieldRuntimeExpectation
+    ) -> ProviderManagedNonSecretRefreshCase {
+        var oldPayload = base
+        var currentPayload = base
+        oldPayload[key] = oldValue
+        currentPayload[key] = currentValue
+        return ProviderManagedNonSecretRefreshCase(
+            name: name,
+            oldURI: vmessURI(payload: oldPayload),
+            currentURI: vmessURI(payload: currentPayload),
+            runtimeExpectation: runtime
+        )
+    }
+
+    private static func standardURI(
+        scheme: String,
+        user: String,
+        host: String,
+        port: Int,
+        query: [String: String]
+    ) -> String {
+        var components = URLComponents()
+        components.scheme = scheme
+        components.user = user
+        components.host = host
+        components.port = port
+        components.queryItems = query.sorted { $0.key < $1.key }.map {
+            URLQueryItem(name: $0.key, value: $0.value)
+        }
+        components.fragment = "Field Refresh"
+        guard let uri = components.string else {
+            preconditionFailure("Invalid provider field test URI")
+        }
+        return uri
+    }
+
+    private static func shadowsocksURI(
+        method: String,
+        password: String,
+        host: String,
+        port: Int,
+        query: [String: String] = [:]
+    ) -> String {
+        let user = Data("\(method):\(password)".utf8).base64EncodedString()
+        return standardURI(scheme: "ss", user: user, host: host, port: port, query: query)
+    }
+
+    private static func vmessURI(payload: [String: String]) -> String {
+        let fields = payload.sorted { $0.key < $1.key }.map { key, value in
+            "\"\(key)\":\"\(value)\""
+        }.joined(separator: ",")
+        return "vmess://\(Data("{\(fields)}".utf8).base64EncodedString())"
     }
 }
 
@@ -2676,6 +4879,28 @@ private actor RefreshRuntimeProfileStore: SharedRuntimeProfileStoring {
 
     func delete(profileID: UUID) async throws {
         storedRecords[profileID] = nil
+    }
+}
+
+private actor ReferenceTrackingRuntimeProfileSynchronizer: RuntimeProfileSynchronizing {
+    private var referencesByProfileID: [UUID: Set<String>] = [:]
+
+    func profileSaved(_ profile: VPNProfile) async throws -> RuntimeProfileSynchronizationSummary {
+        referencesByProfileID[profile.id] = profile.credentialReferences
+        return RuntimeProfileSynchronizationSummary(
+            publishedProfileIDs: [profile.id],
+            omissions: []
+        )
+    }
+
+    func profileDeleted(id: UUID) async throws {
+        referencesByProfileID[id] = nil
+    }
+
+    func credentialReferences() async throws -> Set<String> {
+        referencesByProfileID.values.reduce(into: Set<String>()) { references, profileReferences in
+            references.formUnion(profileReferences)
+        }
     }
 }
 

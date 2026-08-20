@@ -120,9 +120,9 @@ private struct ProfileRow: View {
                         .foregroundStyle(.tint)
                 }
 
-                Text(profile.isComplete ? (profile.isEnabled ? "Enabled" : "Disabled") : "Incomplete")
+                Text(profile.isEnabled ? profile.runtimeCapability.statusText : "Disabled")
                     .font(.caption)
-                    .foregroundStyle(profile.isComplete && profile.isEnabled ? AnyShapeStyle(.secondary) : AnyShapeStyle(.orange))
+                    .foregroundStyle(profile.runtimeCapability.isReady && profile.isEnabled ? AnyShapeStyle(.secondary) : AnyShapeStyle(.orange))
             }
         }
         .padding(.vertical, 4)
@@ -230,7 +230,7 @@ struct SubscriptionDetailsView: View {
                             systemImage: profile.protocolType.iconName
                         )
                     }
-                    .disabled(profile.isComplete == false || profile.isEnabled == false)
+                    .disabled(profile.runtimeCapability.isReady == false || profile.isEnabled == false)
                 }
             }
 
@@ -373,6 +373,13 @@ private struct ProfileDetailView: View {
                         Label(field, systemImage: "exclamationmark.circle")
                             .foregroundStyle(.orange)
                     }
+                }
+            }
+
+            if let issue = currentProfile.runtimeCapability.issue {
+                Section("Runtime capability") {
+                    Label(issue.message, systemImage: "exclamationmark.triangle")
+                        .foregroundStyle(.orange)
                 }
             }
         }

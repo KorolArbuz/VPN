@@ -243,6 +243,18 @@ nonisolated struct DefaultSubscriptionUpdatePlanner: SubscriptionUpdatePlanning 
                 continue
             }
 
+            let capability = profile.runtimeCapability
+            guard capability.isReady else {
+                changes.append(SubscriptionProfileChange(
+                    kind: .invalid,
+                    incomingProfile: profile,
+                    existingProfile: existingByIdentity[matchIdentity],
+                    message: capability.statusText,
+                    isSelected: false
+                ))
+                continue
+            }
+
             if let existingProfile = existingByIdentity[matchIdentity] {
                 changes.append(SubscriptionProfileChange(
                     kind: hasProviderManagedChanges(existing: existingProfile, incoming: profile) ? .updated : .unchanged,

@@ -28,8 +28,23 @@ nonisolated struct TrojanLinkParser {
             serverAddress: host,
             port: port,
             credentialReference: credentialReference,
-            transportSettings: VPNTransportSettings(network: query["type"], security: query["security"], path: query["path"], host: query["host"], metadata: query),
-            tlsSettings: VPNTLSSettings(isEnabled: true, serverName: query["sni"] ?? query["host"], allowInsecure: query["allowInsecure"] == "1"),
+            transportSettings: VPNTransportSettings(
+                network: query["type"],
+                security: query["security"],
+                path: query["path"],
+                host: query["host"],
+                serviceName: query["serviceName"],
+                metadata: query
+            ),
+            tlsSettings: VPNTLSSettings(
+                isEnabled: true,
+                serverName: query["sni"] ?? query["host"],
+                allowInsecure: query["allowInsecure"] == "1",
+                fingerprint: query["fp"],
+                realityPublicKey: query["pbk"],
+                shortID: query["sid"],
+                spiderX: query["spx"]
+            ),
             protocolConfiguration: .trojan(TrojanProfileConfiguration(alpn: query["alpn"]?.components(separatedBy: ",") ?? [])),
             source: .importedURL,
             metadata: query

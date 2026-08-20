@@ -14,6 +14,7 @@ struct PasteLinkView: View {
     @State private var linkText = ""
     @State private var importRoute: ImportPayloadRoute?
     @State private var isDetectingInput = false
+    @State private var importOperationID: UUID?
 
     var body: some View {
         Form {
@@ -85,21 +86,38 @@ struct PasteLinkView: View {
                 }
             }
         }
+        .onDisappear {
+            importOperationID = nil
+        }
     }
 
     @MainActor
     private func continueImport() async {
         guard isDetectingInput == false else { return }
+        let operationID = UUID()
+        importOperationID = operationID
         isDetectingInput = true
         viewModel.importErrorMessage = nil
-
-        do {
-            importRoute = try await viewModel.routeImportPayload(text: linkText, title: String(localized: "profiles.paste_link"))
-        } catch {
-            viewModel.importErrorMessage = error.localizedDescription
+        defer {
+            if importOperationID == operationID {
+                importOperationID = nil
+            }
+            isDetectingInput = false
         }
 
-        isDetectingInput = false
+        do {
+            let route = try await viewModel.routeImportPayload(text: linkText, title: String(localized: "profiles.paste_link"))
+            guard importOperationID == operationID else {
+                await viewModel.discardImportRoute(route)
+                return
+            }
+            importOperationID = nil
+            importRoute = route
+        } catch {
+            if importOperationID == operationID {
+                viewModel.importErrorMessage = error.localizedDescription
+            }
+        }
     }
 }
 
@@ -136,7 +154,7 @@ struct ReviewProfileView: View {
                             if case .profile(let profile) = importResult.kind, let manualCredentialValue {
                                 didSave = await viewModel.saveProfileDraft(profile, credentialValue: manualCredentialValue)
                             } else {
-                                didSave = await viewModel.saveImportResultAndSelect()
+                                didSave = await viewModel.saveImportResultAndSelect(importResult)
                             }
                             if didSave {
                                 onImportSucceeded(.profile)
@@ -153,7 +171,7 @@ struct ReviewProfileView: View {
                         }
                     }
                     .buttonStyle(.borderedProminent)
-                    .disabled(profile.isComplete == false || viewModel.isSavingProfile)
+                    .disabled(profile.runtimeCapability.isReady == false || viewModel.isSavingProfile)
 
                     if let message = viewModel.profileSaveMessage {
                         Text(message)
@@ -193,14 +211,20 @@ struct ReviewProfileView: View {
             }
         }
         .navigationTitle("profiles.review_profile")
+        .onDisappear {
+            Task {
+                await viewModel.discardImportResult(importResult)
+            }
+        }
     }
 
     @ViewBuilder
     private func profileSections(_ profile: VPNProfile) -> some View {
+        let capability = profile.runtimeCapability
         Section("Profile") {
             LabeledContent("Name", value: profile.name)
             LabeledContent("Protocol", value: profile.protocolType.displayName)
-            LabeledContent("Validation", value: profile.isComplete ? "Ready" : "Incomplete")
+            LabeledContent("Validation", value: capability.statusText)
         }
 
         Section("Server") {
@@ -250,6 +274,13 @@ struct ReviewProfileView: View {
             }
         }
 
+        if let issue = capability.issue {
+            Section("Unsupported configuration") {
+                Label(issue.message, systemImage: "exclamationmark.triangle")
+                    .foregroundStyle(.orange)
+            }
+        }
+
         if importResult.sanitizedSummary.isEmpty == false {
             Section {
                 DisclosureGroup("Advanced details", isExpanded: $showAdvancedDetails) {
@@ -269,7 +300,7 @@ struct ReviewProfileView: View {
         switch viewModel.profileSaveState {
         case .saved:
             .green
-        case .failed, .incomplete, .duplicate:
+        case .failed, .incomplete, .duplicate, .unsupported:
             .red
         case .idle, .saving:
             .secondary

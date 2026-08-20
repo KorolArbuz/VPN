@@ -55,11 +55,11 @@ struct BatchImportReviewView: View {
                 ForEach($profiles) { $item in
                     Toggle(isOn: Binding(
                         get: { item.isSelected },
-                        set: { item.isSelected = $0 && item.profile.isComplete }
+                        set: { item.isSelected = $0 && item.profile.runtimeCapability.isReady }
                     )) {
                         BatchImportProfileRowContent(profile: item.profile)
                     }
-                    .disabled(item.profile.isComplete == false)
+                    .disabled(item.profile.runtimeCapability.isReady == false)
                 }
             }
 
@@ -97,7 +97,7 @@ struct BatchImportReviewView: View {
     private func setAll(_ isSelected: Bool) {
         profiles = profiles.map { item in
             var updated = item
-            updated.isSelected = isSelected && item.profile.isComplete
+            updated.isSelected = isSelected && item.profile.runtimeCapability.isReady
             return updated
         }
     }
@@ -134,7 +134,7 @@ private struct BatchImportProfileRowContent: View {
                 .foregroundStyle(.secondary)
             Text(statusText)
                 .font(.caption)
-                .foregroundStyle(profile.isComplete ? AnyShapeStyle(.secondary) : AnyShapeStyle(.orange))
+                .foregroundStyle(profile.runtimeCapability.isReady ? AnyShapeStyle(.secondary) : AnyShapeStyle(.orange))
         }
     }
 
@@ -143,6 +143,6 @@ private struct BatchImportProfileRowContent: View {
     }
 
     private var statusText: String {
-        profile.isComplete ? "Ready" : "Incomplete: \(profile.missingRequiredFields.joined(separator: ", "))"
+        profile.runtimeCapability.statusText
     }
 }

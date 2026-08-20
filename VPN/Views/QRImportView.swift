@@ -64,6 +64,7 @@ struct QRScannerView: View {
     @State private var processingMessage: String?
     @State private var errorMessage: String?
     @State private var didHandlePayload = false
+    @State private var payloadOperationID: UUID?
     @State private var qrImageProcessingTask: Task<Void, Never>?
     @State private var qrImageOperationID: UUID?
     @State private var cameraAccessState: QRScannerCameraAccessState = .checking
@@ -93,6 +94,11 @@ struct QRScannerView: View {
             Task {
                 await processImageItem(newItem)
             }
+        }
+        .onDisappear {
+            payloadOperationID = nil
+            qrImageOperationID = nil
+            qrImageProcessingTask?.cancel()
         }
         .alert("qr.import_failed", isPresented: Binding(
             get: { errorMessage != nil },
@@ -200,8 +206,10 @@ struct QRScannerView: View {
     private func handlePayloadOnce(_ payload: String) {
         guard didHandlePayload == false else { return }
         didHandlePayload = true
+        let operationID = UUID()
+        payloadOperationID = operationID
         Task {
-            await processPayload(payload, scanningMessage: "Processing QR...")
+            await processPayload(payload, scanningMessage: "Processing QR...", operationID: operationID)
         }
     }
 
@@ -238,8 +246,10 @@ struct QRScannerView: View {
             } else {
                 route = .qrPayloads(QRPayloadSelectionDraft(title: "QR Image", payloads: payloads))
             }
-            try Task.checkCancellation()
-            guard qrImageOperationID == operationID else { return }
+            guard Task.isCancelled == false, qrImageOperationID == operationID else {
+                await viewModel.discardImportRoute(route)
+                return
+            }
 
             processingMessage = "Preparing profile..."
             onRoute(route)
@@ -261,16 +271,24 @@ struct QRScannerView: View {
     }
 
     @MainActor
-    private func processPayload(_ payload: String, scanningMessage: String) async {
+    private func processPayload(_ payload: String, scanningMessage: String, operationID: UUID) async {
         do {
             processingMessage = scanningMessage
             let route = try await viewModel.routeImportPayload(text: payload, title: "QR Code")
+            guard payloadOperationID == operationID else {
+                await viewModel.discardImportRoute(route)
+                return
+            }
+            payloadOperationID = nil
             processingMessage = "Preparing profile..."
             onRoute(route)
             processingMessage = nil
         } catch {
-            processingMessage = nil
-            errorMessage = "Unsupported QR content."
+            if payloadOperationID == operationID {
+                payloadOperationID = nil
+                processingMessage = nil
+                errorMessage = "Unsupported QR content."
+            }
         }
     }
 

@@ -142,7 +142,8 @@ nonisolated private struct BundledMockProfileConfigurationCompiler: ProfileConfi
         return .tls(CoreTLSConfiguration(
             serverName: profile.tlsSettings.serverName,
             allowInsecure: profile.tlsSettings.allowInsecure,
-            fingerprint: profile.tlsSettings.fingerprint
+            fingerprint: profile.tlsSettings.fingerprint,
+            alpn: profile.tlsSettings.alpn
         ))
     }
 }

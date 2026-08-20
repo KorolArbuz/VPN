@@ -40,6 +40,7 @@ final class VPNDashboardViewModel {
     private var activeOperationID: UUID?
     private var stateObservationTask: Task<Void, Never>?
     private var saveOperationID: UUID?
+    private var inFlightImportedCredentialReferences = Set<String>()
     private var subscriptionOperationID: UUID?
     private var refreshingSubscriptionID: UUID?
     private var discardedRefreshSubscriptionID: UUID?
@@ -119,7 +120,7 @@ final class VPNDashboardViewModel {
         }
 
         if let selectedProfile {
-            return selectedProfile.isEnabled && selectedProfile.isComplete
+            return selectedProfile.isEnabled && selectedProfile.runtimeCapability.isReady
         }
 
         return selectedServer != nil && effectiveProtocol != nil
@@ -130,11 +131,10 @@ final class VPNDashboardViewModel {
             return nil
         }
 
-        if selectedProfile.isComplete {
-            return selectedProfile.isEnabled ? "Ready" : "Disabled"
+        if selectedProfile.isEnabled == false {
+            return "Disabled"
         }
-
-        return "Incomplete: \(selectedProfile.missingRequiredFields.joined(separator: ", "))"
+        return selectedProfile.runtimeCapability.statusText
     }
 
     func loadInitialData() async {
@@ -192,6 +192,12 @@ final class VPNDashboardViewModel {
     func selectProfile(_ profile: VPNProfile) {
         guard profile.isComplete else {
             errorMessage = "Profile is incomplete. Missing: \(profile.missingRequiredFields.joined(separator: ", "))."
+            return
+        }
+
+        let capability = profile.runtimeCapability
+        guard capability.isReady else {
+            errorMessage = capability.statusText
             return
         }
 
@@ -282,6 +288,13 @@ final class VPNDashboardViewModel {
                 errorMessage = "Profile is incomplete. Missing: \(profile.missingRequiredFields.joined(separator: ", "))."
                 return
             }
+            if selectedProfile != nil {
+                let capability = profile.runtimeCapability
+                guard capability.isReady else {
+                    errorMessage = capability.statusText
+                    return
+                }
+            }
 
             guard let operationID = beginOperation(state: .connecting) else {
                 return
@@ -367,35 +380,98 @@ final class VPNDashboardViewModel {
             return false
         }
 
+        return await saveImportResultAndSelect(importResult)
+    }
+
+    @discardableResult
+    func saveImportResultAndSelect(_ reviewedResult: VPNImportResult) async -> Bool {
+
         guard saveOperationID == nil else {
             return false
         }
 
         do {
-            switch importResult.kind {
+            switch reviewedResult.kind {
             case .profile(let profile):
+                let preparedReferences = profile.credentialReferences
+                inFlightImportedCredentialReferences.formUnion(preparedReferences)
                 do {
-                    return try await saveProfileAndSelect(profile)
-                } catch {
-                    if let credentialReference = profile.credentialReference {
-                        try? await credentialStore.delete(reference: credentialReference)
+                    let didSave = try await saveProfileAndSelect(profile)
+                    inFlightImportedCredentialReferences.subtract(preparedReferences)
+                    if didSave == false {
+                        try await deleteUnreferencedCredentialReferences(preparedReferences)
                     }
-                    if let publicKeyReference = profile.tlsSettings.publicKeyReference {
-                        try? await credentialStore.delete(reference: publicKeyReference)
+                    if didSave, importResult?.id == reviewedResult.id {
+                        importResult = nil
                     }
-                    throw error
+                    return didSave
+                } catch let saveError {
+                    inFlightImportedCredentialReferences.subtract(preparedReferences)
+                    do {
+                        try await deleteUnreferencedCredentialReferences(preparedReferences)
+                    } catch {
+                        throw error
+                    }
+                    throw saveError
                 }
             case .subscription(let subscription):
                 try await subscriptionRepository.save(subscription)
                 subscriptions = try await subscriptionRepository.subscriptions()
             }
 
-            self.importResult = nil
+            if importResult?.id == reviewedResult.id {
+                importResult = nil
+            }
             importErrorMessage = nil
             return true
         } catch {
             importErrorMessage = error.localizedDescription
             return false
+        }
+    }
+
+    @discardableResult
+    func discardImportResult(_ reviewedResult: VPNImportResult) async -> Bool {
+        guard case .profile(let profile) = reviewedResult.kind else {
+            return true
+        }
+
+        do {
+            try await deleteUnreferencedCredentialReferences(
+                profile.credentialReferences,
+                additionalReferences: inFlightImportedCredentialReferences
+            )
+            if importResult?.id == reviewedResult.id {
+                importResult = nil
+            }
+            return true
+        } catch {
+            importErrorMessage = error.localizedDescription
+            return false
+        }
+    }
+
+    @discardableResult
+    func discardImportRoute(_ route: ImportPayloadRoute) async -> Bool {
+        switch route {
+        case .single(let result):
+            return await discardImportResult(result)
+        case .batch(let draft):
+            let references = draft.profiles.reduce(into: Set<String>()) { references, item in
+                references.formUnion(item.profile.credentialReferences)
+            }
+            do {
+                try await deleteUnreferencedCredentialReferences(
+                    references,
+                    additionalReferences: inFlightImportedCredentialReferences
+                )
+                return true
+            } catch {
+                importErrorMessage = error.localizedDescription
+                return false
+            }
+        case .qrPayloads:
+            return true
         }
     }
 
@@ -1041,6 +1117,7 @@ final class VPNDashboardViewModel {
         merged.isEnabled = existing.isEnabled
         merged.isFavorite = existing.isFavorite
         merged.localNotes = existing.localNotes
+        merged.routingSettings = existing.routingSettings
         return merged
     }
 
@@ -1183,6 +1260,13 @@ final class VPNDashboardViewModel {
             return false
         }
 
+        let capability = profile.runtimeCapability
+        guard capability.isReady else {
+            profileSaveState = .unsupported(capability.statusText)
+            profileSaveMessage = capability.statusText
+            return false
+        }
+
         let operationID = UUID()
         saveOperationID = operationID
         profileSaveState = .saving
@@ -1202,7 +1286,6 @@ final class VPNDashboardViewModel {
             selectedProtocol = .manual(profile.protocolType)
             effectiveProtocol = profile.protocolType
             currentMetrics = nil
-            importResult = nil
             importErrorMessage = nil
             profileSaveState = .saved
             profileSaveMessage = "Profile saved"
@@ -1233,7 +1316,7 @@ final class VPNDashboardViewModel {
 
         guard let profile = profiles.first(where: { $0.id == activeProfileID }),
               profile.isEnabled,
-              profile.isComplete else {
+              profile.runtimeCapability.isReady else {
             setActiveProfileID(nil)
             return
         }

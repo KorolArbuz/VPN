@@ -35,6 +35,7 @@ nonisolated struct VLESSLinkParser {
             serverName: query["sni"] ?? query["host"],
             allowInsecure: query["allowInsecure"] == "1",
             fingerprint: query["fp"],
+            alpn: query["alpn"]?.split(separator: ",").map(String.init),
             realityPublicKey: query["pbk"],
             shortID: query["sid"],
             spiderX: query["spx"]

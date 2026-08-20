@@ -183,9 +183,17 @@ nonisolated struct URLSessionSubscriptionUpdater: SubscriptionUpdating {
             if isDuplicate {
                 state = .duplicate
             } else {
-                state = profile.isComplete ? .valid : .incomplete
+                switch profile.runtimeCapability {
+                case .ready:
+                    state = .valid
+                case .incomplete:
+                    state = .incomplete
+                case .unsupported, .invalid:
+                    state = .invalid
+                }
             }
-            return SubscriptionProfilePreview(profile: profile, state: state, message: profile.isComplete ? nil : profile.missingRequiredFields.joined(separator: ", "), isSelected: state == .valid)
+            let message = state == .valid || state == .duplicate ? nil : profile.runtimeCapability.statusText
+            return SubscriptionProfilePreview(profile: profile, state: state, message: message, isSelected: state == .valid)
         }
 
         return SubscriptionPreview(
@@ -250,13 +258,37 @@ nonisolated struct URLSessionSubscriptionUpdater: SubscriptionUpdating {
 
         var reconciledProfiles: [VPNProfile] = []
         reconciledProfiles.reserveCapacity(incomingProfiles.count)
+        var matchedExistingProfileIDs = Set<UUID>()
 
         for var incomingProfile in incomingProfiles {
             let identity = incomingProfile.externalIdentity ?? merger.stableIdentity(for: incomingProfile)
-            guard let existingProfile = existingByIdentity[identity] else {
+            let exactMatch = existingByIdentity[identity]
+            let existingProfile: VPNProfile?
+            if let exactMatch {
+                existingProfile = exactMatch
+            } else {
+                existingProfile = try await uniqueSemanticCredentialMatch(
+                    for: incomingProfile,
+                    candidates: existingForSubscription.filter {
+                        matchedExistingProfileIDs.contains($0.id) == false
+                    }
+                )
+                if let existingProfile {
+                    // Content-derived identities legitimately change when a
+                    // provider changes endpoint, transport, or protocol options.
+                    // Preserve continuity only after a unique, in-memory
+                    // credential comparison; no secret material enters the
+                    // persisted identity or diagnostics.
+                    incomingProfile.externalIdentity = existingProfile.externalIdentity
+                        ?? merger.stableIdentity(for: existingProfile)
+                }
+            }
+
+            guard let existingProfile else {
                 reconciledProfiles.append(incomingProfile)
                 continue
             }
+            matchedExistingProfileIDs.insert(existingProfile.id)
 
             for slot in VPNProfileCredentialSlot.allCases {
                 guard let incomingReference = incomingProfile.credentialReference(for: slot) else {
@@ -281,6 +313,55 @@ nonisolated struct URLSessionSubscriptionUpdater: SubscriptionUpdating {
         }
 
         return reconciledProfiles
+    }
+
+    private func uniqueSemanticCredentialMatch(
+        for incomingProfile: VPNProfile,
+        candidates: [VPNProfile]
+    ) async throws -> VPNProfile? {
+        var match: VPNProfile?
+        for candidate in candidates where candidate.protocolType == incomingProfile.protocolType {
+            guard try await credentialsAreSemanticallyEqual(
+                incomingProfile,
+                candidate
+            ) else {
+                continue
+            }
+            guard match == nil else {
+                // Reused credentials do not uniquely identify a provider entry.
+                return nil
+            }
+            match = candidate
+        }
+        return match
+    }
+
+    private func credentialsAreSemanticallyEqual(
+        _ lhs: VPNProfile,
+        _ rhs: VPNProfile
+    ) async throws -> Bool {
+        for slot in VPNProfileCredentialSlot.allCases {
+            let lhsReference = lhs.credentialReference(for: slot)
+            let rhsReference = rhs.credentialReference(for: slot)
+            switch (lhsReference, rhsReference) {
+            case (nil, nil):
+                continue
+            case (.some(let lhsReference), .some(let rhsReference)):
+                if lhsReference == rhsReference {
+                    continue
+                }
+                guard let lhsSecret = try await credentialStore.secret(for: lhsReference),
+                      let rhsSecret = try await credentialStore.secret(for: rhsReference) else {
+                    throw SubscriptionError.credentialsUnavailable
+                }
+                guard lhsSecret == rhsSecret else {
+                    return false
+                }
+            case (.some, nil), (nil, .some):
+                return false
+            }
+        }
+        return true
     }
 
     private func credentialReferences(in profiles: [VPNProfile]) -> Set<String> {

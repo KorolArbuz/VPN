@@ -154,6 +154,7 @@ nonisolated struct SharedRuntimeSecurity: Codable, Equatable, Sendable {
     var serverName: String?
     var allowInsecure: Bool
     var fingerprint: String?
+    var alpn: [String]?
     var shortID: String?
     var reality: SharedRuntimeRealityPublicParameters?
 
@@ -162,6 +163,7 @@ nonisolated struct SharedRuntimeSecurity: Codable, Equatable, Sendable {
         serverName: String? = nil,
         allowInsecure: Bool = false,
         fingerprint: String? = nil,
+        alpn: [String]? = nil,
         shortID: String? = nil,
         reality: SharedRuntimeRealityPublicParameters? = nil
     ) {
@@ -169,6 +171,7 @@ nonisolated struct SharedRuntimeSecurity: Codable, Equatable, Sendable {
         self.serverName = serverName
         self.allowInsecure = allowInsecure
         self.fingerprint = fingerprint
+        self.alpn = alpn
         self.shortID = shortID
         self.reality = reality
     }
@@ -661,8 +664,8 @@ nonisolated struct SensitiveXrayConfiguration: CustomStringConvertible, CustomDe
     }
 }
 
-protocol XrayConfigurationBuilding: Sendable {
-    func build(
+nonisolated protocol XrayConfigurationBuilding: Sendable {
+    nonisolated func build(
         from configuration: ResolvedVLESSRuntimeConfiguration,
         options: XrayBuildOptions
     ) throws -> SensitiveXrayConfiguration
@@ -673,7 +676,7 @@ nonisolated struct XrayConfigurationBuilder: XrayConfigurationBuilding {
         "chrome", "firefox", "safari", "ios", "android", "edge", "360", "qq", "random", "randomized", "randomizednoalpn"
     ]
 
-    func build(
+    nonisolated func build(
         from configuration: ResolvedVLESSRuntimeConfiguration,
         options: XrayBuildOptions = XrayBuildOptions()
     ) throws -> SensitiveXrayConfiguration {
@@ -690,7 +693,12 @@ nonisolated struct XrayConfigurationBuilder: XrayConfigurationBuilding {
         }
 
         let transport = try streamTransport(for: configuration.transport)
-        let security = try streamSecurity(for: configuration.security, protocolKind: configuration.protocolKind)
+        var security = try streamSecurity(for: configuration.security, protocolKind: configuration.protocolKind)
+        if configuration.protocolKind == .trojan,
+           security.security == "tls",
+           let alpn = try normalizedALPN(configuration.trojan?.alpn) {
+            security.tlsSettings?.alpn = alpn
+        }
         let outbound = try outboundConfiguration(
             for: configuration,
             credential: credential,
@@ -736,24 +744,59 @@ nonisolated struct XrayConfigurationBuilder: XrayConfigurationBuilding {
         }
     }
 
+    private func normalizedALPN(_ values: [String]?) throws -> [String]? {
+        guard let values else { return nil }
+        let normalized = values.compactMap { value -> String? in
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        }
+        guard normalized.allSatisfy({ value in
+            value.utf8.count <= 255
+                && value.rangeOfCharacter(from: .whitespacesAndNewlines) == nil
+                && value.rangeOfCharacter(from: .controlCharacters) == nil
+        }) else {
+            throw XrayConfigurationBuilderError.invalidTLSConfiguration
+        }
+        return normalized.isEmpty ? nil : normalized
+    }
+
     private func validateProtocolMatrix(_ configuration: ResolvedVLESSRuntimeConfiguration) throws {
         switch configuration.protocolKind {
         case .vless:
-            guard [.tcp, .xhttp].contains(configuration.transport.kind) else {
+            guard [.tcp, .websocket, .grpc, .httpUpgrade, .xhttp].contains(configuration.transport.kind) else {
                 throw XrayConfigurationBuilderError.unsupportedTransport
             }
             guard [.tls, .reality].contains(configuration.security.kind) else {
                 throw XrayConfigurationBuilderError.unsupportedSecurity
             }
+            let encryption = normalizedOptional(configuration.vless.encryption)?.lowercased()
+            guard encryption == nil || encryption == "none" else {
+                throw XrayConfigurationBuilderError.unsupportedProtocol
+            }
+            if let flow = normalizedOptional(configuration.vless.flow)?.lowercased() {
+                guard flow == "xtls-rprx-vision",
+                      [.tcp, .xhttp].contains(configuration.transport.kind) else {
+                    throw XrayConfigurationBuilderError.unsupportedProtocol
+                }
+            }
         case .vmess:
-            guard [.tcp, .websocket, .grpc, .xhttp].contains(configuration.transport.kind) else {
+            guard [.tcp, .websocket, .grpc, .httpUpgrade, .xhttp].contains(configuration.transport.kind) else {
                 throw XrayConfigurationBuilderError.unsupportedTransport
             }
             guard [.none, .tls, .reality].contains(configuration.security.kind) else {
                 throw XrayConfigurationBuilderError.unsupportedSecurity
             }
+            if let vmess = configuration.vmess {
+                guard vmess.alterID.map({ $0 >= 0 }) ?? true else {
+                    throw XrayConfigurationBuilderError.unsupportedProtocol
+                }
+                let cipher = normalizedOptional(vmess.security)?.lowercased()
+                if let cipher, ["auto", "aes-128-gcm", "chacha20-poly1305", "none", "zero"].contains(cipher) == false {
+                    throw XrayConfigurationBuilderError.unsupportedProtocol
+                }
+            }
         case .trojan:
-            guard [.tcp, .websocket, .grpc, .xhttp].contains(configuration.transport.kind) else {
+            guard [.tcp, .websocket, .grpc, .httpUpgrade, .xhttp].contains(configuration.transport.kind) else {
                 throw XrayConfigurationBuilderError.unsupportedTransport
             }
             guard [.tls, .reality].contains(configuration.security.kind) else {
@@ -1051,7 +1094,7 @@ nonisolated struct XrayConfigurationBuilder: XrayConfigurationBuilding {
                     serverName: serverName,
                     allowInsecure: security.allowInsecure,
                     fingerprint: fingerprint,
-                    alpn: nil
+                    alpn: try normalizedALPN(security.alpn)
                 ),
                 realitySettings: nil
             )
@@ -5228,13 +5271,13 @@ actor XrayRuntimeLifecycleController: XrayConfigurationValidating, XrayRemoteEgr
     private static func isSupportedRuntimeProfile(_ resolved: ResolvedVLESSRuntimeConfiguration) -> Bool {
         switch resolved.protocolKind {
         case .vless:
-            return [.tcp, .xhttp].contains(resolved.transport.kind)
+            return [.tcp, .websocket, .grpc, .httpUpgrade, .xhttp].contains(resolved.transport.kind)
                 && [.tls, .reality].contains(resolved.security.kind)
         case .vmess:
-            return [.tcp, .websocket, .grpc, .xhttp].contains(resolved.transport.kind)
+            return [.tcp, .websocket, .grpc, .httpUpgrade, .xhttp].contains(resolved.transport.kind)
                 && [.none, .tls, .reality].contains(resolved.security.kind)
         case .trojan:
-            return [.tcp, .websocket, .grpc, .xhttp].contains(resolved.transport.kind)
+            return [.tcp, .websocket, .grpc, .httpUpgrade, .xhttp].contains(resolved.transport.kind)
                 && [.tls, .reality].contains(resolved.security.kind)
         case .shadowsocks:
             return resolved.transport.kind == .tcp && resolved.security.kind == .none

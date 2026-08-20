@@ -45,6 +45,7 @@ nonisolated enum VPNImportError: LocalizedError, Equatable, Sendable {
     case invalidPort
     case invalidBase64Payload
     case invalidPayload(String)
+    case unsupportedCapability(String)
 
     var errorDescription: String? {
         switch self {
@@ -61,6 +62,8 @@ nonisolated enum VPNImportError: LocalizedError, Equatable, Sendable {
         case .invalidBase64Payload:
             "The Base64 payload is invalid."
         case .invalidPayload(let reason):
+            reason
+        case .unsupportedCapability(let reason):
             reason
         }
     }

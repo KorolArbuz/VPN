@@ -88,6 +88,7 @@ struct AddSubscriptionView: View {
             LabeledContent("Profiles", value: "\(preview.profiles.count)")
             LabeledContent("Valid", value: "\(preview.validCount)")
             LabeledContent("Incomplete", value: "\(preview.incompleteCount)")
+            LabeledContent("Unsupported", value: "\(preview.invalidCount)")
             LabeledContent("Duplicates", value: "\(preview.duplicateCount)")
         }
 

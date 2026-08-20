@@ -20,6 +20,7 @@ struct AddVPNSheet: View {
     @State private var importRoute: ImportPayloadRoute?
     @State private var importErrorMessage: String?
     @State private var processingMessage: String?
+    @State private var fileImportOperationID: UUID?
     @State private var qrImageProcessingTask: Task<Void, Never>?
     @State private var qrImageOperationID: UUID?
     @State private var successKind: ImportFlowSuccessKind?
@@ -151,6 +152,11 @@ struct AddVPNSheet: View {
                 guard let newItem else { return }
                 handleQRImageSelection(newItem)
             }
+            .onDisappear {
+                fileImportOperationID = nil
+                qrImageOperationID = nil
+                qrImageProcessingTask?.cancel()
+            }
             .alert("profiles.import_failed", isPresented: Binding(
                 get: { importErrorMessage != nil },
                 set: { if $0 == false { importErrorMessage = nil } }
@@ -189,6 +195,8 @@ struct AddVPNSheet: View {
     }
 
     private func handleFileImport(_ result: Result<URL, Error>) {
+        let operationID = UUID()
+        fileImportOperationID = operationID
         Task {
             do {
                 processingMessage = "Reading file..."
@@ -196,12 +204,20 @@ struct AddVPNSheet: View {
                 let data = try readSecurityScopedFile(url)
                 processingMessage = "Detecting format..."
                 let route = try await viewModel.routeImportPayload(data: data, title: url.deletingPathExtension().lastPathComponent)
+                guard fileImportOperationID == operationID else {
+                    await viewModel.discardImportRoute(route)
+                    return
+                }
+                fileImportOperationID = nil
                 processingMessage = "Preparing profile..."
                 importRoute = route
                 processingMessage = nil
             } catch {
-                processingMessage = nil
-                importErrorMessage = error.localizedDescription
+                if fileImportOperationID == operationID {
+                    fileImportOperationID = nil
+                    processingMessage = nil
+                    importErrorMessage = error.localizedDescription
+                }
             }
         }
     }
@@ -231,8 +247,10 @@ struct AddVPNSheet: View {
                 } else {
                     route = .qrPayloads(QRPayloadSelectionDraft(title: "QR Image", payloads: payloads))
                 }
-                try Task.checkCancellation()
-                guard qrImageOperationID == operationID else { return }
+                guard Task.isCancelled == false, qrImageOperationID == operationID else {
+                    await viewModel.discardImportRoute(route)
+                    return
+                }
 
                 processingMessage = "Preparing profile..."
                 importRoute = route

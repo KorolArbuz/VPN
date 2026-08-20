@@ -1200,7 +1200,554 @@ struct RuntimeConfigurationValidationIPCTests {
     }
 }
 
+struct RuntimeCapabilityAuditTests {
+    @Test
+    func structuralCompletenessDoesNotMasqueradeAsRuntimeReadiness() {
+        var vlessQUIC = makeRuntimeCapabilityProfile(protocolType: .vless, network: "quic", security: "tls")
+        vlessQUIC.name = "Unsupported VLESS QUIC"
+
+        var shadowsocksPlugin = makeShadowsocksProfile(plugin: "v2ray-plugin;password=must-not-appear")
+        shadowsocksPlugin.name = "Unsupported Shadowsocks plugin"
+
+        let unsupportedProfiles = [
+            vlessQUIC,
+            shadowsocksPlugin,
+            makeHysteria2Profile(bandwidthHint: "100mbps"),
+            VPNProfile.draft(
+                name: "TUIC",
+                protocolType: .tuic,
+                serverAddress: "tuic.example.invalid",
+                port: 443,
+                credentialReference: "keychain://vpn.credentials/tuic-account",
+                protocolConfiguration: .tuic(TUICProfileConfiguration(congestionControl: "bbr", udpRelayMode: "native")),
+                source: .importedURL
+            )
+        ]
+
+        for profile in unsupportedProfiles {
+            #expect(profile.isComplete)
+            #expect(profile.runtimeCapability.isReady == false)
+            #expect(profile.runtimeCapability.statusText != "Ready")
+        }
+
+        let pluginStatus = shadowsocksPlugin.runtimeCapability.statusText
+        #expect(pluginStatus.contains("v2ray-plugin"))
+        #expect(pluginStatus.contains("must-not-appear") == false)
+    }
+
+    @Test
+    func productionTUICImportIsStructurallyCompleteButExplicitlyRuntimeUnsupported() async throws {
+        let store = CanonicalInMemoryCredentialStore()
+        let result = try await VPNLinkParser(credentialStore: store).parse(
+            "tuic://\(TestSecrets().vlessUUID)@tuic.example.invalid:443?congestion=bbr&udpRelayMode=native&sni=tuic.example.invalid#TUIC"
+        )
+        guard case .profile(let profile) = result.kind else {
+            Issue.record("Expected a TUIC profile")
+            return
+        }
+
+        #expect(profile.protocolType == .tuic)
+        #expect(profile.isComplete)
+        #expect(profile.runtimeCapability == .unsupported(.unsupportedProtocol(.tuic)))
+        #expect(profile.runtimeCapability.statusText.contains("TUIC runtime is not available"))
+        #expect(throws: RuntimeConfigurationError.unsupportedProtocol) {
+            _ = try SharedRuntimeProfileMapper(now: fixedDate).record(from: profile)
+        }
+        #expect(await store.activeReferenceCount == 1)
+    }
+
+    @Test
+    func importedTransportAndSecurityMatrixHasDeterministicFinalXrayOutput() throws {
+        let cases: [(protocolType: VPNProtocol, network: String, security: String, expectedNetwork: String, expectedSecurity: String)] = [
+            (.vless, "tcp", "tls", "tcp", "tls"),
+            (.vless, "ws", "tls", "ws", "tls"),
+            (.vless, "websocket", "tls", "ws", "tls"),
+            (.vless, "grpc", "tls", "grpc", "tls"),
+            (.vless, "httpupgrade", "tls", "httpupgrade", "tls"),
+            (.vless, "xhttp", "tls", "xhttp", "tls"),
+            (.vless, "splithttp", "tls", "xhttp", "tls"),
+            (.vless, "tcp", "reality", "tcp", "reality"),
+            (.vmess, "tcp", "none", "tcp", "none"),
+            (.vmess, "ws", "tls", "ws", "tls"),
+            (.vmess, "websocket", "tls", "ws", "tls"),
+            (.vmess, "grpc", "tls", "grpc", "tls"),
+            (.vmess, "httpupgrade", "tls", "httpupgrade", "tls"),
+            (.vmess, "xhttp", "tls", "xhttp", "tls"),
+            (.vmess, "splithttp", "tls", "xhttp", "tls"),
+            (.trojan, "tcp", "tls", "tcp", "tls"),
+            (.trojan, "ws", "tls", "ws", "tls"),
+            (.trojan, "websocket", "tls", "ws", "tls"),
+            (.trojan, "grpc", "tls", "grpc", "tls"),
+            (.trojan, "httpupgrade", "tls", "httpupgrade", "tls"),
+            (.trojan, "xhttp", "tls", "xhttp", "tls"),
+            (.trojan, "splithttp", "tls", "xhttp", "tls"),
+            (.trojan, "tcp", "reality", "tcp", "reality")
+        ]
+
+        for testCase in cases {
+            let profile = makeRuntimeCapabilityProfile(
+                protocolType: testCase.protocolType,
+                network: testCase.network,
+                security: testCase.security
+            )
+            #expect(profile.runtimeCapability == .ready)
+
+            let credential = [VPNProtocol.vless, .vmess].contains(testCase.protocolType)
+                ? TestSecrets().vlessUUID
+                : TestSecrets().password
+            let outbound = try firstXrayOutbound(from: xrayJSONString(from: profile, credential: credential))
+            let streamSettings = try #require(outbound["streamSettings"] as? [String: Any])
+            #expect(streamSettings["network"] as? String == testCase.expectedNetwork)
+            #expect(streamSettings["security"] as? String == testCase.expectedSecurity)
+        }
+    }
+
+    @Test
+    func productionURIParsersPreserveEverySupportedTransportAndSecurityCombination() async throws {
+        let cases: [(protocolType: VPNProtocol, network: String, security: String, expectedNetwork: String, expectedSecurity: String)] = [
+            (.vless, "tcp", "tls", "tcp", "tls"),
+            (.vless, "ws", "tls", "ws", "tls"),
+            (.vless, "websocket", "tls", "ws", "tls"),
+            (.vless, "grpc", "tls", "grpc", "tls"),
+            (.vless, "httpupgrade", "tls", "httpupgrade", "tls"),
+            (.vless, "xhttp", "tls", "xhttp", "tls"),
+            (.vless, "splithttp", "tls", "xhttp", "tls"),
+            (.vless, "tcp", "reality", "tcp", "reality"),
+            (.vmess, "tcp", "none", "tcp", "none"),
+            (.vmess, "tcp", "tls", "tcp", "tls"),
+            (.vmess, "ws", "tls", "ws", "tls"),
+            (.vmess, "websocket", "tls", "ws", "tls"),
+            (.vmess, "grpc", "tls", "grpc", "tls"),
+            (.vmess, "httpupgrade", "tls", "httpupgrade", "tls"),
+            (.vmess, "xhttp", "tls", "xhttp", "tls"),
+            (.vmess, "splithttp", "tls", "xhttp", "tls"),
+            (.trojan, "tcp", "tls", "tcp", "tls"),
+            (.trojan, "ws", "tls", "ws", "tls"),
+            (.trojan, "websocket", "tls", "ws", "tls"),
+            (.trojan, "grpc", "tls", "grpc", "tls"),
+            (.trojan, "httpupgrade", "tls", "httpupgrade", "tls"),
+            (.trojan, "xhttp", "tls", "xhttp", "tls"),
+            (.trojan, "splithttp", "tls", "xhttp", "tls"),
+            (.trojan, "tcp", "reality", "tcp", "reality")
+        ]
+        let store = CanonicalInMemoryCredentialStore()
+
+        for testCase in cases {
+            let result: VPNImportResult
+            switch testCase.protocolType {
+            case .vless:
+                var query = "type=\(testCase.network)&security=\(testCase.security)&sni=cover.example.invalid&encryption=none&path=%2Faudit&host=cdn.example.invalid&serviceName=audit-service&mode=auto"
+                if testCase.security == "reality" {
+                    query += "&fp=chrome&pbk=\(TestSecrets().realityPublicKey)&sid=abcd&spx=%2F"
+                }
+                result = try await VLESSLinkParser(credentialStore: store).parse(
+                    "vless://\(TestSecrets().vlessUUID)@vless-audit.example.invalid:443?\(query)#Audit"
+                )
+            case .vmess:
+                let payload: [String: String] = [
+                    "ps": "VMess Audit",
+                    "add": "vmess-audit.example.invalid",
+                    "port": "443",
+                    "id": TestSecrets().vlessUUID,
+                    "aid": "0",
+                    "scy": "auto",
+                    "net": testCase.network,
+                    "type": "none",
+                    "host": "cdn.example.invalid",
+                    "path": testCase.network == "grpc" ? "audit-service" : "/audit",
+                    "tls": testCase.security,
+                    "sni": "cover.example.invalid"
+                ]
+                let data = try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
+                result = try await VMessLinkParser(credentialStore: store).parse(
+                    "vmess://\(data.base64EncodedString())"
+                )
+            case .trojan:
+                var query = "type=\(testCase.network)&security=\(testCase.security)&sni=cover.example.invalid&path=%2Faudit&host=cdn.example.invalid&serviceName=audit-service&mode=auto"
+                if testCase.security == "reality" {
+                    query += "&fp=chrome&pbk=\(TestSecrets().realityPublicKey)&sid=abcd&spx=%2F"
+                }
+                result = try await TrojanLinkParser(credentialStore: store).parse(
+                    "trojan://\(TestSecrets().password)@trojan-audit.example.invalid:443?\(query)#Audit"
+                )
+            case .wireGuard, .ikev2, .shadowsocks, .hysteria2, .tuic:
+                Issue.record("Unexpected protocol in URI transport audit")
+                continue
+            }
+
+            guard case .profile(let profile) = result.kind else {
+                Issue.record("Expected a parsed profile")
+                continue
+            }
+            #expect(profile.runtimeCapability == .ready)
+
+            let credential = [VPNProtocol.vless, .vmess].contains(testCase.protocolType)
+                ? TestSecrets().vlessUUID
+                : TestSecrets().password
+            let outbound = try firstXrayOutbound(from: xrayJSONString(from: profile, credential: credential))
+            let streamSettings = try #require(outbound["streamSettings"] as? [String: Any])
+            #expect(streamSettings["network"] as? String == testCase.expectedNetwork)
+            #expect(streamSettings["security"] as? String == testCase.expectedSecurity)
+        }
+    }
+
+    @Test
+    func unsupportedTransportSecurityAndFeatureMatrixFailsBeforeUse() {
+        var vlessNone = makeRuntimeCapabilityProfile(protocolType: .vless, network: "tcp", security: "none")
+        vlessNone.tlsSettings = VPNTLSSettings()
+
+        var trojanNone = makeRuntimeCapabilityProfile(protocolType: .trojan, network: "tcp", security: "none")
+        trojanNone.tlsSettings = VPNTLSSettings()
+
+        var hysteriaPin = makeHysteria2Profile()
+        hysteriaPin.metadata["pinSHA256"] = "public-pin"
+        var hysteriaECH = makeHysteria2Profile()
+        hysteriaECH.metadata["ech"] = "public-ech-config"
+        var hysteriaPortHopping = makeHysteria2Profile()
+        hysteriaPortHopping.metadata["mport"] = "20000-30000"
+        var hysteriaUnknownObfs = makeHysteria2Profile(obfs: "unknown")
+        hysteriaUnknownObfs.metadata["obfs"] = "unknown"
+        var hysteriaWrongALPN = makeHysteria2Profile()
+        hysteriaWrongALPN.metadata["alpn"] = "h2"
+
+        let profiles = [
+            makeRuntimeCapabilityProfile(protocolType: .vless, network: "udp", security: "tls"),
+            makeRuntimeCapabilityProfile(protocolType: .vless, network: "quic", security: "tls"),
+            makeRuntimeCapabilityProfile(protocolType: .vmess, network: "quic", security: "tls"),
+            makeRuntimeCapabilityProfile(protocolType: .trojan, network: "quic", security: "tls"),
+            vlessNone,
+            trojanNone,
+            makeShadowsocksProfile(plugin: "v2ray-plugin"),
+            makeHysteria2Profile(bandwidthHint: "100mbps"),
+            hysteriaPin,
+            hysteriaECH,
+            hysteriaPortHopping,
+            hysteriaUnknownObfs,
+            hysteriaWrongALPN
+        ]
+
+        for profile in profiles {
+            #expect(profile.isComplete)
+            #expect(profile.runtimeCapability.isReady == false)
+        }
+
+        #expect(throws: RuntimeConfigurationError.unsupportedProtocol) {
+            _ = try SharedRuntimeProfileMapper(now: fixedDate).record(from: hysteriaWrongALPN)
+        }
+    }
+
+    @Test
+    func vlessTLSALPNReachesTheFinalXrayConfiguration() async throws {
+        let store = CanonicalInMemoryCredentialStore()
+        let userID = TestSecrets().vlessUUID
+        let result = try await VLESSLinkParser(credentialStore: store).parse(
+            "vless://\(userID)@vless-alpn.example.invalid:443?type=tcp&security=tls&sni=vless-cover.example.invalid&alpn=h2,http%2F1.1&encryption=none#ALPN"
+        )
+        guard case .profile(let profile) = result.kind else {
+            Issue.record("Expected a VLESS profile")
+            return
+        }
+
+        #expect(profile.tlsSettings.alpn == ["h2", "http/1.1"])
+        #expect(profile.runtimeCapability == .ready)
+        let record = try SharedRuntimeProfileMapper(now: fixedDate).record(from: profile)
+        #expect(record.security.alpn == ["h2", "http/1.1"])
+
+        let json = try xrayJSONString(from: profile, credential: userID)
+        let tlsSettings = try firstXrayOutboundTLSSettings(from: json)
+        #expect(tlsSettings["alpn"] as? [String] == ["h2", "http/1.1"])
+    }
+
+    @Test
+    func vmessNonDefaultHeaderTypeIsRejectedBeforeCredentialStorage() async throws {
+        let store = CanonicalInMemoryCredentialStore()
+        let payload = """
+        {"ps":"HTTP Header","add":"vmess.example.invalid","port":"443","id":"\(TestSecrets().vlessUUID)","aid":"0","scy":"auto","net":"tcp","type":"http","host":"cover.example.invalid","path":"/","tls":"tls","sni":"cover.example.invalid"}
+        """
+
+        await #expect(throws: VPNImportError.unsupportedCapability("VMess non-default TCP header types are not supported by this build.")) {
+            _ = try await VMessLinkParser(credentialStore: store).parse(
+                "vmess://\(Data(payload.utf8).base64EncodedString())"
+            )
+        }
+        #expect(await store.activeReferenceCount == 0)
+    }
+
+    @Test
+    func vmessTLSFingerprintAndALPNReachTheFinalXrayConfiguration() async throws {
+        let store = CanonicalInMemoryCredentialStore()
+        let payload = """
+        {"ps":"TLS Options","add":"vmess.example.invalid","port":"443","id":"\(TestSecrets().vlessUUID)","aid":"0","scy":"auto","net":"tcp","type":"none","host":"","path":"","tls":"tls","sni":"cover.example.invalid","fp":"chrome","alpn":"h2,http/1.1"}
+        """
+        let result = try await VMessLinkParser(credentialStore: store).parse(
+            "vmess://\(Data(payload.utf8).base64EncodedString())"
+        )
+        guard case .profile(let profile) = result.kind else {
+            Issue.record("Expected a VMess profile")
+            return
+        }
+
+        #expect(profile.tlsSettings.fingerprint == "chrome")
+        #expect(profile.tlsSettings.alpn == ["h2", "http/1.1"])
+        #expect(profile.runtimeCapability == .ready)
+
+        let tlsSettings = try firstXrayOutboundTLSSettings(
+            from: xrayJSONString(from: profile, credential: TestSecrets().vlessUUID)
+        )
+        #expect(tlsSettings["fingerprint"] as? String == "chrome")
+        #expect(tlsSettings["alpn"] as? [String] == ["h2", "http/1.1"])
+    }
+
+    @Test
+    func shadowsocksSIP002AndLegacyFormsReachFinalRuntimeAndUnsupportedMethodFailsClosed() async throws {
+        let store = CanonicalInMemoryCredentialStore()
+        let password = TestSecrets().password
+        let sip002User = Data("aes-256-gcm:\(password)".utf8).base64EncodedString()
+        let legacyPayload = Data("aes-256-gcm:\(password)@legacy-ss.example.invalid:8388".utf8).base64EncodedString()
+        let supportedURIs = [
+            "ss://\(sip002User)@sip002-ss.example.invalid:8388#SIP002",
+            "ss://\(legacyPayload)#Legacy"
+        ]
+
+        for uri in supportedURIs {
+            let result = try await ShadowsocksLinkParser(credentialStore: store).parse(uri)
+            guard case .profile(let profile) = result.kind else {
+                Issue.record("Expected a Shadowsocks profile")
+                continue
+            }
+
+            #expect(profile.runtimeCapability == .ready)
+            let outbound = try firstXrayOutbound(from: xrayJSONString(from: profile, credential: password))
+            let settings = try #require(outbound["settings"] as? [String: Any])
+            let servers = try #require(settings["servers"] as? [[String: Any]])
+            let server = try #require(servers.first)
+            let streamSettings = try #require(outbound["streamSettings"] as? [String: Any])
+            #expect(outbound["protocol"] as? String == "shadowsocks")
+            #expect(server["method"] as? String == "aes-256-gcm")
+            #expect(server["password"] as? String == password)
+            #expect(streamSettings["network"] as? String == "tcp")
+            #expect(streamSettings["security"] as? String == "none")
+        }
+
+        let unsupportedUser = Data("rc4-md5:\(password)".utf8).base64EncodedString()
+        let unsupportedResult = try await ShadowsocksLinkParser(credentialStore: store).parse(
+            "ss://\(unsupportedUser)@unsupported-method.example.invalid:8388#Unsupported"
+        )
+        guard case .profile(let unsupportedProfile) = unsupportedResult.kind else {
+            Issue.record("Expected an unsupported Shadowsocks profile")
+            return
+        }
+
+        #expect(unsupportedProfile.runtimeCapability == .unsupported(.unsupportedFeature(
+            protocolType: .shadowsocks,
+            feature: .shadowsocksMethod
+        )))
+        #expect(throws: XrayConfigurationBuilderError.unsupportedProtocol) {
+            _ = try xrayJSONString(from: unsupportedProfile, credential: password)
+        }
+    }
+
+    @Test
+    func realityALPNIsRejectedBeforeUseAndByTheRuntimeCompiler() async throws {
+        let store = CanonicalInMemoryCredentialStore()
+        let result = try await TrojanLinkParser(credentialStore: store).parse(
+            "trojan://\(TestSecrets().password)@trojan-reality.example.invalid:443?type=tcp&security=reality&sni=cover.example.invalid&fp=chrome&pbk=\(TestSecrets().realityPublicKey)&sid=abcd&spx=%2F&alpn=h2#Reality"
+        )
+        guard case .profile(let profile) = result.kind else {
+            Issue.record("Expected a Trojan profile")
+            return
+        }
+
+        #expect(profile.isComplete)
+        #expect(profile.runtimeCapability == .unsupported(.unsupportedFeature(
+            protocolType: .trojan,
+            feature: .realityALPN
+        )))
+        #expect(throws: (any Error).self) {
+            _ = try SharedRuntimeProfileMapper(now: fixedDate).record(from: profile)
+        }
+    }
+
+    @Test
+    func finalRuntimeFailsClosedForEverySemanticallyRejectedRepresentedOption() {
+        var tcpHeader = makeRuntimeCapabilityProfile(protocolType: .vless, network: "tcp", security: "tls")
+        tcpHeader.transportSettings.metadata["headerType"] = "http"
+
+        var packetEncoding = makeRuntimeCapabilityProfile(protocolType: .vless, network: "tcp", security: "tls")
+        packetEncoding.metadata["packetEncoding"] = "xudp"
+
+        var mux = makeRuntimeCapabilityProfile(protocolType: .trojan, network: "tcp", security: "tls")
+        mux.metadata["mux"] = "1"
+
+        var vlessEncryption = makeRuntimeCapabilityProfile(protocolType: .vless, network: "tcp", security: "tls")
+        vlessEncryption.protocolConfiguration = .vless(VLESSProfileConfiguration(flow: nil, encryption: "aes-128-gcm"))
+
+        var vlessFlow = makeRuntimeCapabilityProfile(protocolType: .vless, network: "ws", security: "tls")
+        vlessFlow.protocolConfiguration = .vless(VLESSProfileConfiguration(flow: "xtls-rprx-vision", encryption: "none"))
+
+        var vmessCipher = makeRuntimeCapabilityProfile(protocolType: .vmess, network: "tcp", security: "tls")
+        vmessCipher.protocolConfiguration = .vmess(VMessProfileConfiguration(alterID: 0, security: "unsupported-cipher"))
+
+        var negativeAlterID = makeRuntimeCapabilityProfile(protocolType: .vmess, network: "tcp", security: "tls")
+        negativeAlterID.protocolConfiguration = .vmess(VMessProfileConfiguration(alterID: -1, security: "auto"))
+
+        var vmessUnknownSecurity = makeRuntimeCapabilityProfile(protocolType: .vmess, network: "tcp", security: "unknown")
+        vmessUnknownSecurity.tlsSettings.isEnabled = true
+
+        var trojanNone = makeRuntimeCapabilityProfile(protocolType: .trojan, network: "tcp", security: "none")
+        trojanNone.tlsSettings.isEnabled = true
+
+        let cases = [
+            tcpHeader,
+            packetEncoding,
+            mux,
+            vlessEncryption,
+            vlessFlow,
+            vmessCipher,
+            negativeAlterID,
+            vmessUnknownSecurity,
+            trojanNone
+        ]
+        for profile in cases {
+            #expect(profile.runtimeCapability.isReady == false)
+            let credential = [VPNProtocol.vless, .vmess].contains(profile.protocolType)
+                ? TestSecrets().vlessUUID
+                : TestSecrets().password
+            #expect(throws: (any Error).self) {
+                _ = try xrayJSONString(from: profile, credential: credential)
+            }
+        }
+    }
+
+    @Test
+    func trojanTLSRealityGRPCAndALPNReachStructuredFinalXrayConfiguration() async throws {
+        let store = CanonicalInMemoryCredentialStore()
+        let password = TestSecrets().password
+        let parser = TrojanLinkParser(credentialStore: store)
+        let cases: [(uri: String, network: String, security: String, alpn: [String]?)] = [
+            (
+                "trojan://\(password)@trojan-tls.example.invalid:443?type=tcp&security=tls&sni=cover.example.invalid&alpn=h2,http%2F1.1#TLS",
+                "tcp",
+                "tls",
+                ["h2", "http/1.1"]
+            ),
+            (
+                "trojan://\(password)@trojan-grpc.example.invalid:443?type=grpc&security=tls&sni=cover.example.invalid&serviceName=trojan-service&alpn=h2#GRPC",
+                "grpc",
+                "tls",
+                ["h2"]
+            ),
+            (
+                "trojan://\(password)@trojan-reality.example.invalid:443?type=tcp&security=reality&sni=reality-cover.example.invalid&fp=chrome&pbk=\(TestSecrets().realityPublicKey)&sid=abcd&spx=%2F#Reality",
+                "tcp",
+                "reality",
+                nil
+            )
+        ]
+
+        for testCase in cases {
+            let result = try await parser.parse(testCase.uri)
+            guard case .profile(let profile) = result.kind else {
+                Issue.record("Expected a Trojan profile")
+                continue
+            }
+            #expect(profile.runtimeCapability == .ready)
+
+            let outbound = try firstXrayOutbound(from: xrayJSONString(from: profile, credential: password))
+            let streamSettings = try #require(outbound["streamSettings"] as? [String: Any])
+            #expect(streamSettings["network"] as? String == testCase.network)
+            #expect(streamSettings["security"] as? String == testCase.security)
+            if testCase.network == "grpc" {
+                let grpcSettings = try #require(streamSettings["grpcSettings"] as? [String: Any])
+                #expect(grpcSettings["serviceName"] as? String == "trojan-service")
+            }
+            if let alpn = testCase.alpn {
+                let tlsSettings = try #require(streamSettings["tlsSettings"] as? [String: Any])
+                #expect(tlsSettings["alpn"] as? [String] == alpn)
+            }
+            if testCase.security == "reality" {
+                let realitySettings = try #require(streamSettings["realitySettings"] as? [String: Any])
+                #expect(realitySettings["publicKey"] as? String == TestSecrets().realityPublicKey)
+                #expect(realitySettings["shortId"] as? String == "abcd")
+                #expect(realitySettings["spiderX"] as? String == "/")
+            }
+        }
+    }
+
+    @Test
+    func packetTunnelBuilderKeepsTheAppCapabilityMatrixAndTrojanALPN() throws {
+        let extensionRuntime = try projectFileContents("PacketTunnelExtension/Core/TunnelIPC/RuntimeConfigurationModels.swift")
+
+        #expect(extensionRuntime.contains("[.tcp, .websocket, .grpc, .httpUpgrade, .xhttp].contains(configuration.transport.kind)"))
+        #expect(extensionRuntime.contains("normalizedALPN(configuration.trojan?.alpn)"))
+        #expect(extensionRuntime.contains("security.tlsSettings?.alpn = alpn"))
+        #expect(extensionRuntime.contains("normalizedOptional(configuration.vless.encryption)"))
+        #expect(extensionRuntime.contains("vmess.alterID.map({ $0 >= 0 })"))
+    }
+}
+
 struct XrayConfigurationBuilderTests {
+    @Test
+    func protocolMatrixAdmitsEveryTransportAlreadyImplementedByTheXrayEncoder() throws {
+        var vlessWebSocket = makeTCPTLSProfile()
+        vlessWebSocket.transportSettings = VPNTransportSettings(
+            network: "ws",
+            security: "tls",
+            path: "/vless-ws",
+            host: "cdn.example.com"
+        )
+
+        var vlessGRPC = makeTCPTLSProfile()
+        vlessGRPC.transportSettings = VPNTransportSettings(
+            network: "grpc",
+            security: "tls",
+            serviceName: "vless-service"
+        )
+
+        var vlessHTTPUpgrade = makeTCPTLSProfile()
+        vlessHTTPUpgrade.transportSettings = VPNTransportSettings(
+            network: "httpupgrade",
+            security: "tls",
+            path: "/vless-upgrade",
+            host: "cdn.example.com"
+        )
+
+        var vmessHTTPUpgrade = makeVMessProfile()
+        vmessHTTPUpgrade.transportSettings = VPNTransportSettings(
+            network: "httpupgrade",
+            security: "tls",
+            path: "/vmess-upgrade",
+            host: "cdn.example.com"
+        )
+
+        var trojanHTTPUpgrade = makeTrojanProfile()
+        trojanHTTPUpgrade.transportSettings = VPNTransportSettings(
+            network: "httpupgrade",
+            security: "tls",
+            path: "/trojan-upgrade",
+            host: "cdn.example.com"
+        )
+
+        let cases: [(profile: VPNProfile, network: String, settingsKey: String)] = [
+            (vlessWebSocket, "ws", "wsSettings"),
+            (vlessGRPC, "grpc", "grpcSettings"),
+            (vlessHTTPUpgrade, "httpupgrade", "httpUpgradeSettings"),
+            (vmessHTTPUpgrade, "httpupgrade", "httpUpgradeSettings"),
+            (trojanHTTPUpgrade, "httpupgrade", "httpUpgradeSettings")
+        ]
+
+        for testCase in cases {
+            let credential = [VPNProtocol.vless, .vmess].contains(testCase.profile.protocolType)
+                ? TestSecrets().vlessUUID
+                : TestSecrets().password
+            let outbound = try firstXrayOutbound(from: xrayJSONString(from: testCase.profile, credential: credential))
+            let streamSettings = try #require(outbound["streamSettings"] as? [String: Any])
+
+            #expect(streamSettings["network"] as? String == testCase.network)
+            #expect(streamSettings[testCase.settingsKey] != nil)
+        }
+    }
+
     @Test
     func tcpTLSProducesDeterministicValidStructure() throws {
         let first = try xrayJSONString(from: makeTCPTLSProfile())
@@ -1402,7 +1949,8 @@ struct XrayConfigurationBuilderTests {
             let tlsSettings = try firstXrayOutboundTLSSettings(
                 from: xrayJSONString(from: profile, credential: TestSecrets().vlessUUID)
             )
-            #expect(tlsSettings["alpn"] == nil)
+            let alpn = tlsSettings["alpn"] as? [String] ?? []
+            #expect(alpn.contains("h3") == false)
         }
     }
 
@@ -1611,8 +2159,16 @@ struct XrayConfigurationBuilderTests {
 
     @Test
     func builderRejectsUnsupportedTransportAndMalformedInputs() throws {
+        var unsupportedTransport = try resolvedConfiguration(from: makeTCPTLSProfile())
+        unsupportedTransport.transport = SharedRuntimeTransport(
+            kind: .hysteria,
+            path: nil,
+            host: nil,
+            serviceName: nil,
+            mode: nil
+        )
         #expect(throws: XrayConfigurationBuilderError.unsupportedTransport) {
-            _ = try XrayConfigurationBuilder().build(from: resolvedConfiguration(from: makeVLESSProfile()), options: XrayBuildOptions())
+            _ = try XrayConfigurationBuilder().build(from: unsupportedTransport, options: XrayBuildOptions())
         }
 
         var malformedXHTTP = try resolvedConfiguration(from: makeXHTTPTLSProfile())
@@ -3028,7 +3584,7 @@ struct RuntimeOnlyPacketTunnelTests {
         let settingsView = try projectFileContents("VPN/Views/SettingsView.swift")
         let diagnosticsViewModel = try projectFileContents("VPN/Core/Portable/TunnelIPC/TunnelTelemetryDiagnosticsViewModel.swift")
 
-        #expect(runtimeModels.contains("[.tcp, .xhttp].contains(resolved.transport.kind)"))
+        #expect(runtimeModels.contains("[.tcp, .websocket, .grpc, .httpUpgrade, .xhttp].contains(resolved.transport.kind)"))
         #expect(runtimeModels.contains("mode: .packetTunnelRuntimeOnly"))
         #expect(runtimeModels.contains("return .runtimeOnlyStarted("))
         let actorDeclaration = try sourceSlice(
@@ -4139,6 +4695,60 @@ private func makeTCPTLSProfile(
     )
 }
 
+private func makeRuntimeCapabilityProfile(
+    protocolType: VPNProtocol,
+    network: String,
+    security: String
+) -> VPNProfile {
+    let normalizedNetwork = network.lowercased()
+    let normalizedSecurity = security.lowercased()
+    let pathNetworks = ["ws", "websocket", "httpupgrade", "xhttp", "splithttp"]
+    let hostNetworks = ["ws", "websocket", "httpupgrade", "xhttp", "splithttp"]
+    var transportMetadata: [String: String] = [:]
+    if ["xhttp", "splithttp"].contains(normalizedNetwork) {
+        transportMetadata["mode"] = "auto"
+    }
+
+    let protocolConfiguration: VPNProtocolConfiguration
+    switch protocolType {
+    case .vless:
+        protocolConfiguration = .vless(VLESSProfileConfiguration(flow: nil, encryption: "none"))
+    case .vmess:
+        protocolConfiguration = .vmess(VMessProfileConfiguration(alterID: 0, security: "auto"))
+    case .trojan:
+        protocolConfiguration = .trojan(TrojanProfileConfiguration(alpn: []))
+    default:
+        preconditionFailure("Runtime capability fixture only supports Xray stream protocols")
+    }
+
+    return VPNProfile.draft(
+        name: "Runtime capability \(protocolType.rawValue) \(network) \(security)",
+        protocolType: protocolType,
+        serverAddress: "runtime-capability.example.invalid",
+        port: 443,
+        credentialReference: "keychain://vpn.credentials/runtime-capability",
+        transportSettings: VPNTransportSettings(
+            network: network,
+            security: security,
+            path: pathNetworks.contains(normalizedNetwork) ? "/runtime" : nil,
+            host: hostNetworks.contains(normalizedNetwork) ? "cdn.example.invalid" : nil,
+            serviceName: normalizedNetwork == "grpc" ? "runtime-service" : nil,
+            metadata: transportMetadata
+        ),
+        tlsSettings: VPNTLSSettings(
+            isEnabled: normalizedSecurity != "none",
+            serverName: normalizedSecurity == "none" ? nil : "cover.example.invalid",
+            allowInsecure: false,
+            fingerprint: normalizedSecurity == "none" ? nil : "chrome",
+            realityPublicKey: normalizedSecurity == "reality" ? TestSecrets().realityPublicKey : nil,
+            shortID: normalizedSecurity == "reality" ? "abcd" : nil,
+            spiderX: normalizedSecurity == "reality" ? "/" : nil
+        ),
+        protocolConfiguration: protocolConfiguration,
+        source: .importedURL
+    )
+}
+
 private func makeVMessProfile(
     credentialReference: String? = "keychain://vpn.credentials/vmess-account"
 ) -> VPNProfile {
@@ -4631,6 +5241,10 @@ private actor CanonicalInMemoryCredentialStore: CredentialStoring {
 
     func delete(reference: String) async throws {
         secrets[reference] = nil
+    }
+
+    var activeReferenceCount: Int {
+        secrets.count
     }
 }
 

@@ -36,6 +36,20 @@ nonisolated struct VMessLinkParser {
             throw VPNImportError.missingRequiredComponent("user id")
         }
 
+        let headerType = decoded.type.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard headerType.isEmpty || headerType == "none" else {
+            throw VPNImportError.unsupportedCapability("VMess non-default TCP header types are not supported by this build.")
+        }
+
+        let tlsMode = decoded.tls.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard tlsMode.isEmpty || tlsMode == "none" || tlsMode == "tls" else {
+            throw VPNImportError.unsupportedCapability("The requested VMess security mode is not supported by this build.")
+        }
+
+        guard let alterID = Int(decoded.aid), alterID >= 0 else {
+            throw VPNImportError.invalidPayload("The VMess alter ID is invalid.")
+        }
+
         let credentialReference = try await credentialStore.store(decoded.id, label: "VMess user id")
         let name = decoded.ps.isEmpty ? decoded.add : decoded.ps
         let profile = VPNProfile.draft(
@@ -44,9 +58,23 @@ nonisolated struct VMessLinkParser {
             serverAddress: decoded.add,
             port: port,
             credentialReference: credentialReference,
-            transportSettings: VPNTransportSettings(network: decoded.net, security: decoded.tls, path: decoded.path, host: decoded.host),
-            tlsSettings: VPNTLSSettings(isEnabled: decoded.tls.isEmpty == false, serverName: decoded.sni.isEmpty ? decoded.host : decoded.sni),
-            protocolConfiguration: .vmess(VMessProfileConfiguration(alterID: Int(decoded.aid), security: decoded.scy)),
+            transportSettings: VPNTransportSettings(
+                network: decoded.net,
+                security: decoded.tls,
+                path: decoded.path,
+                host: decoded.host,
+                serviceName: decoded.net.lowercased() == "grpc" ? decoded.path : nil
+            ),
+            tlsSettings: VPNTLSSettings(
+                isEnabled: tlsMode == "tls",
+                serverName: decoded.sni.isEmpty ? decoded.host : decoded.sni,
+                fingerprint: decoded.fp.isEmpty ? nil : decoded.fp,
+                alpn: decoded.alpn
+                    .split(separator: ",")
+                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .filter { $0.isEmpty == false }
+            ),
+            protocolConfiguration: .vmess(VMessProfileConfiguration(alterID: alterID, security: decoded.scy)),
             source: .importedURL
         )
 
@@ -72,9 +100,11 @@ private nonisolated struct VMessPayload: Decodable {
     var path: String
     var tls: String
     var sni: String
+    var fp: String
+    var alpn: String
 
     private enum CodingKeys: String, CodingKey {
-        case ps, add, port, id, aid, scy, net, type, host, path, tls, sni
+        case ps, add, port, id, aid, scy, net, type, host, path, tls, sni, fp, alpn
     }
 
     init(from decoder: Decoder) throws {
@@ -91,5 +121,7 @@ private nonisolated struct VMessPayload: Decodable {
         path = try container.decodeIfPresent(String.self, forKey: .path) ?? ""
         tls = try container.decodeIfPresent(String.self, forKey: .tls) ?? ""
         sni = try container.decodeIfPresent(String.self, forKey: .sni) ?? ""
+        fp = try container.decodeIfPresent(String.self, forKey: .fp) ?? ""
+        alpn = try container.decodeIfPresent(String.self, forKey: .alpn) ?? ""
     }
 }

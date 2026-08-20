@@ -112,7 +112,7 @@ struct VPNDashboardView: View {
                         if let selectedProfile = viewModel.selectedProfile {
                             Text(selectedProfile.name)
                                 .font(.caption)
-                                .foregroundStyle(selectedProfile.isComplete ? AnyShapeStyle(.secondary) : AnyShapeStyle(.orange))
+                                .foregroundStyle(selectedProfile.runtimeCapability.isReady ? AnyShapeStyle(.secondary) : AnyShapeStyle(.orange))
                                 .lineLimit(1)
                         } else if viewModel.selectedServer != nil {
                             Text("home.using_built_in_server")
@@ -207,6 +207,9 @@ struct VPNDashboardView: View {
             let port = profile.port.map { ":\($0)" } ?? ""
             if profile.isComplete == false {
                 return "Missing \(profile.missingRequiredFields.joined(separator: ", "))"
+            }
+            if profile.runtimeCapability.isReady == false {
+                return profile.runtimeCapability.statusText
             }
             return "\(profile.serverAddress)\(port) • \(profile.source.displayName)"
         }

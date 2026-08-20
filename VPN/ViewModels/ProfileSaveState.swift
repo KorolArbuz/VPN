@@ -14,4 +14,5 @@ nonisolated enum ProfileSaveState: Equatable, Sendable {
     case failed(String)
     case duplicate
     case incomplete([String])
+    case unsupported(String)
 }

@@ -15,6 +15,10 @@ nonisolated struct SimpleVPNLinkParser {
         let host = try ParserSupport.requiredHost(from: components)
         let port = try ParserSupport.requiredPort(from: components, defaultPort: 443)
         let query = ParserSupport.queryDictionary(from: components)
+        var publicQuery = query
+        for credentialQueryName in ["password", "token", "privateKey"] {
+            publicQuery.removeValue(forKey: credentialQueryName)
+        }
         let name = ParserSupport.displayName(from: components, fallback: host)
         let credential = components.user ?? query["password"] ?? query["token"] ?? query["privateKey"]
         let credentialReference: String?
@@ -32,11 +36,11 @@ nonisolated struct SimpleVPNLinkParser {
             port: port,
             username: query["username"],
             credentialReference: credentialReference,
-            transportSettings: VPNTransportSettings(network: query["type"], security: query["security"], metadata: query),
+            transportSettings: VPNTransportSettings(network: query["type"], security: query["security"], metadata: publicQuery),
             tlsSettings: VPNTLSSettings(isEnabled: query["tls"] == "1" || query["security"] == "tls", serverName: query["sni"], allowInsecure: query["allowInsecure"] == "1"),
             protocolConfiguration: configuration(for: protocolType, query: query),
             source: .importedURL,
-            metadata: query
+            metadata: publicQuery
         )
 
         return VPNImportResult(

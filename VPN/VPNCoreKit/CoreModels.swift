@@ -54,6 +54,7 @@ nonisolated struct CoreTLSConfiguration: Codable, Hashable, Sendable {
     var serverName: String?
     var allowInsecure: Bool
     var fingerprint: String?
+    var alpn: [String]?
 }
 
 nonisolated struct CoreRealityConfiguration: Codable, Hashable, Sendable {

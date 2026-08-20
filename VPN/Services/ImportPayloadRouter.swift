@@ -83,7 +83,7 @@ nonisolated struct ImportPayloadRouter: Sendable {
         return .batch(BatchImportDraft(
             title: title,
             detectedFormat: result.format,
-            profiles: result.profiles.map { BatchImportProfileDraft(profile: $0, isSelected: $0.isComplete) },
+            profiles: result.profiles.map { BatchImportProfileDraft(profile: $0, isSelected: $0.runtimeCapability.isReady) },
             warnings: result.invalidEntries
         ))
     }

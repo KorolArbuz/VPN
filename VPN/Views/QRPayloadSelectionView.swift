@@ -13,6 +13,7 @@ struct QRPayloadSelectionView: View {
     let onRoute: (ImportPayloadRoute) -> Void
     @State private var errorMessage: String?
     @State private var isProcessing = false
+    @State private var importOperationID: UUID?
 
     var body: some View {
         List {
@@ -49,19 +50,33 @@ struct QRPayloadSelectionView: View {
             }
         }
         .navigationTitle("Choose QR Code")
+        .onDisappear {
+            importOperationID = nil
+        }
     }
 
     @MainActor
     private func select(_ payload: String) async {
         guard isProcessing == false else { return }
+        let operationID = UUID()
+        importOperationID = operationID
         isProcessing = true
-        defer { isProcessing = false }
 
         do {
             let route = try await viewModel.routeImportPayload(text: payload, title: "QR Code")
+            guard importOperationID == operationID else {
+                await viewModel.discardImportRoute(route)
+                return
+            }
+            importOperationID = nil
+            isProcessing = false
             onRoute(route)
         } catch {
-            errorMessage = "Unsupported QR content."
+            if importOperationID == operationID {
+                importOperationID = nil
+                isProcessing = false
+                errorMessage = "Unsupported QR content."
+            }
         }
     }
 

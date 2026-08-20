@@ -37,6 +37,7 @@ nonisolated struct VPNTLSSettings: Codable, Hashable, Sendable {
     var serverName: String?
     var allowInsecure: Bool
     var fingerprint: String?
+    var alpn: [String]?
     var realityPublicKey: String?
     var publicKeyReference: String?
     var shortID: String?
@@ -47,6 +48,7 @@ nonisolated struct VPNTLSSettings: Codable, Hashable, Sendable {
         serverName: String? = nil,
         allowInsecure: Bool = false,
         fingerprint: String? = nil,
+        alpn: [String]? = nil,
         realityPublicKey: String? = nil,
         publicKeyReference: String? = nil,
         shortID: String? = nil,
@@ -56,6 +58,7 @@ nonisolated struct VPNTLSSettings: Codable, Hashable, Sendable {
         self.serverName = serverName
         self.allowInsecure = allowInsecure
         self.fingerprint = fingerprint
+        self.alpn = alpn
         self.realityPublicKey = realityPublicKey
         self.publicKeyReference = publicKeyReference
         self.shortID = shortID
