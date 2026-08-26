@@ -2,26 +2,26 @@
 //  StartHapticFeedback.swift
 //  VPN
 //
-//  User-initiated feedback for the main Start button.
+//  User-initiated feedback for the main Start/Stop connection action.
 //
 
 import UIKit
 
-nonisolated protocol StartHapticFeedbackProviding: Sendable {
+nonisolated protocol ConnectionActionHapticFeedbackProviding: Sendable {
     @MainActor
-    func playLightStartImpact()
+    func playMediumImpact()
 }
 
-nonisolated struct SystemStartHapticFeedback: StartHapticFeedbackProviding {
+nonisolated struct SystemConnectionActionHapticFeedback: ConnectionActionHapticFeedbackProviding {
     @MainActor
-    func playLightStartImpact() {
-        let generator = UIImpactFeedbackGenerator(style: .light)
+    func playMediumImpact() {
+        let generator = UIImpactFeedbackGenerator(style: .medium)
         generator.prepare()
         generator.impactOccurred()
     }
 }
 
-nonisolated struct DisabledStartHapticFeedback: StartHapticFeedbackProviding {
+nonisolated struct DisabledConnectionActionHapticFeedback: ConnectionActionHapticFeedbackProviding {
     @MainActor
-    func playLightStartImpact() {}
+    func playMediumImpact() {}
 }

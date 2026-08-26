@@ -44,7 +44,8 @@ struct VPNDashboardView: View {
         VStack(spacing: 12) {
             ConnectionButton(
                 state: viewModel.connectionState,
-                isEnabled: viewModel.canToggleConnection && viewModel.canConnect
+                isEnabled: viewModel.canToggleConnection
+                    && (viewModel.connectionState == .connected || viewModel.canConnect)
             ) {
                 Task {
                     await viewModel.userDidTapMainConnectionButton()
@@ -224,11 +225,7 @@ struct VPNDashboardView: View {
     }
 
     private var modeText: String {
-        if let profile = viewModel.selectedProfile {
-            return profile.protocolType.displayName
-        }
-
-        return viewModel.selectedProtocol.displayName
+        String(localized: viewModel.connectionMode.title)
     }
 
     private var pingText: String {

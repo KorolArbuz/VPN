@@ -727,3 +727,1030 @@ struct SmartConnectionScoringTests {
         )
     }
 }
+
+@Suite(.serialized)
+struct SmartConnectionSelectionTests {
+    @Test
+    func automaticPlannerRanksAllEligibleProfiles() {
+        let profiles = [
+            makeSmartProfile(index: 3),
+            makeSmartProfile(index: 1),
+            makeSmartProfile(index: 2)
+        ]
+
+        let plan = SmartConnectionCandidatePlanner().plan(
+            profiles: profiles,
+            context: smartWiFiContext,
+            learning: .empty,
+            now: smartTestNow
+        )
+
+        #expect(plan.rankedCandidates.count == 3)
+        #expect(Set(plan.rankedCandidates.map(\.profileID)) == Set(profiles.map(\.id)))
+    }
+
+    @Test
+    func highestEffectiveScoreBecomesRecommendation() {
+        let preferred = makeSmartProfile(index: 2)
+        let other = makeSmartProfile(index: 1)
+        let learning = snapshot(entries: [
+            (preferred, smartStatistics(
+                attempts: 80,
+                successes: 80,
+                latency: 40,
+                loss: 0,
+                connectDuration: 1
+            )),
+            (other, smartStatistics(
+                attempts: 80,
+                successes: 30,
+                latency: 800,
+                loss: 15,
+                connectDuration: 25
+            ))
+        ])
+
+        let plan = SmartConnectionCandidatePlanner().plan(
+            profiles: [other, preferred],
+            context: smartWiFiContext,
+            learning: learning,
+            now: smartTestNow
+        )
+
+        #expect(plan.candidateIDs.first == preferred.id)
+    }
+
+    @Test
+    func invalidAndUnavailableProfilesAreExcluded() {
+        let valid = makeSmartProfile(index: 1)
+        var disabled = makeSmartProfile(index: 2)
+        disabled.isEnabled = false
+        var incomplete = makeSmartProfile(index: 3)
+        incomplete.credentialReference = nil
+
+        let plan = SmartConnectionCandidatePlanner().plan(
+            profiles: [incomplete, disabled, valid],
+            context: smartWiFiContext,
+            learning: .empty,
+            now: smartTestNow
+        )
+
+        #expect(plan.rankedCandidates.map(\.profileID) == [valid.id])
+    }
+
+    @Test
+    func equalScoresUseStableUUIDOrder() {
+        let first = makeSmartProfile(index: 1)
+        let second = makeSmartProfile(index: 2)
+
+        let plan = SmartConnectionCandidatePlanner().plan(
+            profiles: [second, first],
+            context: smartWiFiContext,
+            learning: .empty,
+            now: smartTestNow
+        )
+
+        #expect(plan.rankedCandidates.map(\.profileID) == [first.id, second.id])
+    }
+
+    @Test
+    @MainActor
+    func automaticStartConnectsRecommendationNumberOne() async throws {
+        let first = makeSmartProfile(index: 1)
+        let second = makeSmartProfile(index: 2)
+        let manager = ScriptedSmartConnectionManager()
+        let harness = try await makeSmartHarness(
+            profiles: [second, first],
+            manager: manager
+        )
+        #expect(harness.viewModel.automaticRecommendedProfileID == first.id)
+
+        await harness.viewModel.connect()
+
+        #expect(await manager.attemptedProfileIDs() == [first.id])
+        #expect(harness.viewModel.connectionState == .connected)
+    }
+}
+
+@Suite(.serialized)
+struct SmartConnectionFallbackTests {
+    @Test
+    @MainActor
+    func firstFailureTriggersSecondCandidate() async throws {
+        let first = makeSmartProfile(index: 1)
+        let second = makeSmartProfile(index: 2)
+        let manager = ScriptedSmartConnectionManager(scripts: [
+            first.id: [.failure],
+            second.id: [.success]
+        ])
+        let harness = try await makeSmartHarness(
+            profiles: [first, second],
+            manager: manager
+        )
+
+        await harness.viewModel.connect()
+
+        #expect(await manager.attemptedProfileIDs() == [first.id, second.id])
+        #expect(harness.viewModel.connectionState == .connected)
+    }
+
+    @Test
+    @MainActor
+    func failedFirstCandidateIsNotRetriedInSamePlan() async throws {
+        let first = makeSmartProfile(index: 1)
+        let second = makeSmartProfile(index: 2)
+        let manager = ScriptedSmartConnectionManager(scripts: [
+            first.id: [.failure, .success],
+            second.id: [.success]
+        ])
+        let harness = try await makeSmartHarness(
+            profiles: [first, second],
+            manager: manager
+        )
+
+        await harness.viewModel.connect()
+        let attempts = await manager.attemptedProfileIDs()
+
+        #expect(attempts.filter { $0 == first.id }.count == 1)
+        #expect(attempts == [first.id, second.id])
+    }
+
+    @Test
+    @MainActor
+    func successfulFallbackStopsFurtherAttempts() async throws {
+        let first = makeSmartProfile(index: 1)
+        let second = makeSmartProfile(index: 2)
+        let third = makeSmartProfile(index: 3)
+        let manager = ScriptedSmartConnectionManager(scripts: [
+            first.id: [.failure],
+            second.id: [.success],
+            third.id: [.success]
+        ])
+        let harness = try await makeSmartHarness(
+            profiles: [first, second, third],
+            manager: manager
+        )
+
+        await harness.viewModel.connect()
+
+        #expect(await manager.attemptedProfileIDs() == [first.id, second.id])
+    }
+
+    @Test
+    @MainActor
+    func allFailedCandidatesProduceOneFinalFailure() async throws {
+        let first = makeSmartProfile(index: 1)
+        let second = makeSmartProfile(index: 2)
+        let manager = ScriptedSmartConnectionManager(scripts: [
+            first.id: [.failure],
+            second.id: [.failure]
+        ])
+        let harness = try await makeSmartHarness(
+            profiles: [first, second],
+            manager: manager
+        )
+
+        await harness.viewModel.connect()
+
+        #expect(await manager.attemptedProfileIDs() == [first.id, second.id])
+        #expect(harness.viewModel.connectionState == .failed)
+        #expect(harness.viewModel.errorMessage != nil)
+    }
+
+    @Test
+    @MainActor
+    func fallbackAttemptsAreBoundedToPlanMaximum() async throws {
+        let profiles = (1...5).map { makeSmartProfile(index: $0) }
+        let scripts = Dictionary(uniqueKeysWithValues: profiles.map {
+            ($0.id, [ScriptedSmartOutcome.failure])
+        })
+        let manager = ScriptedSmartConnectionManager(scripts: scripts)
+        let harness = try await makeSmartHarness(
+            profiles: profiles,
+            manager: manager
+        )
+
+        await harness.viewModel.connect()
+
+        #expect(await manager.attemptedProfileIDs().count == 3)
+        #expect(harness.viewModel.automaticCandidatePlan.maximumAttempts == 3)
+    }
+
+    @Test
+    @MainActor
+    func taskCancellationStopsFallbackAndDoesNotPenalizeProfile() async throws {
+        let first = makeSmartProfile(index: 1)
+        let second = makeSmartProfile(index: 2)
+        let manager = ScriptedSmartConnectionManager(scripts: [
+            first.id: [.waitForCancellation],
+            second.id: [.success]
+        ])
+        let harness = try await makeSmartHarness(
+            profiles: [first, second],
+            manager: manager
+        )
+        let task = Task { @MainActor in
+            await harness.viewModel.connect()
+        }
+        let started = await eventually {
+            await manager.attemptedProfileIDs().count == 1
+        }
+        #expect(started)
+
+        task.cancel()
+        await task.value
+        let snapshot = await harness.learningStore.snapshot(for: [first, second])
+
+        #expect(await manager.attemptedProfileIDs() == [first.id])
+        #expect(snapshot.contextStatistics(
+            profileID: first.id,
+            protocolType: first.protocolType,
+            context: smartWiFiContext
+        ).failedConnectionCount == 0)
+    }
+
+    @Test
+    @MainActor
+    func manualModeNeverFallsBackToAnotherProfile() async throws {
+        let first = makeSmartProfile(index: 1)
+        let second = makeSmartProfile(index: 2)
+        let manager = ScriptedSmartConnectionManager(scripts: [
+            first.id: [.failure],
+            second.id: [.success]
+        ])
+        let harness = try await makeSmartHarness(
+            profiles: [first, second],
+            manager: manager
+        )
+        harness.viewModel.selectConnectionMode(.manual)
+        harness.viewModel.selectProfile(first)
+
+        await harness.viewModel.connect()
+
+        #expect(await manager.attemptedProfileIDs() == [first.id])
+        #expect(harness.viewModel.connectionState == .failed)
+    }
+
+    @Test
+    @MainActor
+    func automaticFallbackProducesNoAdditionalHaptics() async throws {
+        let first = makeSmartProfile(index: 1)
+        let second = makeSmartProfile(index: 2)
+        let manager = ScriptedSmartConnectionManager(scripts: [
+            first.id: [.failure],
+            second.id: [.success]
+        ])
+        let haptic = RecordingSmartConnectionHaptic()
+        let harness = try await makeSmartHarness(
+            profiles: [first, second],
+            manager: manager,
+            haptic: haptic
+        )
+
+        await harness.viewModel.userDidTapMainConnectionButton()
+
+        #expect(haptic.callCount == 1)
+        #expect(await manager.attemptedProfileIDs() == [first.id, second.id])
+    }
+}
+
+@Suite(.serialized)
+struct SmartConnectionSessionIntegrationTests {
+    @Test
+    @MainActor
+    func healthyConnectedTunnelIsNotSwitchedForHigherAlternativeScore() async throws {
+        let first = makeSmartProfile(index: 1)
+        let second = makeSmartProfile(index: 2)
+        let manager = ScriptedSmartConnectionManager()
+        let source = MutableSmartNetworkContextSource(context: smartWiFiContext)
+        let harness = try await makeSmartHarness(
+            profiles: [first, second],
+            manager: manager,
+            networkSource: source
+        )
+        await harness.viewModel.connect()
+        #expect(await manager.attemptedProfileIDs() == [first.id])
+
+        for _ in 0..<20 {
+            await harness.learningStore.recordConnectionSuccess(
+                profileID: second.id,
+                protocolType: second.protocolType,
+                context: smartCellularContext,
+                connectDuration: 1,
+                at: smartTestNow
+            )
+        }
+        await source.set(smartCellularContext)
+        _ = await eventually {
+            harness.viewModel.currentNetworkContext == smartCellularContext
+        }
+
+        #expect(harness.viewModel.connectionState == .connected)
+        #expect(await manager.attemptedProfileIDs() == [first.id])
+        #expect(await manager.disconnectCallCount() == 0)
+    }
+
+    @Test
+    @MainActor
+    func existingTelemetryStreamFeedsLearningAtCheckpoint() async throws {
+        let profile = makeSmartProfile(index: 1)
+        let telemetry = TestSmartConnectionTelemetryManager()
+        let harness = try await makeSmartHarness(
+            profiles: [profile],
+            telemetry: telemetry
+        )
+        await harness.viewModel.connect()
+
+        await telemetry.emit(DashboardConnectionTelemetrySnapshot(
+            sessionID: "session-one",
+            connectedStartedAt: smartTestNow,
+            runtimeSeconds: 61,
+            latencyMilliseconds: 80,
+            packetLossPercent: 2
+        ))
+        let learned = await eventually {
+            let statistics = await contextStatistics(
+                store: harness.learningStore,
+                profile: profile
+            )
+            return statistics.latencySampleCount == 1
+                && statistics.packetLossSampleCount == 1
+        }
+
+        #expect(learned)
+        #expect(await telemetry.reconcileCallCount() >= 2)
+    }
+
+    @Test
+    @MainActor
+    func newSessionDoesNotInheritTransientTelemetrySnapshot() async throws {
+        let profile = makeSmartProfile(index: 1)
+        let telemetry = TestSmartConnectionTelemetryManager()
+        let harness = try await makeSmartHarness(
+            profiles: [profile],
+            telemetry: telemetry
+        )
+        await harness.viewModel.connect()
+        await telemetry.emit(DashboardConnectionTelemetrySnapshot(
+            sessionID: "first-session",
+            connectedStartedAt: smartTestNow,
+            runtimeSeconds: 10,
+            latencyMilliseconds: 50,
+            packetLossPercent: 0
+        ))
+        _ = await eventually {
+            harness.viewModel.connectionTelemetry.sessionID == "first-session"
+        }
+        await harness.viewModel.disconnect()
+
+        await harness.viewModel.connect()
+        let reset = await eventually {
+            harness.viewModel.connectionTelemetry == .unavailable
+        }
+
+        #expect(reset)
+        await telemetry.emit(DashboardConnectionTelemetrySnapshot(
+            sessionID: "second-session",
+            connectedStartedAt: smartTestNow,
+            runtimeSeconds: 1,
+            latencyMilliseconds: 200,
+            packetLossPercent: nil
+        ))
+        let secondApplied = await eventually {
+            harness.viewModel.connectionTelemetry.sessionID == "second-session"
+        }
+        #expect(secondApplied)
+        #expect(harness.viewModel.connectionTelemetry.latencyMilliseconds == 200)
+    }
+}
+
+private struct SmartConnectionHarness {
+    let viewModel: VPNDashboardViewModel
+    let manager: ScriptedSmartConnectionManager
+    let learningStore: InMemorySmartConnectionLearningStore
+    let networkSource: MutableSmartNetworkContextSource
+    let telemetry: TestSmartConnectionTelemetryManager
+    let haptic: RecordingSmartConnectionHaptic
+}
+
+@MainActor
+private func makeSmartHarness(
+    profiles: [VPNProfile],
+    manager: ScriptedSmartConnectionManager = ScriptedSmartConnectionManager(),
+    learningSnapshot: SmartConnectionLearningSnapshot = .empty,
+    networkSource: MutableSmartNetworkContextSource =
+        MutableSmartNetworkContextSource(context: smartWiFiContext),
+    telemetry: TestSmartConnectionTelemetryManager =
+        TestSmartConnectionTelemetryManager(),
+    haptic: RecordingSmartConnectionHaptic? = nil
+) async throws -> SmartConnectionHarness {
+    let hapticFeedback = haptic ?? RecordingSmartConnectionHaptic()
+    let repository = InMemoryVPNProfileRepository()
+    for profile in profiles {
+        try await repository.save(profile)
+    }
+    let learningStore = InMemorySmartConnectionLearningStore(
+        snapshot: learningSnapshot
+    )
+    let activeStore = TestSmartActiveProfileStore(profileID: nil)
+    let manualStore = TestSmartManualProfileSelectionStore(profileID: nil)
+    let viewModel = VPNDashboardViewModel(
+        serverProvider: EmptySmartServerProvider(),
+        connectionManager: manager,
+        profileRepository: repository,
+        subscriptionRepository: InMemorySubscriptionRepository(),
+        activeProfileStore: activeStore,
+        manualProfileSelectionStore: manualStore,
+        connectionTelemetryManager: telemetry,
+        learningStore: learningStore,
+        networkContextSource: networkSource,
+        smartConnectionClock: FixedSmartConnectionClock(now: smartTestNow),
+        connectionActionHapticFeedback: hapticFeedback
+    )
+    await viewModel.loadInitialData()
+    return SmartConnectionHarness(
+        viewModel: viewModel,
+        manager: manager,
+        learningStore: learningStore,
+        networkSource: networkSource,
+        telemetry: telemetry,
+        haptic: hapticFeedback
+    )
+}
+
+@MainActor
+private func eventually(
+    _ condition: @escaping @MainActor () async -> Bool
+) async -> Bool {
+    for _ in 0..<300 {
+        if await condition() {
+            return true
+        }
+        await Task.yield()
+    }
+    return false
+}
+
+private let smartTestNow = Date(timeIntervalSince1970: 2_000_000_000)
+
+private let smartWiFiContext = NetworkContext(
+    interfaceClass: .wifi,
+    isExpensive: false,
+    isConstrained: false,
+    supportsIPv4: true,
+    supportsIPv6: true
+)
+
+private let smartCellularContext = NetworkContext(
+    interfaceClass: .cellular,
+    isExpensive: true,
+    isConstrained: false,
+    supportsIPv4: true,
+    supportsIPv6: true
+)
+
+private func makeSmartProfile(
+    index: Int,
+    protocolType: VPNProtocol = .vless
+) -> VPNProfile {
+    let configuration: VPNProtocolConfiguration
+    switch protocolType {
+    case .hysteria2:
+        configuration = .hysteria2(
+            Hysteria2ProfileConfiguration(obfs: nil, bandwidthHint: nil)
+        )
+    default:
+        configuration = .vless(
+            VLESSProfileConfiguration(flow: nil, encryption: "none")
+        )
+    }
+    var profile = VPNProfile.draft(
+        name: "Profile \(index)",
+        protocolType: protocolType,
+        serverAddress: "profile-\(index).example.invalid",
+        port: 443,
+        credentialReference: "keychain://smart-test/\(index)",
+        transportSettings: VPNTransportSettings(network: "tcp", security: "tls"),
+        tlsSettings: VPNTLSSettings(
+            isEnabled: true,
+            serverName: "profile-\(index).example.invalid"
+        ),
+        protocolConfiguration: configuration,
+        source: .manual,
+        now: smartTestNow
+    )
+    profile.id = UUID(
+        uuidString: String(
+            format: "00000000-0000-0000-0000-%012d",
+            index
+        )
+    )!
+    return profile
+}
+
+private func smartStatistics(
+    attempts: Int,
+    successes: Int,
+    latency: Double? = nil,
+    loss: Double? = nil,
+    connectDuration: Double? = nil,
+    completedSessions: Int = 0,
+    unexpectedDisconnects: Int = 0,
+    successfulSessionSeconds: TimeInterval = 0
+) -> SmartConnectionStatistics {
+    var statistics = SmartConnectionStatistics()
+    statistics.attemptCount = attempts
+    statistics.successfulConnectionCount = successes
+    statistics.failedConnectionCount = max(0, attempts - successes)
+    statistics.ewmaLatencyMilliseconds = latency
+    statistics.latencySampleCount = latency == nil ? 0 : max(1, attempts)
+    statistics.ewmaPacketLossPercent = loss
+    statistics.packetLossSampleCount = loss == nil ? 0 : max(1, attempts)
+    statistics.ewmaConnectDurationSeconds = connectDuration
+    statistics.connectDurationSampleCount = connectDuration == nil
+        ? 0
+        : max(1, successes)
+    statistics.completedSessionCount = completedSessions
+    statistics.unexpectedDisconnectCount = unexpectedDisconnects
+    statistics.successfulSessionSeconds = successfulSessionSeconds
+    statistics.lastAttemptAt = attempts > 0 ? smartTestNow : nil
+    statistics.lastSuccessAt = successes > 0 ? smartTestNow : nil
+    statistics.lastUpdatedAt = attempts > 0
+        || latency != nil
+        || loss != nil
+        || completedSessions > 0
+        ? smartTestNow
+        : nil
+    return statistics
+}
+
+private func snapshot(
+    entries: [(VPNProfile, SmartConnectionStatistics)]
+) -> SmartConnectionLearningSnapshot {
+    SmartConnectionLearningSnapshot(
+        contextProfileRecords: entries.map { profile, statistics in
+            SmartConnectionContextProfileRecord(
+                context: smartWiFiContext,
+                profileID: profile.id,
+                protocolType: profile.protocolType,
+                statistics: statistics
+            )
+        }
+    )
+}
+
+private func contextPreferenceSnapshot(
+    first: VPNProfile,
+    second: VPNProfile,
+    firstPreferredContext: NetworkContext,
+    secondPreferredContext: NetworkContext
+) -> SmartConnectionLearningSnapshot {
+    let good = smartStatistics(
+        attempts: 40,
+        successes: 40,
+        latency: 40,
+        loss: 0,
+        connectDuration: 1
+    )
+    let poor = smartStatistics(
+        attempts: 40,
+        successes: 40,
+        latency: 950,
+        loss: 18,
+        connectDuration: 28
+    )
+    return SmartConnectionLearningSnapshot(contextProfileRecords: [
+        SmartConnectionContextProfileRecord(
+            context: firstPreferredContext,
+            profileID: first.id,
+            protocolType: first.protocolType,
+            statistics: good
+        ),
+        SmartConnectionContextProfileRecord(
+            context: firstPreferredContext,
+            profileID: second.id,
+            protocolType: second.protocolType,
+            statistics: poor
+        ),
+        SmartConnectionContextProfileRecord(
+            context: secondPreferredContext,
+            profileID: first.id,
+            protocolType: first.protocolType,
+            statistics: poor
+        ),
+        SmartConnectionContextProfileRecord(
+            context: secondPreferredContext,
+            profileID: second.id,
+            protocolType: second.protocolType,
+            statistics: good
+        )
+    ])
+}
+
+private func recordSessionMetric(
+    store: InMemorySmartConnectionLearningStore,
+    profile: VPNProfile,
+    latency: Double?,
+    loss: Double?
+) async {
+    await store.recordSessionSummary(
+        SmartConnectionSessionSummary(
+            additionalSuccessfulSessionSeconds: 0,
+            latencyMilliseconds: latency,
+            packetLossPercent: loss,
+            sessionEnded: false,
+            unexpectedDisconnect: false
+        ),
+        profileID: profile.id,
+        protocolType: profile.protocolType,
+        context: smartWiFiContext,
+        at: smartTestNow
+    )
+}
+
+private func contextStatistics(
+    store: InMemorySmartConnectionLearningStore,
+    profile: VPNProfile
+) async -> SmartConnectionStatistics {
+    let snapshot = await store.snapshot(for: [profile])
+    return snapshot.contextStatistics(
+        profileID: profile.id,
+        protocolType: profile.protocolType,
+        context: smartWiFiContext
+    )
+}
+
+private func temporaryLearningFileURL() -> URL {
+    FileManager.default.temporaryDirectory
+        .appendingPathComponent("smart-learning-\(UUID().uuidString).json")
+}
+
+private struct FixedSmartConnectionClock: SmartConnectionClock {
+    let nowValue: Date
+
+    init(now: Date) {
+        nowValue = now
+    }
+
+    func now() -> Date {
+        nowValue
+    }
+}
+
+private struct EmptySmartServerProvider: ServerProviding {
+    func fetchServers() async throws -> [VPNServer] {
+        []
+    }
+}
+
+private actor TestSmartActiveProfileStore: ActiveProfileStoring {
+    private var profileID: UUID?
+
+    init(profileID: UUID?) {
+        self.profileID = profileID
+    }
+
+    func activeProfileID() async -> UUID? {
+        profileID
+    }
+
+    func saveActiveProfileID(_ id: UUID?) async {
+        profileID = id
+    }
+}
+
+private actor TestSmartManualProfileSelectionStore:
+    ManualProfileSelectionStoring {
+    private var profileID: UUID?
+
+    init(profileID: UUID?) {
+        self.profileID = profileID
+    }
+
+    func manualSelectedProfileID() async -> UUID? {
+        profileID
+    }
+
+    func saveManualSelectedProfileID(_ id: UUID?) async {
+        profileID = id
+    }
+}
+
+nonisolated private final class MutableSmartNetworkContextSource:
+    SmartConnectionNetworkContextProviding,
+    @unchecked Sendable {
+    private let storage: MutableSmartNetworkContextStorage
+
+    init(context: NetworkContext) {
+        storage = MutableSmartNetworkContextStorage(context: context)
+    }
+
+    func currentNetworkContext() async -> NetworkContext {
+        await storage.current()
+    }
+
+    func networkContextUpdates() -> AsyncStream<NetworkContext> {
+        let storage = storage
+        return AsyncStream { continuation in
+            let id = UUID()
+            Task {
+                await storage.addContinuation(continuation, id: id)
+            }
+            continuation.onTermination = { _ in
+                Task {
+                    await storage.removeContinuation(id: id)
+                }
+            }
+        }
+    }
+
+    func set(_ context: NetworkContext) async {
+        await storage.set(context)
+    }
+}
+
+private actor MutableSmartNetworkContextStorage {
+    private var context: NetworkContext
+    private var continuations:
+        [UUID: AsyncStream<NetworkContext>.Continuation] = [:]
+
+    init(context: NetworkContext) {
+        self.context = context
+    }
+
+    func current() -> NetworkContext {
+        context
+    }
+
+    func set(_ newContext: NetworkContext) {
+        context = newContext
+        continuations.values.forEach { $0.yield(newContext) }
+    }
+
+    func addContinuation(
+        _ continuation: AsyncStream<NetworkContext>.Continuation,
+        id: UUID
+    ) {
+        continuations[id] = continuation
+        continuation.yield(context)
+    }
+
+    func removeContinuation(id: UUID) {
+        continuations[id] = nil
+    }
+}
+
+private enum ScriptedSmartOutcome: Sendable {
+    case success
+    case failure
+    case waitForCancellation
+}
+
+private enum ScriptedSmartConnectionError: LocalizedError {
+    case failed(UUID)
+
+    var errorDescription: String? {
+        "Scripted connection failure"
+    }
+}
+
+nonisolated private final class ScriptedSmartConnectionManager:
+    VPNConnectionManaging,
+    @unchecked Sendable {
+    private let storage: ScriptedSmartConnectionStorage
+
+    init(scripts: [UUID: [ScriptedSmartOutcome]] = [:]) {
+        storage = ScriptedSmartConnectionStorage(scripts: scripts)
+    }
+
+    func currentState() async -> VPNConnectionState {
+        await storage.currentState()
+    }
+
+    func stateUpdates() -> AsyncStream<VPNConnectionState> {
+        let storage = storage
+        return AsyncStream { continuation in
+            let id = UUID()
+            Task {
+                await storage.addContinuation(continuation, id: id)
+            }
+            continuation.onTermination = { _ in
+                Task {
+                    await storage.removeContinuation(id: id)
+                }
+            }
+        }
+    }
+
+    func authoritativeConnection() async -> VPNAuthoritativeConnection {
+        await storage.authoritativeConnection()
+    }
+
+    func refreshAuthoritativeConnection() async -> VPNAuthoritativeConnection {
+        await storage.authoritativeConnection()
+    }
+
+    func connect(using profile: VPNProfile) async throws {
+        let outcome = await storage.beginAttempt(profileID: profile.id)
+        switch outcome {
+        case .success:
+            await storage.completeSuccess(profileID: profile.id)
+        case .failure:
+            await storage.completeFailure()
+            throw ScriptedSmartConnectionError.failed(profile.id)
+        case .waitForCancellation:
+            try await Task.sleep(for: .seconds(60))
+            throw ScriptedSmartConnectionError.failed(profile.id)
+        }
+    }
+
+    func disconnect() async {
+        await storage.disconnect()
+    }
+
+    func emitUnexpectedDisconnect() async {
+        await storage.emitUnexpectedDisconnect()
+    }
+
+    func attemptedProfileIDs() async -> [UUID] {
+        await storage.attemptedProfileIDs()
+    }
+
+    func disconnectCallCount() async -> Int {
+        await storage.disconnectCallCount()
+    }
+}
+
+private actor ScriptedSmartConnectionStorage {
+    private var scripts: [UUID: [ScriptedSmartOutcome]]
+    private var attempts: [UUID] = []
+    private var disconnectCalls = 0
+    private var state: VPNConnectionState = .disconnected
+    private var connectedProfileID: UUID?
+    private var continuations:
+        [UUID: AsyncStream<VPNConnectionState>.Continuation] = [:]
+
+    init(scripts: [UUID: [ScriptedSmartOutcome]] = [:]) {
+        self.scripts = scripts
+    }
+
+    func currentState() -> VPNConnectionState {
+        state
+    }
+
+    func authoritativeConnection() -> VPNAuthoritativeConnection {
+        guard state == .connected, let connectedProfileID else {
+            return VPNAuthoritativeConnection(
+                state: state,
+                systemStatus: state == .failed ? .invalid : .disconnected,
+                profileID: nil,
+                provider: nil,
+                hasMultipleActiveManagers: false
+            )
+        }
+        return VPNAuthoritativeConnection(
+            state: .connected,
+            systemStatus: .connected,
+            profileID: connectedProfileID,
+            provider: .xray,
+            hasMultipleActiveManagers: false
+        )
+    }
+
+    func beginAttempt(profileID: UUID) -> ScriptedSmartOutcome {
+        attempts.append(profileID)
+        var outcomes = scripts[profileID] ?? [.success]
+        let outcome = outcomes.isEmpty ? .success : outcomes.removeFirst()
+        scripts[profileID] = outcomes
+        return outcome
+    }
+
+    func completeSuccess(profileID: UUID) {
+        connectedProfileID = profileID
+        publish(.connected)
+    }
+
+    func completeFailure() {
+        connectedProfileID = nil
+        publish(.failed)
+    }
+
+    func disconnect() async {
+        disconnectCalls += 1
+        connectedProfileID = nil
+        publish(.disconnected)
+    }
+
+    func emitUnexpectedDisconnect() {
+        connectedProfileID = nil
+        publish(.disconnected)
+    }
+
+    func attemptedProfileIDs() -> [UUID] {
+        attempts
+    }
+
+    func disconnectCallCount() -> Int {
+        disconnectCalls
+    }
+
+    private func publish(_ newState: VPNConnectionState) {
+        state = newState
+        continuations.values.forEach { $0.yield(newState) }
+    }
+
+    func addContinuation(
+        _ continuation: AsyncStream<VPNConnectionState>.Continuation,
+        id: UUID
+    ) {
+        continuations[id] = continuation
+        continuation.yield(state)
+    }
+
+    func removeContinuation(id: UUID) {
+        continuations[id] = nil
+    }
+}
+
+nonisolated private final class TestSmartConnectionTelemetryManager:
+    DashboardConnectionTelemetryManaging,
+    @unchecked Sendable {
+    private let storage = TestSmartConnectionTelemetryStorage()
+
+    func updates() -> AsyncStream<DashboardConnectionTelemetrySnapshot> {
+        let storage = storage
+        return AsyncStream { continuation in
+            let id = UUID()
+            Task {
+                await storage.addContinuation(continuation, id: id)
+            }
+            continuation.onTermination = { _ in
+                Task {
+                    await storage.removeContinuation(id: id)
+                }
+            }
+        }
+    }
+
+    func reconcile(with connection: VPNAuthoritativeConnection) async {
+        await storage.reconcile()
+    }
+
+    func stop() async {
+        await storage.stop()
+    }
+
+    func emit(_ snapshot: DashboardConnectionTelemetrySnapshot) async {
+        await storage.emit(snapshot)
+    }
+
+    func reconcileCallCount() async -> Int {
+        await storage.reconcileCallCount()
+    }
+}
+
+private actor TestSmartConnectionTelemetryStorage {
+    private var reconcileCalls = 0
+    private var continuations:
+        [UUID: AsyncStream<DashboardConnectionTelemetrySnapshot>.Continuation] = [:]
+
+    func reconcile() {
+        reconcileCalls += 1
+        continuations.values.forEach { $0.yield(.unavailable) }
+    }
+
+    func stop() {
+        continuations.values.forEach { $0.yield(.unavailable) }
+    }
+
+    func emit(_ snapshot: DashboardConnectionTelemetrySnapshot) {
+        continuations.values.forEach { $0.yield(snapshot) }
+    }
+
+    func reconcileCallCount() -> Int {
+        reconcileCalls
+    }
+
+    func addContinuation(
+        _ continuation: AsyncStream<DashboardConnectionTelemetrySnapshot>.Continuation,
+        id: UUID
+    ) {
+        continuations[id] = continuation
+        continuation.yield(.unavailable)
+    }
+
+    func removeContinuation(id: UUID) {
+        continuations[id] = nil
+    }
+}
+
+@MainActor
+private final class RecordingSmartConnectionHaptic:
+    ConnectionActionHapticFeedbackProviding,
+    @unchecked Sendable {
+    private(set) var callCount = 0
+
+    func playMediumImpact() {
+        callCount += 1
+    }
+}

@@ -503,12 +503,12 @@ struct ProductionConnectionUXRegressionTests {
 
     @Test
     @MainActor
-    func userStartActionRequestsOneLightHaptic() async throws {
+    func userStartActionRequestsOneMediumHaptic() async throws {
         let profile = makeTestProfile()
         let connectionManager = ControllableConnectionManager(
             profileID: profile.id
         )
-        let haptic = RecordingStartHapticFeedback()
+        let haptic = RecordingConnectionActionHapticFeedback()
         let viewModel = try await makeViewModel(
             connectionManager: connectionManager,
             profiles: [profile],
@@ -525,9 +525,35 @@ struct ProductionConnectionUXRegressionTests {
 
     @Test
     @MainActor
+    func userStopActionRequestsOneMediumHaptic() async throws {
+        let profile = makeTestProfile()
+        let connectionManager = ControllableConnectionManager(
+            profileID: profile.id
+        )
+        let haptic = RecordingConnectionActionHapticFeedback()
+        let viewModel = try await makeViewModel(
+            connectionManager: connectionManager,
+            profiles: [profile],
+            initiallySelectedProfileID: profile.id,
+            haptic: haptic
+        )
+        await viewModel.loadInitialData()
+        await connectionManager.emit(.connected)
+        for _ in 0..<20 where viewModel.connectionState != .connected {
+            await Task.yield()
+        }
+
+        await viewModel.userDidTapMainConnectionButton()
+
+        #expect(haptic.callCount == 1)
+        #expect(await connectionManager.disconnectCallCount() == 1)
+    }
+
+    @Test
+    @MainActor
     func stateRestorationRequestsZeroHaptics() async throws {
         let profile = makeTestProfile()
-        let haptic = RecordingStartHapticFeedback()
+        let haptic = RecordingConnectionActionHapticFeedback()
         let harness = try await makeRestorationHarness(
             profile: profile,
             status: .connected,
@@ -547,7 +573,7 @@ struct ProductionConnectionUXRegressionTests {
         let connectionManager = ControllableConnectionManager(
             profileID: profile.id
         )
-        let haptic = RecordingStartHapticFeedback()
+        let haptic = RecordingConnectionActionHapticFeedback()
         let viewModel = try await makeViewModel(
             connectionManager: connectionManager,
             profiles: [profile],
@@ -582,7 +608,7 @@ private func makeRestorationHarness(
     provider: PacketTunnelProviderKind,
     xrayService: (any VPNConnectionManaging)? = nil,
     telemetry: (any DashboardConnectionTelemetryManaging)? = nil,
-    haptic: (any StartHapticFeedbackProviding)? = nil
+    haptic: (any ConnectionActionHapticFeedbackProviding)? = nil
 ) async throws -> RestorationHarness {
     let authoritativeManager = TestAuthoritativeTunnelManager(
         profileID: profile.id,
@@ -624,7 +650,7 @@ private func makeViewModel(
     initiallySelectedProfileID: UUID?,
     activeProfileStore: TestActiveProfileStore? = nil,
     telemetry: (any DashboardConnectionTelemetryManaging)? = nil,
-    haptic: (any StartHapticFeedbackProviding)? = nil
+    haptic: (any ConnectionActionHapticFeedbackProviding)? = nil
 ) async throws -> VPNDashboardViewModel {
     let profileRepository = InMemoryVPNProfileRepository()
     for profile in profiles {
@@ -646,7 +672,8 @@ private func makeViewModel(
         activeProfileStore: selectedStore,
         connectionTelemetryManager: telemetry
             ?? DisabledDashboardConnectionTelemetryManager(),
-        startHapticFeedback: haptic ?? DisabledStartHapticFeedback()
+        connectionActionHapticFeedback: haptic
+            ?? DisabledConnectionActionHapticFeedback()
     )
 }
 
@@ -770,6 +797,7 @@ private actor ControllableConnectionManager: VPNConnectionManaging {
     private let profileID: UUID
     private var status: VPNSystemConnectionStatus = .disconnected
     private var connectCalls = 0
+    private var disconnectCalls = 0
     private var continuations:
         [UUID: AsyncStream<VPNConnectionState>.Continuation] = [:]
 
@@ -818,6 +846,7 @@ private actor ControllableConnectionManager: VPNConnectionManaging {
     }
 
     func disconnect() async {
+        disconnectCalls += 1
         await emit(.disconnected)
     }
 
@@ -828,6 +857,10 @@ private actor ControllableConnectionManager: VPNConnectionManaging {
 
     func connectCallCount() -> Int {
         connectCalls
+    }
+
+    func disconnectCallCount() -> Int {
+        disconnectCalls
     }
 
     private func addContinuation(
@@ -1038,13 +1071,13 @@ private actor DeterministicEndpointProber: EndpointProbing {
 }
 
 @MainActor
-private final class RecordingStartHapticFeedback:
-    StartHapticFeedbackProviding,
+private final class RecordingConnectionActionHapticFeedback:
+    ConnectionActionHapticFeedbackProviding,
     @unchecked Sendable
 {
     private(set) var callCount = 0
 
-    func playLightStartImpact() {
+    func playMediumImpact() {
         callCount += 1
     }
 }

@@ -9,12 +9,13 @@ import SwiftUI
 
 struct ContentView: View {
     @State private var viewModel: VPNDashboardViewModel
-    @State private var healthDiagnostics = PortableHealthDiagnosticsViewModel()
+    @State private var healthDiagnostics: PortableHealthDiagnosticsViewModel
     @State private var selectedTab: AppTab = .home
 
     init(connectionManager: VPNConnectionManaging) {
         let profileRepository = FileVPNProfileRepository()
         let credentialStore = KeychainCredentialStore()
+        let networkPathMonitor = AppleNetworkPathMonitor()
         let runtimeProfileSynchronizer: any RuntimeProfileSynchronizing
         if let xraySynchronizer = RuntimeProfileSynchronizer.appGroupSynchronizer(
             profileRepository: profileRepository,
@@ -35,7 +36,11 @@ struct ContentView: View {
             subscriptionUpdater: URLSessionSubscriptionUpdater(credentialStore: credentialStore),
             credentialStore: credentialStore,
             runtimeProfileSynchronizer: runtimeProfileSynchronizer,
-            connectionTelemetryManager: DashboardConnectionTelemetryController()
+            connectionTelemetryManager: DashboardConnectionTelemetryController(),
+            networkContextSource: networkPathMonitor
+        ))
+        _healthDiagnostics = State(initialValue: PortableHealthDiagnosticsViewModel(
+            pathMonitor: networkPathMonitor
         ))
     }
 

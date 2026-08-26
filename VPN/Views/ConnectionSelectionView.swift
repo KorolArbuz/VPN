@@ -15,7 +15,13 @@ struct ConnectionSelectionView: View {
         NavigationStack {
             Form {
                 Section {
-                    Picker("connection.mode.title", selection: modeBinding) {
+                    Picker(
+                        String(
+                            localized: "connection.mode.title",
+                            defaultValue: "Connection mode"
+                        ),
+                        selection: modeBinding
+                    ) {
                         ForEach(ConnectionSelectionMode.allCases) { mode in
                             Text(mode.title).tag(mode)
                         }
@@ -24,7 +30,7 @@ struct ConnectionSelectionView: View {
                     .accessibilityIdentifier("connection-mode-picker")
                 }
 
-                switch viewModel.connectionMode {
+                switch viewModel.connectionSelectionPresentation.mode {
                 case .automatic:
                     automaticContent
                 case .manual:
@@ -63,7 +69,10 @@ struct ConnectionSelectionView: View {
             Section {
                 HStack(spacing: 12) {
                     ProgressView()
-                    Text("connection.smart.preparing")
+                    Text(String(
+                        localized: "connection.smart.preparing",
+                        defaultValue: "Preparing a recommendation…"
+                    ))
                         .foregroundStyle(.secondary)
                 }
                 .accessibilityIdentifier("automatic-recommendation-preparing")
@@ -97,9 +106,19 @@ struct ConnectionSelectionView: View {
 private struct SmartConnectionEmptyState: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Label("connection.smart.no_profiles.title", systemImage: "doc.badge.plus")
-                .font(.headline)
-            Text("connection.smart.no_profiles.description")
+            Label {
+                Text(String(
+                    localized: "connection.smart.no_profiles.title",
+                    defaultValue: "Add a VPN profile"
+                ))
+            } icon: {
+                Image(systemName: "doc.badge.plus")
+            }
+            .font(.headline)
+            Text(String(
+                localized: "connection.smart.no_profiles.description",
+                defaultValue: "Import or create a profile before connecting."
+            ))
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
         }
@@ -118,8 +137,14 @@ private struct SmartConnectionRecommendationCard: View {
             Label {
                 Text(
                     isBeingAttempted
-                        ? "connection.smart.connecting_fallback"
-                        : "connection.smart.best_connection"
+                        ? String(
+                            localized: "connection.smart.connecting_fallback",
+                            defaultValue: "Trying the next best connection"
+                        )
+                        : String(
+                            localized: "connection.smart.best_connection",
+                            defaultValue: "Best Connection"
+                        )
                 )
             } icon: {
                 Image(systemName: isBeingAttempted ? "arrow.trianglehead.2.clockwise" : "sparkles")
@@ -201,7 +226,7 @@ private struct ManualProfileSelectionSection: View {
     let viewModel: VPNDashboardViewModel
 
     var body: some View {
-        Section("connection.profile.section") {
+        Section {
             if viewModel.profiles.isEmpty {
                 Text("connection.no_saved_profiles")
                     .foregroundStyle(.secondary)
@@ -222,6 +247,11 @@ private struct ManualProfileSelectionSection: View {
                     )
                 }
             }
+        } header: {
+            Text(String(
+                localized: "connection.profile.section",
+                defaultValue: "Profile"
+            ))
         }
         .accessibilityIdentifier("manual-profile-list")
     }

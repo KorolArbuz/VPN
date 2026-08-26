@@ -206,6 +206,11 @@ private func validate() throws {
     let sharedInterfacesPath = "PacketTunnelShared/Core/TunnelIPC/TunnelRuntimeInterfaces.swift"
     let providerIdentityPath = "PacketTunnelShared/Core/TunnelIPC/PacketTunnelProviderIdentity.swift"
     let routingPath = "VPN/Core/Portable/TunnelIPC/TunnelProviderRouting.swift"
+    let connectionSelectionPath = "VPN/Views/ConnectionSelectionView.swift"
+    let dashboardViewModelPath = "VPN/ViewModels/VPNDashboardViewModel.swift"
+    let smartModelsPath = "VPN/Services/SmartConnectionModels.swift"
+    let smartLearningStorePath = "VPN/Services/SmartConnectionLearningStore.swift"
+    let actionHapticPath = "VPN/Services/StartHapticFeedback.swift"
     let settingsPath = "VPN/Views/SettingsView.swift"
     let diagnosticsPath = "VPN/Core/Portable/TunnelIPC/TunnelTelemetryDiagnosticsViewModel.swift"
     let wireGuardBuildScriptPath = "scripts/build-amneziawg-go.sh"
@@ -224,6 +229,11 @@ private func validate() throws {
     let sharedInterfaces = try requireFile(repositoryRoot, sharedInterfacesPath)
     let providerIdentity = try requireFile(repositoryRoot, providerIdentityPath)
     let routing = try requireFile(repositoryRoot, routingPath)
+    let connectionSelection = try requireFile(repositoryRoot, connectionSelectionPath)
+    let dashboardViewModel = try requireFile(repositoryRoot, dashboardViewModelPath)
+    let smartModels = try requireFile(repositoryRoot, smartModelsPath)
+    let smartLearningStore = try requireFile(repositoryRoot, smartLearningStorePath)
+    let actionHaptic = try requireFile(repositoryRoot, actionHapticPath)
     let settings = try requireFile(repositoryRoot, settingsPath)
     let diagnostics = try requireFile(repositoryRoot, diagnosticsPath)
     let wireGuardBuildScript = try requireFile(repositoryRoot, wireGuardBuildScriptPath)
@@ -1108,6 +1118,81 @@ private func validate() throws {
         routing,
         file: routingPath,
         markers: ["default:"]
+    )
+
+    // Connection selection treats a complete profile UUID as the atomic unit.
+    try requireContains(
+        connectionSelection,
+        file: connectionSelectionPath,
+        markers: [
+            "switch viewModel.connectionSelectionPresentation.mode",
+            "SmartConnectionRecommendationCard(",
+            "ManualProfileSelectionSection(viewModel: viewModel)",
+            "viewModel.manualSelectedProfileID == profile.id"
+        ]
+    )
+    try requireExcludes(
+        connectionSelection,
+        file: connectionSelectionPath,
+        markers: [
+            "ServerSelectionView(",
+            "ProtocolSelectionView(",
+            "viewModel.selectServer(",
+            "viewModel.selectProtocol(",
+            "viewModel.selectBestServer("
+        ]
+    )
+    try requireContains(
+        dashboardViewModel + smartModels,
+        file: "\(dashboardViewModelPath) + \(smartModelsPath)",
+        markers: [
+            "manualSelectedProfileID",
+            "automaticRecommendedProfileID",
+            "profileID: profile.id",
+            "rankedCandidates.prefix(maximumAttempts).map(\\.profileID)"
+        ]
+    )
+    try requireExcludes(
+        dashboardViewModel,
+        file: dashboardViewModelPath,
+        markers: ["VPNProfile.bundledMock("]
+    )
+
+    // The local learning file persists aggregate identifiers/statistics only.
+    try requireContains(
+        smartLearningStore,
+        file: smartLearningStorePath,
+        markers: [
+            "SmartConnectionLearningSnapshot.currentSchemaVersion",
+            "maximumContextsPerProfile = 8",
+            "profileID: UUID",
+            "protocolType: VPNProtocol"
+        ]
+    )
+    try requireExcludes(
+        smartLearningStore,
+        file: smartLearningStorePath,
+        markers: [
+            "PrivateKey",
+            "PresharedKey",
+            "credentialReference",
+            "providerConfiguration",
+            "subscriptionURI",
+            "Keychain"
+        ]
+    )
+    try requireContains(
+        actionHaptic,
+        file: actionHapticPath,
+        markers: [
+            "ConnectionActionHapticFeedbackProviding",
+            "UIImpactFeedbackGenerator(style: .medium)"
+        ]
+    )
+    try requireExcludes(
+        actionHaptic,
+        file: actionHapticPath,
+        markers: ["UIImpactFeedbackGenerator(style: .light)"]
     )
 }
 

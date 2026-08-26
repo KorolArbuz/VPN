@@ -2780,8 +2780,12 @@ struct VPNTests {
     @Test
     @MainActor
     func mockConnectionStateChanges() async {
+        let repository = InMemoryVPNProfileRepository()
+        try? await repository.save(
+            makeCompleteProfile(name: "Mock connection profile")
+        )
         let viewModel = VPNDashboardViewModel(
-            profileRepository: InMemoryVPNProfileRepository(),
+            profileRepository: repository,
             subscriptionRepository: InMemorySubscriptionRepository(),
             credentialStore: InMemoryCredentialStore(),
             activeProfileStore: InMemoryActiveProfileStore()
@@ -2814,9 +2818,13 @@ struct VPNTests {
     @MainActor
     func connectionStateSurvivesInitialLoadAfterReturningHome() async {
         let manager = RecordingConnectionManager()
+        let repository = InMemoryVPNProfileRepository()
+        try? await repository.save(
+            makeCompleteProfile(name: "Return home profile")
+        )
         let viewModel = VPNDashboardViewModel(
             connectionManager: manager,
-            profileRepository: InMemoryVPNProfileRepository(),
+            profileRepository: repository,
             subscriptionRepository: InMemorySubscriptionRepository(),
             credentialStore: InMemoryCredentialStore(),
             activeProfileStore: InMemoryActiveProfileStore()
@@ -2839,6 +2847,9 @@ struct VPNTests {
         let subscriptionRepository = InMemorySubscriptionRepository()
         let credentialStore = InMemoryCredentialStore()
         let activeStore = InMemoryActiveProfileStore()
+        try? await repository.save(
+            makeCompleteProfile(name: "Shared manager profile")
+        )
         let firstViewModel = VPNDashboardViewModel(
             connectionManager: manager,
             profileRepository: repository,
@@ -2868,9 +2879,13 @@ struct VPNTests {
     @MainActor
     func settingsNavigationDoesNotDisconnectSharedManager() async {
         let manager = RecordingConnectionManager()
+        let repository = InMemoryVPNProfileRepository()
+        try? await repository.save(
+            makeCompleteProfile(name: "Settings navigation profile")
+        )
         let viewModel = VPNDashboardViewModel(
             connectionManager: manager,
-            profileRepository: InMemoryVPNProfileRepository(),
+            profileRepository: repository,
             subscriptionRepository: InMemorySubscriptionRepository(),
             credentialStore: InMemoryCredentialStore(),
             activeProfileStore: InMemoryActiveProfileStore()
@@ -2889,9 +2904,13 @@ struct VPNTests {
     @MainActor
     func disconnectUpdatesSameSharedManager() async {
         let manager = RecordingConnectionManager()
+        let repository = InMemoryVPNProfileRepository()
+        try? await repository.save(
+            makeCompleteProfile(name: "Disconnect profile")
+        )
         let viewModel = VPNDashboardViewModel(
             connectionManager: manager,
-            profileRepository: InMemoryVPNProfileRepository(),
+            profileRepository: repository,
             subscriptionRepository: InMemorySubscriptionRepository(),
             credentialStore: InMemoryCredentialStore(),
             activeProfileStore: InMemoryActiveProfileStore()

@@ -16,10 +16,31 @@ nonisolated enum ConnectionSelectionMode: String, CaseIterable, Codable, Identif
     var title: LocalizedStringResource {
         switch self {
         case .automatic:
-            "connection.mode.automatic"
+            LocalizedStringResource(
+                "connection.mode.automatic",
+                defaultValue: "Automatic"
+            )
         case .manual:
-            "connection.mode.manual"
+            LocalizedStringResource(
+                "connection.mode.manual",
+                defaultValue: "Manual"
+            )
         }
+    }
+}
+
+nonisolated struct ConnectionSelectionPresentation: Equatable, Sendable {
+    var mode: ConnectionSelectionMode
+    var selectableProfileIDs: [UUID]
+    var recommendedProfileID: UUID?
+
+    // Complete profiles are atomic. These remain explicit product contracts,
+    // not derived from legacy server/protocol metadata.
+    let showsIndependentServerSelector = false
+    let showsIndependentProtocolSelector = false
+
+    var showsSelectableProfileList: Bool {
+        mode == .manual
     }
 }
 
@@ -90,19 +111,40 @@ nonisolated enum SmartConnectionRecommendationReason: String, Codable, Sendable 
     var title: LocalizedStringResource {
         switch self {
         case .mostReliable:
-            "connection.smart.reason.reliable"
+            LocalizedStringResource(
+                "connection.smart.reason.reliable",
+                defaultValue: "Most reliable on this network"
+            )
         case .lowestLatency:
-            "connection.smart.reason.latency"
+            LocalizedStringResource(
+                "connection.smart.reason.latency",
+                defaultValue: "Lowest recent latency"
+            )
         case .lowestLoss:
-            "connection.smart.reason.loss"
+            LocalizedStringResource(
+                "connection.smart.reason.loss",
+                defaultValue: "Lowest recent packet loss"
+            )
         case .fastestConnection:
-            "connection.smart.reason.speed"
+            LocalizedStringResource(
+                "connection.smart.reason.speed",
+                defaultValue: "Fastest connection"
+            )
         case .stableSessions:
-            "connection.smart.reason.stability"
+            LocalizedStringResource(
+                "connection.smart.reason.stability",
+                defaultValue: "Stable over recent sessions"
+            )
         case .learningThisNetwork:
-            "connection.smart.reason.learning"
+            LocalizedStringResource(
+                "connection.smart.reason.learning",
+                defaultValue: "Learning this network"
+            )
         case .availableData:
-            "connection.smart.reason.available_data"
+            LocalizedStringResource(
+                "connection.smart.reason.available_data",
+                defaultValue: "Recommended based on available data"
+            )
         }
     }
 }
@@ -136,10 +178,11 @@ nonisolated struct SmartConnectionCandidatePlan: Equatable, Sendable {
     var id: UUID
     var createdAt: Date
     var context: NetworkContext
+    var maximumAttempts: Int
     var rankedCandidates: [SmartConnectionRankedCandidate]
 
     var candidateIDs: [UUID] {
-        rankedCandidates.map(\.profileID)
+        rankedCandidates.prefix(maximumAttempts).map(\.profileID)
     }
 
     static func empty(context: NetworkContext, now: Date) -> SmartConnectionCandidatePlan {
@@ -147,6 +190,7 @@ nonisolated struct SmartConnectionCandidatePlan: Equatable, Sendable {
             id: UUID(),
             createdAt: now,
             context: context,
+            maximumAttempts: 0,
             rankedCandidates: []
         )
     }
@@ -156,12 +200,14 @@ nonisolated struct SmartConnectionSessionSummary: Equatable, Sendable {
     var additionalSuccessfulSessionSeconds: TimeInterval
     var latencyMilliseconds: Double?
     var packetLossPercent: Double?
+    var sessionEnded: Bool
     var unexpectedDisconnect: Bool
 
     static let empty = SmartConnectionSessionSummary(
         additionalSuccessfulSessionSeconds: 0,
         latencyMilliseconds: nil,
         packetLossPercent: nil,
+        sessionEnded: false,
         unexpectedDisconnect: false
     )
 }

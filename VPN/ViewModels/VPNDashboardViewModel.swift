@@ -22,6 +22,36 @@ private enum SubscriptionApplicationError: LocalizedError {
     }
 }
 
+private enum SmartConnectionAttemptError: LocalizedError {
+    case didNotReachConnectedState
+    case noEligibleProfiles
+    case noManualProfileSelected
+    case profileUnavailable
+
+    var errorDescription: String? {
+        switch self {
+        case .didNotReachConnectedState:
+            "The VPN connection did not reach the connected state."
+        case .noEligibleProfiles:
+            "No complete, enabled VPN profiles are available."
+        case .noManualProfileSelected:
+            "Select a VPN profile in Manual mode."
+        case .profileUnavailable:
+            "The selected VPN profile is not available for connection."
+        }
+    }
+}
+
+private struct SmartConnectionLearningSession {
+    var profileID: UUID
+    var protocolType: VPNProtocol
+    var context: NetworkContext
+    var connectedAt: Date
+    var telemetrySessionID: String?
+    var checkpointRuntimeSeconds: TimeInterval?
+    var countsInitialRuntimeFromZero: Bool
+}
+
 @MainActor
 @Observable
 final class VPNDashboardViewModel {
@@ -35,25 +65,43 @@ final class VPNDashboardViewModel {
     private let importer: VPNProfileImporting
     private let credentialStore: CredentialStoring
     private let activeProfileStore: ActiveProfileStoring
+    private let manualProfileSelectionStore: ManualProfileSelectionStoring
     private let runtimeProfileSynchronizer: (any RuntimeProfileSynchronizing)?
     private let connectionTelemetryManager: any DashboardConnectionTelemetryManaging
-    private let startHapticFeedback: any StartHapticFeedbackProviding
+    private let learningStore: any SmartConnectionLearningStoring
+    private let networkContextSource: any SmartConnectionNetworkContextProviding
+    private let candidatePlanner: SmartConnectionCandidatePlanner
+    private let smartConnectionClock: any SmartConnectionClock
+    private let connectionActionHapticFeedback: any ConnectionActionHapticFeedbackProviding
 
     private var activeOperationID: UUID?
     private var stateObservationTask: Task<Void, Never>?
     private var telemetryObservationTask: Task<Void, Never>?
+    private var networkContextObservationTask: Task<Void, Never>?
     private var saveOperationID: UUID?
     private var inFlightImportedCredentialReferences = Set<String>()
     private var subscriptionOperationID: UUID?
     private var refreshingSubscriptionID: UUID?
     private var discardedRefreshSubscriptionID: UUID?
     private var isInitialLoadInFlight = false
+    private var learningSession: SmartConnectionLearningSession?
+    private var isIntentionalDisconnectInFlight = false
 
     var connectionState: VPNConnectionState = .disconnected
     private(set) var hasAuthoritativeManagerConflict = false
     var selectedServer: VPNServer?
     var selectedProtocol: VPNProtocolSelection = .automatic
     var activeProfileID: UUID?
+    private(set) var connectionMode: ConnectionSelectionMode = .automatic
+    private(set) var manualSelectedProfileID: UUID?
+    private(set) var automaticRecommendedProfileID: UUID?
+    private(set) var currentAutomaticAttemptProfileID: UUID?
+    private(set) var automaticCandidatePlan: SmartConnectionCandidatePlan = .empty(
+        context: .unknown,
+        now: .distantPast
+    )
+    private(set) var currentNetworkContext: NetworkContext = .unknown
+    private(set) var smartConnectionLearning: SmartConnectionLearningSnapshot = .empty
     var effectiveProtocol: VPNProtocol?
     var servers: [VPNServer] = []
     var profiles: [VPNProfile] = []
@@ -80,12 +128,22 @@ final class VPNDashboardViewModel {
         subscriptionUpdater: SubscriptionUpdating? = nil,
         credentialStore: CredentialStoring = KeychainCredentialStore(),
         activeProfileStore: ActiveProfileStoring = UserDefaultsActiveProfileStore(),
+        manualProfileSelectionStore: ManualProfileSelectionStoring =
+            UserDefaultsManualProfileSelectionStore(),
         importer: VPNProfileImporting? = nil,
         runtimeProfileSynchronizer: (any RuntimeProfileSynchronizing)? = nil,
         connectionTelemetryManager: any DashboardConnectionTelemetryManaging =
             DisabledDashboardConnectionTelemetryManager(),
-        startHapticFeedback: any StartHapticFeedbackProviding =
-            SystemStartHapticFeedback()
+        learningStore: any SmartConnectionLearningStoring =
+            FileSmartConnectionLearningStore(),
+        networkContextSource: any SmartConnectionNetworkContextProviding =
+            FixedSmartConnectionNetworkContextSource(context: .unknown),
+        candidatePlanner: SmartConnectionCandidatePlanner =
+            SmartConnectionCandidatePlanner(),
+        smartConnectionClock: any SmartConnectionClock =
+            SystemSmartConnectionClock(),
+        connectionActionHapticFeedback: any ConnectionActionHapticFeedbackProviding =
+            SystemConnectionActionHapticFeedback()
     ) {
         self.serverProvider = serverProvider
         self.serverProber = serverProber
@@ -98,20 +156,67 @@ final class VPNDashboardViewModel {
         )
         self.credentialStore = credentialStore
         self.activeProfileStore = activeProfileStore
+        self.manualProfileSelectionStore = manualProfileSelectionStore
         self.importer = importer ?? VPNLinkParser(credentialStore: credentialStore)
         self.runtimeProfileSynchronizer = runtimeProfileSynchronizer
         self.connectionTelemetryManager = connectionTelemetryManager
-        self.startHapticFeedback = startHapticFeedback
+        self.learningStore = learningStore
+        self.networkContextSource = networkContextSource
+        self.candidatePlanner = candidatePlanner
+        self.smartConnectionClock = smartConnectionClock
+        self.connectionActionHapticFeedback = connectionActionHapticFeedback
         observeConnectionState()
         observeConnectionTelemetry()
+        observeNetworkContext()
     }
 
     var selectedProfile: VPNProfile? {
-        guard let activeProfileID else {
-            return nil
+        if let currentAutomaticAttemptProfileID,
+           let profile = profiles.first(where: { $0.id == currentAutomaticAttemptProfileID }) {
+            return profile
         }
 
-        return profiles.first { $0.id == activeProfileID }
+        if [.connecting, .connected, .disconnecting].contains(connectionState),
+           let activeProfileID,
+           let profile = profiles.first(where: { $0.id == activeProfileID }) {
+            return profile
+        }
+
+        switch connectionMode {
+        case .automatic:
+            return automaticRecommendedProfile
+        case .manual:
+            return manualSelectedProfile
+        }
+    }
+
+    var manualSelectedProfile: VPNProfile? {
+        guard let manualSelectedProfileID else { return nil }
+        return profiles.first { $0.id == manualSelectedProfileID }
+    }
+
+    var automaticRecommendedProfile: VPNProfile? {
+        guard let automaticRecommendedProfileID else { return nil }
+        return profiles.first { $0.id == automaticRecommendedProfileID }
+    }
+
+    var automaticRecommendation: SmartConnectionRankedCandidate? {
+        guard let automaticRecommendedProfileID else { return nil }
+        return automaticCandidatePlan.rankedCandidates.first {
+            $0.profileID == automaticRecommendedProfileID
+        }
+    }
+
+    var connectionSelectionPresentation: ConnectionSelectionPresentation {
+        ConnectionSelectionPresentation(
+            mode: connectionMode,
+            selectableProfileIDs: connectionMode == .manual
+                ? profiles.map(\.id)
+                : [],
+            recommendedProfileID: connectionMode == .automatic
+                ? automaticRecommendedProfileID
+                : nil
+        )
     }
 
     var showsDemoModeNotice: Bool {
@@ -140,11 +245,8 @@ final class VPNDashboardViewModel {
             return false
         }
 
-        if let selectedProfile {
-            return selectedProfile.isEnabled && selectedProfile.runtimeCapability.isReady
-        }
-
-        return selectedServer != nil && effectiveProtocol != nil
+        guard let selectedProfile else { return false }
+        return SmartConnectionCandidatePlanner.isEligible(selectedProfile)
     }
 
     var selectedProfileStatusText: String? {
@@ -168,18 +270,26 @@ final class VPNDashboardViewModel {
         }
 
         do {
-            let fetchedServers = try await serverProvider.fetchServers()
-            servers = fetchedServers
-
+            // Legacy demo server metadata is non-authoritative. Complete profiles
+            // remain usable even if that optional source is unavailable.
+            servers = (try? await serverProvider.fetchServers()) ?? []
             profiles = try await profileRepository.profiles()
             activeProfileID = await activeProfileStore.activeProfileID()
             clearMissingOrInvalidActiveProfileIfNeeded()
-            subscriptions = try await subscriptionRepository.subscriptions()
-
-            if selectedServer == nil {
-                selectedServer = try await serverSelector.bestServer(from: servers, using: serverProber)
+            manualSelectedProfileID =
+                await manualProfileSelectionStore.manualSelectedProfileID()
+            if manualSelectedProfileID == nil,
+               let activeProfileID,
+               profiles.contains(where: { $0.id == activeProfileID }) {
+                manualSelectedProfileID = activeProfileID
+                await manualProfileSelectionStore.saveManualSelectedProfileID(
+                    activeProfileID
+                )
             }
-
+            clearMissingOrInvalidManualProfileIfNeeded()
+            subscriptions = try await subscriptionRepository.subscriptions()
+            currentNetworkContext = await networkContextSource.currentNetworkContext()
+            await refreshSmartConnectionRecommendation()
             refreshEffectiveProtocol()
             let authoritativeConnection =
                 await connectionManager.refreshAuthoritativeConnection()
@@ -205,8 +315,11 @@ final class VPNDashboardViewModel {
     }
 
     func userDidTapMainConnectionButton() async {
-        if connectionState == .disconnected || connectionState == .failed {
-            startHapticFeedback.playLightStartImpact()
+        switch connectionState {
+        case .disconnected, .failed, .connected:
+            connectionActionHapticFeedback.playMediumImpact()
+        case .testing, .connecting, .disconnecting:
+            break
         }
         await toggleConnection()
     }
@@ -244,11 +357,25 @@ final class VPNDashboardViewModel {
             return
         }
 
+        connectionMode = .manual
+        setManualSelectedProfileID(profile.id)
         setActiveProfileID(profile.id)
         selectedProtocol = .manual(profile.protocolType)
         effectiveProtocol = profile.protocolType
         currentMetrics = nil
         errorMessage = nil
+    }
+
+    func selectConnectionMode(_ mode: ConnectionSelectionMode) {
+        guard connectionMode != mode else { return }
+        connectionMode = mode
+        errorMessage = nil
+        if mode == .automatic {
+            Task { @MainActor [weak self] in
+                await self?.refreshSmartConnectionRecommendation()
+            }
+        }
+        refreshEffectiveProtocol()
     }
 
     func selectProtocol(_ protocolSelection: VPNProtocolSelection) {
@@ -312,58 +439,34 @@ final class VPNDashboardViewModel {
     }
 
     func connect() async {
-        guard activeOperationID == nil else {
+        guard let operationID = beginOperation(state: .connecting) else {
             return
         }
 
+        currentMetrics = nil
+        errorMessage = nil
         do {
-            let profile = try profileForConnection()
-            guard profile.isEnabled else {
-                errorMessage = "Profile is disabled."
-                return
+            switch connectionMode {
+            case .automatic:
+                try await connectAutomatically(operationID: operationID)
+            case .manual:
+                try await connectManually(operationID: operationID)
             }
-            guard profile.isComplete else {
-                errorMessage = "Profile is incomplete. Missing: \(profile.missingRequiredFields.joined(separator: ", "))."
-                return
+            guard isCurrentOperation(operationID) else {
+                throw CancellationError()
             }
-            if selectedProfile != nil {
-                let capability = profile.runtimeCapability
-                guard capability.isReady else {
-                    errorMessage = capability.statusText
-                    return
-                }
-            }
-
-            guard let operationID = beginOperation(state: .connecting) else {
-                return
-            }
-
-            currentMetrics = nil
-            try await connectionManager.connect(using: profile)
-            guard isCurrentOperation(operationID) else { return }
-
-            let authoritativeConnection =
-                await connectionManager.authoritativeConnection()
-            guard isCurrentOperation(operationID) else { return }
-            guard authoritativeConnection.state == .connected else {
-                failOperation(
-                    operationID,
-                    message: "The VPN connection did not reach the connected state."
-                )
-                return
-            }
-
             finishOperation(operationID)
-            await applyAuthoritativeConnection(authoritativeConnection)
+            currentAutomaticAttemptProfileID = nil
             errorMessage = nil
         } catch is CancellationError {
-            activeOperationID = nil
+            currentAutomaticAttemptProfileID = nil
+            cancelIfCurrent(operationID)
             await connectionTelemetryManager.stop()
         } catch {
-            connectionState = .failed
-            errorMessage = error.localizedDescription
-            activeOperationID = nil
+            currentAutomaticAttemptProfileID = nil
+            failOperation(operationID, message: error.localizedDescription)
             await connectionTelemetryManager.stop()
+            await refreshSmartConnectionRecommendation()
         }
     }
 
@@ -372,6 +475,11 @@ final class VPNDashboardViewModel {
             return
         }
 
+        isIntentionalDisconnectInFlight = true
+        defer {
+            isIntentionalDisconnectInFlight = false
+        }
+        await finishLearningSession(unexpectedDisconnect: false)
         await connectionManager.disconnect()
         guard isCurrentOperation(operationID) else { return }
 
@@ -382,6 +490,7 @@ final class VPNDashboardViewModel {
         currentMetrics = nil
         finishOperation(operationID)
         await applyAuthoritativeConnection(authoritativeConnection)
+        await refreshSmartConnectionRecommendation()
         errorMessage = nil
     }
 
@@ -607,6 +716,10 @@ final class VPNDashboardViewModel {
             if activeProfileID == profile.id {
                 setActiveProfileID(nil)
             }
+            if manualSelectedProfileID == profile.id {
+                setManualSelectedProfileID(nil)
+            }
+            await synchronizeSmartConnectionProfiles()
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -627,6 +740,7 @@ final class VPNDashboardViewModel {
                 throw error
             }
             profiles = updatedProfiles
+            await synchronizeSmartConnectionProfiles()
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -650,6 +764,7 @@ final class VPNDashboardViewModel {
             if isEnabled == false, activeProfileID == profile.id {
                 setActiveProfileID(nil)
             }
+            await synchronizeSmartConnectionProfiles()
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -799,6 +914,7 @@ final class VPNDashboardViewModel {
             }
 
             profiles = try await profileRepository.profiles()
+            await synchronizeSmartConnectionProfiles()
             subscriptions = try await subscriptionRepository.subscriptions()
             subscriptionPreview = nil
             subscriptionPreviewProfiles = []
@@ -934,6 +1050,7 @@ final class VPNDashboardViewModel {
             let storedProfiles = try await profileRepository.profiles()
             committedProfiles = storedProfiles
             profiles = storedProfiles
+            await synchronizeSmartConnectionProfiles()
             subscriptions = try await subscriptionRepository.subscriptions()
         } catch {
             operationError = error
@@ -1092,6 +1209,7 @@ final class VPNDashboardViewModel {
                 try await deleteUnreferencedCredentialReferences([reference])
             }
             profiles = try await profileRepository.profiles()
+            await synchronizeSmartConnectionProfiles()
             subscriptions = try await subscriptionRepository.subscriptions()
         } catch {
             importErrorMessage = error.localizedDescription
@@ -1308,22 +1426,188 @@ final class VPNDashboardViewModel {
         }
     }
 
-    private func profileForConnection() throws -> VPNProfile {
-        if let selectedProfile {
-            return selectedProfile
+    private func connectManually(operationID: UUID) async throws {
+        guard let profile = manualSelectedProfile else {
+            throw SmartConnectionAttemptError.noManualProfileSelected
+        }
+        guard SmartConnectionCandidatePlanner.isEligible(profile) else {
+            throw SmartConnectionAttemptError.profileUnavailable
         }
 
-        guard let selectedServer else {
-            throw MockVPNError.noAvailableServers
+        currentNetworkContext = await networkContextSource.currentNetworkContext()
+        try await attemptConnection(
+            profile: profile,
+            context: currentNetworkContext,
+            operationID: operationID
+        )
+    }
+
+    private func connectAutomatically(operationID: UUID) async throws {
+        await refreshSmartConnectionRecommendation()
+        let plan = automaticCandidatePlan
+        guard plan.candidateIDs.isEmpty == false else {
+            throw SmartConnectionAttemptError.noEligibleProfiles
         }
 
-        refreshEffectiveProtocol()
-
-        guard let effectiveProtocol else {
-            throw MockVPNError.protocolUnavailable
+        // This profile-value map and candidate order form one immutable attempt
+        // snapshot. A profile can appear at most once and the plan is bounded.
+        var profilesByID: [UUID: VPNProfile] = [:]
+        for profile in profiles where profilesByID[profile.id] == nil {
+            profilesByID[profile.id] = profile
         }
 
-        return VPNProfile.bundledMock(server: selectedServer, protocolType: effectiveProtocol)
+        var lastFailure: (any Error)?
+        for profileID in plan.candidateIDs {
+            try Task.checkCancellation()
+            guard isCurrentOperation(operationID) else {
+                throw CancellationError()
+            }
+            guard let profile = profilesByID[profileID] else {
+                continue
+            }
+
+            currentAutomaticAttemptProfileID = profileID
+            do {
+                try await attemptConnection(
+                    profile: profile,
+                    context: plan.context,
+                    operationID: operationID
+                )
+                return
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                lastFailure = error
+                guard isCurrentOperation(operationID) else {
+                    throw CancellationError()
+                }
+                // The production managers already clean failed starts. This
+                // explicit bounded teardown also prevents residual state from
+                // contaminating the next candidate attempt.
+                await connectionManager.disconnect()
+            }
+        }
+
+        throw lastFailure ?? SmartConnectionAttemptError.noEligibleProfiles
+    }
+
+    private func attemptConnection(
+        profile: VPNProfile,
+        context: NetworkContext,
+        operationID: UUID
+    ) async throws {
+        guard SmartConnectionCandidatePlanner.isEligible(profile) else {
+            throw SmartConnectionAttemptError.profileUnavailable
+        }
+
+        activeProfileID = profile.id
+        await activeProfileStore.saveActiveProfileID(profile.id)
+        selectedProtocol = .manual(profile.protocolType)
+        effectiveProtocol = profile.protocolType
+        let startedAt = smartConnectionClock.now()
+
+        do {
+            try Task.checkCancellation()
+            try await connectionManager.connect(using: profile)
+            guard isCurrentOperation(operationID) else {
+                throw CancellationError()
+            }
+
+            let authoritativeConnection =
+                await connectionManager.authoritativeConnection()
+            guard isCurrentOperation(operationID) else {
+                throw CancellationError()
+            }
+            guard authoritativeConnection.state == .connected,
+                  authoritativeConnection.profileID == nil
+                    || authoritativeConnection.profileID == profile.id else {
+                throw SmartConnectionAttemptError.didNotReachConnectedState
+            }
+
+            let connectedAt = smartConnectionClock.now()
+            await learningStore.recordConnectionSuccess(
+                profileID: profile.id,
+                protocolType: profile.protocolType,
+                context: context,
+                connectDuration: max(0, connectedAt.timeIntervalSince(startedAt)),
+                at: connectedAt
+            )
+            smartConnectionLearning = await learningStore.snapshot(for: profiles)
+            learningSession = SmartConnectionLearningSession(
+                profileID: profile.id,
+                protocolType: profile.protocolType,
+                context: context,
+                connectedAt: connectedAt,
+                telemetrySessionID: nil,
+                checkpointRuntimeSeconds: nil,
+                countsInitialRuntimeFromZero: true
+            )
+            await applyAuthoritativeConnection(authoritativeConnection)
+        } catch {
+            if shouldPenalizeConnectionFailure(
+                error,
+                profileID: profile.id,
+                operationID: operationID
+            ) {
+                let failureDate = smartConnectionClock.now()
+                await learningStore.recordConnectionFailure(
+                    profileID: profile.id,
+                    protocolType: profile.protocolType,
+                    context: context,
+                    at: failureDate
+                )
+                smartConnectionLearning = await learningStore.snapshot(for: profiles)
+            }
+            throw error
+        }
+    }
+
+    private func shouldPenalizeConnectionFailure(
+        _ error: any Error,
+        profileID: UUID,
+        operationID: UUID
+    ) -> Bool {
+        if error is CancellationError || Task.isCancelled {
+            return false
+        }
+        let nsError = error as NSError
+        if nsError.domain == NSURLErrorDomain,
+           nsError.code == NSURLErrorCancelled {
+            return false
+        }
+        guard isCurrentOperation(operationID),
+              profiles.contains(where: { $0.id == profileID }) else {
+            return false
+        }
+        return true
+    }
+
+    private func refreshSmartConnectionRecommendation(
+        context suppliedContext: NetworkContext? = nil
+    ) async {
+        let context: NetworkContext
+        if let suppliedContext {
+            context = suppliedContext
+        } else {
+            context = await networkContextSource.currentNetworkContext()
+        }
+        currentNetworkContext = context
+        let learning = await learningStore.snapshot(for: profiles)
+        smartConnectionLearning = learning
+        let plan = candidatePlanner.plan(
+            profiles: profiles,
+            context: context,
+            learning: learning,
+            now: smartConnectionClock.now()
+        )
+        automaticCandidatePlan = plan
+        automaticRecommendedProfileID = plan.rankedCandidates.first?.profileID
+    }
+
+    private func synchronizeSmartConnectionProfiles() async {
+        clearMissingOrInvalidManualProfileIfNeeded()
+        await learningStore.prune(profiles: profiles)
+        await refreshSmartConnectionRecommendation(context: currentNetworkContext)
     }
 
     private func refreshEffectiveProtocol() {
@@ -1365,6 +1649,15 @@ final class VPNDashboardViewModel {
                 guard let self, self.activeOperationID == nil else {
                     continue
                 }
+                // A failed user Start action owns its final presentation. A
+                // queued teardown notification from the last bounded attempt
+                // must not immediately erase that error with `.disconnected`.
+                // Foreground restoration still performs an explicit refresh.
+                if self.connectionState == .failed,
+                   authoritativeConnection.state == .disconnected,
+                   authoritativeConnection.isSystemActive == false {
+                    continue
+                }
                 await self.applyAuthoritativeConnection(authoritativeConnection)
             }
         }
@@ -1378,13 +1671,124 @@ final class VPNDashboardViewModel {
                     return
                 }
                 self.connectionTelemetry = snapshot
+                await self.consumeTelemetryForLearning(snapshot)
             }
         }
+    }
+
+    private func observeNetworkContext() {
+        networkContextObservationTask = Task {
+            @MainActor [weak self, networkContextSource] in
+            for await context in networkContextSource.networkContextUpdates() {
+                guard let self else { return }
+                guard self.currentNetworkContext != context else { continue }
+                self.currentNetworkContext = context
+                guard self.activeOperationID == nil,
+                      self.connectionState == .disconnected
+                        || self.connectionState == .failed else {
+                    continue
+                }
+                await self.refreshSmartConnectionRecommendation(context: context)
+            }
+        }
+    }
+
+    private func consumeTelemetryForLearning(
+        _ snapshot: DashboardConnectionTelemetrySnapshot
+    ) async {
+        guard var session = learningSession,
+              let runtimeSeconds = snapshot.runtimeSeconds else {
+            return
+        }
+
+        if let sessionID = snapshot.sessionID,
+           session.telemetrySessionID != sessionID {
+            session.telemetrySessionID = sessionID
+            session.checkpointRuntimeSeconds =
+                session.countsInitialRuntimeFromZero ? 0 : runtimeSeconds
+            session.countsInitialRuntimeFromZero = false
+            learningSession = session
+        }
+
+        guard session.telemetrySessionID == snapshot.sessionID,
+              let checkpointRuntimeSeconds = session.checkpointRuntimeSeconds,
+              runtimeSeconds - checkpointRuntimeSeconds >= 60 else {
+            return
+        }
+
+        let summary = SmartConnectionSessionSummary(
+            additionalSuccessfulSessionSeconds: max(
+                0,
+                runtimeSeconds - checkpointRuntimeSeconds
+            ),
+            latencyMilliseconds: snapshot.latencyMilliseconds.map(Double.init),
+            packetLossPercent: snapshot.packetLossPercent,
+            sessionEnded: false,
+            unexpectedDisconnect: false
+        )
+        session.checkpointRuntimeSeconds = runtimeSeconds
+        learningSession = session
+        await learningStore.recordSessionSummary(
+            summary,
+            profileID: session.profileID,
+            protocolType: session.protocolType,
+            context: session.context,
+            at: smartConnectionClock.now()
+        )
+        smartConnectionLearning = await learningStore.snapshot(for: profiles)
+    }
+
+    private func finishLearningSession(unexpectedDisconnect: Bool) async {
+        guard let session = learningSession else { return }
+        learningSession = nil
+
+        let telemetryMatches = session.telemetrySessionID != nil
+            && session.telemetrySessionID == connectionTelemetry.sessionID
+        let runtimeSeconds = telemetryMatches
+            ? connectionTelemetry.runtimeSeconds
+            : nil
+        let checkpoint = session.checkpointRuntimeSeconds ?? runtimeSeconds ?? 0
+        let summary = SmartConnectionSessionSummary(
+            additionalSuccessfulSessionSeconds: max(
+                0,
+                (runtimeSeconds ?? checkpoint) - checkpoint
+            ),
+            latencyMilliseconds: telemetryMatches
+                ? connectionTelemetry.latencyMilliseconds.map(Double.init)
+                : nil,
+            packetLossPercent: telemetryMatches
+                ? connectionTelemetry.packetLossPercent
+                : nil,
+            sessionEnded: true,
+            unexpectedDisconnect: unexpectedDisconnect
+        )
+        await learningStore.recordSessionSummary(
+            summary,
+            profileID: session.profileID,
+            protocolType: session.protocolType,
+            context: session.context,
+            at: smartConnectionClock.now()
+        )
+        smartConnectionLearning = await learningStore.snapshot(for: profiles)
     }
 
     private func applyAuthoritativeConnection(
         _ authoritativeConnection: VPNAuthoritativeConnection
     ) async {
+        if let learningSession,
+           authoritativeConnection.isSystemActive,
+           let authoritativeProfileID = authoritativeConnection.profileID,
+           authoritativeProfileID != learningSession.profileID,
+           isIntentionalDisconnectInFlight == false {
+            await finishLearningSession(unexpectedDisconnect: true)
+        }
+        if learningSession != nil,
+           authoritativeConnection.state == .disconnected
+            || authoritativeConnection.state == .failed,
+           isIntentionalDisconnectInFlight == false {
+            await finishLearningSession(unexpectedDisconnect: true)
+        }
+
         connectionState = authoritativeConnection.state
         hasAuthoritativeManagerConflict =
             authoritativeConnection.hasMultipleActiveManagers
@@ -1405,6 +1809,29 @@ final class VPNDashboardViewModel {
         }
 
         await connectionTelemetryManager.reconcile(with: authoritativeConnection)
+
+        if authoritativeConnection.state == .connected,
+           learningSession == nil,
+           let restoredProfileID = authoritativeConnection.profileID,
+           let profile = profiles.first(where: { $0.id == restoredProfileID }) {
+            let context = await networkContextSource.currentNetworkContext()
+            currentNetworkContext = context
+            learningSession = SmartConnectionLearningSession(
+                profileID: profile.id,
+                protocolType: profile.protocolType,
+                context: context,
+                connectedAt: smartConnectionClock.now(),
+                telemetrySessionID: nil,
+                checkpointRuntimeSeconds: nil,
+                countsInitialRuntimeFromZero: false
+            )
+        }
+
+        if activeOperationID == nil,
+           authoritativeConnection.state == .disconnected
+            || authoritativeConnection.state == .failed {
+            await refreshSmartConnectionRecommendation()
+        }
     }
 
     private func saveProfileAndSelect(_ profile: VPNProfile) async throws -> Bool {
@@ -1450,6 +1877,11 @@ final class VPNDashboardViewModel {
             // reflects it before this call returns — no fire-and-forget race.
             activeProfileID = profile.id
             await activeProfileStore.saveActiveProfileID(profile.id)
+            manualSelectedProfileID = profile.id
+            await manualProfileSelectionStore.saveManualSelectedProfileID(
+                profile.id
+            )
+            connectionMode = .manual
             selectedProtocol = .manual(profile.protocolType)
             effectiveProtocol = profile.protocolType
             currentMetrics = nil
@@ -1457,6 +1889,8 @@ final class VPNDashboardViewModel {
             profileSaveState = .saved
             profileSaveMessage = "Profile saved"
             saveOperationID = nil
+            await learningStore.prune(profiles: profiles)
+            await refreshSmartConnectionRecommendation()
             return true
         } catch {
             guard saveOperationID == operationID else {
@@ -1473,6 +1907,13 @@ final class VPNDashboardViewModel {
         activeProfileID = id
         Task {
             await activeProfileStore.saveActiveProfileID(id)
+        }
+    }
+
+    private func setManualSelectedProfileID(_ id: UUID?) {
+        manualSelectedProfileID = id
+        Task {
+            await manualProfileSelectionStore.saveManualSelectedProfileID(id)
         }
     }
 
@@ -1513,6 +1954,17 @@ final class VPNDashboardViewModel {
 
         selectedProtocol = .manual(profile.protocolType)
         effectiveProtocol = profile.protocolType
+    }
+
+    private func clearMissingOrInvalidManualProfileIfNeeded() {
+        guard let manualSelectedProfileID else { return }
+        guard profiles.contains(where: { $0.id == manualSelectedProfileID }) else {
+            self.manualSelectedProfileID = nil
+            Task {
+                await manualProfileSelectionStore.saveManualSelectedProfileID(nil)
+            }
+            return
+        }
     }
 
     private func beginOperation(state: VPNConnectionState) -> UUID? {

@@ -22,11 +22,14 @@ final class PortableHealthDiagnosticsViewModel {
     var lastRunContext: ProbeContext?
     var lastCheckedAt: Date?
 
-    init(coordinator: PortableHealthCoordinator? = nil) {
+    init(
+        coordinator: PortableHealthCoordinator? = nil,
+        pathMonitor: (any NetworkPathMonitoring)? = nil
+    ) {
         if let coordinator {
             self.coordinator = coordinator
         } else {
-            self.coordinator = Self.makeDefaultCoordinator()
+            self.coordinator = Self.makeDefaultCoordinator(pathMonitor: pathMonitor)
         }
     }
 
@@ -93,9 +96,14 @@ final class PortableHealthDiagnosticsViewModel {
         errorKey = report.wasSkippedBecauseDisabled ? "diagnostics.probe.error.disabled" : nil
     }
 
-    private static func makeDefaultCoordinator() -> PortableHealthCoordinator? {
+    private static func makeDefaultCoordinator(
+        pathMonitor: (any NetworkPathMonitoring)?
+    ) -> PortableHealthCoordinator? {
         do {
-            return PortableHealthCoordinator(coreService: try PortableCoreService(feature: .disabled))
+            return PortableHealthCoordinator(
+                coreService: try PortableCoreService(feature: .disabled),
+                pathMonitor: pathMonitor ?? AppleNetworkPathMonitor()
+            )
         } catch {
             return nil
         }

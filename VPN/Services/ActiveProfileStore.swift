@@ -12,6 +12,11 @@ nonisolated protocol ActiveProfileStoring: Sendable {
     func saveActiveProfileID(_ id: UUID?) async
 }
 
+nonisolated protocol ManualProfileSelectionStoring: Sendable {
+    func manualSelectedProfileID() async -> UUID?
+    func saveManualSelectedProfileID(_ id: UUID?) async
+}
+
 actor UserDefaultsActiveProfileStore: ActiveProfileStoring {
     private let defaults: UserDefaults
     private let key: String
@@ -30,6 +35,31 @@ actor UserDefaultsActiveProfileStore: ActiveProfileStoring {
     }
 
     func saveActiveProfileID(_ id: UUID?) async {
+        if let id {
+            defaults.set(id.uuidString, forKey: key)
+        } else {
+            defaults.removeObject(forKey: key)
+        }
+    }
+}
+
+actor UserDefaultsManualProfileSelectionStore: ManualProfileSelectionStoring {
+    private let defaults: UserDefaults
+    private let key: String
+
+    init(defaults: UserDefaults = .standard, key: String = "manualSelectedProfileID") {
+        self.defaults = defaults
+        self.key = key
+    }
+
+    func manualSelectedProfileID() async -> UUID? {
+        guard let value = defaults.string(forKey: key) else {
+            return nil
+        }
+        return UUID(uuidString: value)
+    }
+
+    func saveManualSelectedProfileID(_ id: UUID?) async {
         if let id {
             defaults.set(id.uuidString, forKey: key)
         } else {
