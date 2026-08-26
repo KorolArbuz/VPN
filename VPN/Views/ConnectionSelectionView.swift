@@ -2,7 +2,7 @@
 //  ConnectionSelectionView.swift
 //  VPN
 //
-//  Created by Denis Chizhov on 06.08.2026.
+//  Complete VPN profiles are the only selectable connection unit.
 //
 
 import SwiftUI
@@ -10,75 +10,25 @@ import SwiftUI
 struct ConnectionSelectionView: View {
     @Bindable var viewModel: VPNDashboardViewModel
     @Environment(\.dismiss) private var dismiss
-    @State private var selectionMode: SelectionMode = .automatic
 
     var body: some View {
         NavigationStack {
             Form {
                 Section {
-                    Picker("Mode", selection: $selectionMode) {
-                        ForEach(SelectionMode.allCases) { mode in
+                    Picker("connection.mode.title", selection: modeBinding) {
+                        ForEach(ConnectionSelectionMode.allCases) { mode in
                             Text(mode.title).tag(mode)
                         }
                     }
                     .pickerStyle(.segmented)
-
-                    if selectionMode == .automatic {
-                        Button {
-                            Task {
-                                await viewModel.selectBestServer()
-                            }
-                        } label: {
-                            Label("connection.select_best", systemImage: "wand.and.sparkles")
-                        }
-                    }
+                    .accessibilityIdentifier("connection-mode-picker")
                 }
 
-                Section("Server") {
-                    NavigationLink {
-                        ServerSelectionView(viewModel: viewModel)
-                    } label: {
-                        LabeledContent("Server", value: serverValue)
-                    }
-                    .disabled(selectionMode == .automatic)
-                }
-
-                Section("Protocol") {
-                    NavigationLink {
-                        ProtocolSelectionView(viewModel: viewModel)
-                    } label: {
-                        LabeledContent("Protocol", value: protocolValue)
-                    }
-                    .disabled(selectionMode == .automatic)
-                }
-
-                Section("Profile") {
-                    if viewModel.profiles.isEmpty {
-                        Text("connection.no_saved_profiles")
-                            .foregroundStyle(.secondary)
-                    } else {
-                        ForEach(viewModel.profiles) { profile in
-                            Button {
-                                viewModel.selectProfile(profile)
-                            } label: {
-                                HStack {
-                                    Image(systemName: profile.protocolType.iconName)
-                                    VStack(alignment: .leading) {
-                                        Text(profile.name)
-                                        Text("\(profile.serverAddress):\(profile.port.map(String.init) ?? "--")")
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                    }
-                                    Spacer()
-                                    if viewModel.selectedProfile?.id == profile.id {
-                                        Image(systemName: "checkmark.circle.fill")
-                                            .foregroundStyle(.tint)
-                                    }
-                                }
-                            }
-                            .buttonStyle(.plain)
-                        }
-                    }
+                switch viewModel.connectionMode {
+                case .automatic:
+                    automaticContent
+                case .manual:
+                    ManualProfileSelectionSection(viewModel: viewModel)
                 }
             }
             .navigationTitle("connection.title")
@@ -90,40 +40,231 @@ struct ConnectionSelectionView: View {
                     }
                 }
             }
-            .onChange(of: selectionMode) { _, newValue in
-                if newValue == .automatic {
-                    viewModel.selectProtocol(.automatic)
+        }
+    }
+
+    @ViewBuilder
+    private var automaticContent: some View {
+        if viewModel.profiles.isEmpty {
+            Section {
+                SmartConnectionEmptyState()
+            }
+        } else if let profile = automaticDisplayProfile,
+                  let candidate = automaticDisplayCandidate {
+            Section {
+                SmartConnectionRecommendationCard(
+                    profile: profile,
+                    candidate: candidate,
+                    isBeingAttempted:
+                        viewModel.currentAutomaticAttemptProfileID == profile.id
+                )
+            }
+        } else {
+            Section {
+                HStack(spacing: 12) {
+                    ProgressView()
+                    Text("connection.smart.preparing")
+                        .foregroundStyle(.secondary)
                 }
+                .accessibilityIdentifier("automatic-recommendation-preparing")
             }
         }
     }
 
-    private var serverValue: String {
-        guard let server = viewModel.selectedServer else {
-            return "Automatic"
-        }
-
-        return "\(server.city), \(server.country)"
+    private var modeBinding: Binding<ConnectionSelectionMode> {
+        Binding(
+            get: { viewModel.connectionMode },
+            set: { viewModel.selectConnectionMode($0) }
+        )
     }
 
-    private var protocolValue: String {
-        viewModel.effectiveProtocol?.displayName ?? viewModel.selectedProtocol.displayName
+    private var automaticDisplayProfile: VPNProfile? {
+        if let profileID = viewModel.currentAutomaticAttemptProfileID,
+           let profile = viewModel.profiles.first(where: { $0.id == profileID }) {
+            return profile
+        }
+        return viewModel.automaticRecommendedProfile
+    }
+
+    private var automaticDisplayCandidate: SmartConnectionRankedCandidate? {
+        guard let profileID = automaticDisplayProfile?.id else { return nil }
+        return viewModel.automaticCandidatePlan.rankedCandidates.first {
+            $0.profileID == profileID
+        }
     }
 }
 
-private enum SelectionMode: String, CaseIterable, Identifiable {
-    case automatic
-    case manual
-
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .automatic:
-            "Automatic"
-        case .manual:
-            "Manual"
+private struct SmartConnectionEmptyState: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("connection.smart.no_profiles.title", systemImage: "doc.badge.plus")
+                .font(.headline)
+            Text("connection.smart.no_profiles.description")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
         }
+        .padding(.vertical, 4)
+        .accessibilityIdentifier("automatic-recommendation-empty")
+    }
+}
+
+private struct SmartConnectionRecommendationCard: View {
+    let profile: VPNProfile
+    let candidate: SmartConnectionRankedCandidate
+    let isBeingAttempted: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Label {
+                Text(
+                    isBeingAttempted
+                        ? "connection.smart.connecting_fallback"
+                        : "connection.smart.best_connection"
+                )
+            } icon: {
+                Image(systemName: isBeingAttempted ? "arrow.trianglehead.2.clockwise" : "sparkles")
+            }
+            .font(.headline)
+            .foregroundStyle(.tint)
+
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: profile.protocolType.iconName)
+                    .font(.title2)
+                    .foregroundStyle(.tint)
+                    .frame(width: 32)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(profile.name)
+                        .font(.headline)
+                    Text(profile.protocolType.displayName)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                    Text(profile.serverAddress)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+
+            if candidate.latencyMilliseconds != nil
+                || candidate.packetLossPercent != nil {
+                qualitySummary
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                ForEach(candidate.reasons.prefix(3), id: \.self) { reason in
+                    Label {
+                        Text(reason.title)
+                    } icon: {
+                        Image(systemName: "checkmark.circle")
+                    }
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .padding(.vertical, 4)
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("automatic-recommendation-card")
+    }
+
+    private var qualitySummary: some View {
+        HStack(spacing: 8) {
+            if let latency = candidate.latencyMilliseconds {
+                Label(
+                    "\(Int(latency.rounded())) ms",
+                    systemImage: "speedometer"
+                )
+            }
+            if candidate.latencyMilliseconds != nil,
+               candidate.packetLossPercent != nil {
+                Text("·")
+                    .foregroundStyle(.tertiary)
+            }
+            if let loss = candidate.packetLossPercent {
+                Label(
+                    loss.formatted(
+                        .percent
+                            .scale(1)
+                            .precision(.fractionLength(0...1))
+                    ),
+                    systemImage: "waveform.path.ecg"
+                )
+            }
+        }
+        .font(.caption.weight(.medium))
+        .foregroundStyle(.secondary)
+    }
+}
+
+private struct ManualProfileSelectionSection: View {
+    let viewModel: VPNDashboardViewModel
+
+    var body: some View {
+        Section("connection.profile.section") {
+            if viewModel.profiles.isEmpty {
+                Text("connection.no_saved_profiles")
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(viewModel.profiles) { profile in
+                    Button {
+                        viewModel.selectProfile(profile)
+                    } label: {
+                        ManualProfileRow(
+                            profile: profile,
+                            isSelected:
+                                viewModel.manualSelectedProfileID == profile.id
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier(
+                        "manual-profile-\(profile.id.uuidString)"
+                    )
+                }
+            }
+        }
+        .accessibilityIdentifier("manual-profile-list")
+    }
+}
+
+private struct ManualProfileRow: View {
+    let profile: VPNProfile
+    let isSelected: Bool
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: profile.protocolType.iconName)
+                .foregroundStyle(.tint)
+                .frame(width: 24)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(profile.name)
+                    .foregroundStyle(.primary)
+                Text(profile.protocolType.displayName)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text(endpointSummary)
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+            }
+
+            Spacer()
+
+            if isSelected {
+                Image(systemName: "checkmark.circle.fill")
+                    .foregroundStyle(.tint)
+                    .accessibilityHidden(true)
+            }
+        }
+        .contentShape(Rectangle())
+    }
+
+    private var endpointSummary: String {
+        guard let port = profile.port else {
+            return profile.serverAddress
+        }
+        return "\(profile.serverAddress):\(port)"
     }
 }
 
