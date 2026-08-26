@@ -56,6 +56,8 @@ nonisolated struct SimpleVPNLinkParser {
         switch scheme {
         case "wireguard":
             .wireGuard
+        case "amneziawg", "awg":
+            .amneziaWG
         case "ikev2":
             .ikev2
         case "tuic":
@@ -69,6 +71,8 @@ nonisolated struct SimpleVPNLinkParser {
         switch protocolType {
         case .wireGuard:
             .wireGuard(WireGuardProfileConfiguration(peerPublicKeyReference: nil, presharedKeyReference: nil, allowedIPs: query["allowedIPs"]?.components(separatedBy: ",") ?? []))
+        case .amneziaWG:
+            .amneziaWG(WireGuardProfileConfiguration(peerPublicKeyReference: nil, presharedKeyReference: nil, allowedIPs: query["allowedIPs"]?.components(separatedBy: ",") ?? []))
         case .ikev2:
             .ikev2(IKEv2ProfileConfiguration(remoteIdentifier: query["remoteID"], localIdentifier: query["localID"], authenticationMethod: query["auth"]))
         case .tuic:

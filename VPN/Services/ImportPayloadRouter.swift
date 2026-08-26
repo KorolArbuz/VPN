@@ -38,6 +38,11 @@ nonisolated struct ImportPayloadRouter: Sendable {
             throw VPNImportError.emptyInput
         }
 
+        if NativeWireGuardConfigParser.looksLikeConfiguration(trimmed) {
+            let result = try await importer.parse(trimmed)
+            return .single(result)
+        }
+
         if isSingleVPNLink(trimmed) {
             let result = try await importer.parse(trimmed)
             return .single(result)

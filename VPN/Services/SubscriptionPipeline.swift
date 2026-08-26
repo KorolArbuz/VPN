@@ -202,7 +202,7 @@ nonisolated struct DefaultSubscriptionMerger: SubscriptionMerging {
             [configuration.congestionControl, configuration.udpRelayMode].compactMap { $0 }.joined(separator: "|")
         case .vmess(let configuration):
             [configuration.alterID.map(String.init), configuration.security].compactMap { $0 }.joined(separator: "|")
-        case .wireGuard, .ikev2:
+        case .wireGuard, .amneziaWG, .ikev2:
             ""
         }
     }

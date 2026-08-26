@@ -14,8 +14,12 @@ import Observation
 final class TunnelTelemetryDiagnosticsViewModel {
     private let messenger: any TunnelProviderMessaging
     private let snapshotStore: TunnelTelemetrySnapshotStore?
+    private let startupDiagnosticsStore: TunnelStartupDiagnosticsStore?
     private let coreUpdater: TunnelTelemetryCoreUpdater?
     private let keychainSmokeTester: TunnelKeychainSentinelSmokeTester?
+    private let appGroupSelfTester: TunnelAppGroupSelfTester?
+    private let providerPreflightService: TunnelProviderPreflightService?
+    private let nativeRuntimeDiagnosticService: NativeTunnelRuntimeDiagnosticService?
     private let runtimeValidationService: RuntimeConfigurationValidationService?
     private let xrayValidationService: XrayConfigurationValidationService?
     private let xrayLifecycleSmokeTestService: XrayLifecycleSmokeTestService?
@@ -31,6 +35,9 @@ final class TunnelTelemetryDiagnosticsViewModel {
     #endif
     private var refreshTask: Task<Void, Never>?
     private var keychainSmokeTask: Task<Void, Never>?
+    private var appGroupSelfTestTask: Task<Void, Never>?
+    private var providerPreflightTask: Task<Void, Never>?
+    private var nativeRuntimeDiagnosticTask: Task<Void, Never>?
     private var runtimeValidationTask: Task<Void, Never>?
     private var xrayValidationTask: Task<Void, Never>?
     private var xrayLifecycleSmokeTestTask: Task<Void, Never>?
@@ -68,6 +75,7 @@ final class TunnelTelemetryDiagnosticsViewModel {
     var lastRefreshedAt: Date?
     var systemConnectionState: VPNConnectionState = .disconnected
     var providerStatus: TunnelProviderSessionStatus = .unknown
+    var latestStartupAttempt: TunnelDiagnosticAttemptSnapshot?
     var diagnosticProviderMode: TunnelDiagnosticProviderMode = .idle
     var diagnosticProviderStateIsUnsynchronized = false
     var isReconcilingDiagnosticProviderState = false
@@ -77,6 +85,12 @@ final class TunnelTelemetryDiagnosticsViewModel {
     var keychainSmokeResult: [TunnelKeychainSentinelVerification] = []
     var keychainSmokeErrorKey: String?
     var keychainSmokeDiagnostic: TunnelKeychainSentinelDiagnostic?
+    var isRunningAppGroupSelfTest = false
+    var appGroupSelfTestResult: TunnelAppGroupSelfTestResult?
+    var isRunningProviderPreflight = false
+    var providerPreflightResult: TunnelProviderPreflightResult?
+    var isRunningNativeRuntimeDiagnostic = false
+    var nativeRuntimeDiagnosticResult: NativeRuntimeProfileDiagnosticResult?
     var isValidatingRuntimeConfiguration = false
     var runtimeValidationResult: TunnelRuntimeConfigurationValidationResponse?
     var runtimeValidationErrorKey: String?
@@ -125,8 +139,12 @@ final class TunnelTelemetryDiagnosticsViewModel {
     init(
         messenger: any TunnelProviderMessaging = NetworkExtensionTunnelMessenger(),
         snapshotStore: TunnelTelemetrySnapshotStore? = TunnelTelemetrySnapshotStore.appGroupStore(),
+        startupDiagnosticsStore: TunnelStartupDiagnosticsStore? = TunnelStartupDiagnosticsStore.appGroupStore(),
         coreUpdater: TunnelTelemetryCoreUpdater? = nil,
         keychainSmokeTester: TunnelKeychainSentinelSmokeTester? = TunnelKeychainSentinelSmokeTester(),
+        appGroupSelfTester: TunnelAppGroupSelfTester? = TunnelAppGroupSelfTester(),
+        providerPreflightService: TunnelProviderPreflightService? = TunnelProviderPreflightService(),
+        nativeRuntimeDiagnosticService: NativeTunnelRuntimeDiagnosticService? = NativeTunnelRuntimeDiagnosticService(),
         runtimeValidationService: RuntimeConfigurationValidationService? = RuntimeConfigurationValidationService.appGroupService(),
         xrayValidationService: XrayConfigurationValidationService? = XrayConfigurationValidationService.appGroupService(),
         xrayLifecycleSmokeTestService: XrayLifecycleSmokeTestService? = XrayLifecycleSmokeTestService.appGroupService(),
@@ -141,8 +159,12 @@ final class TunnelTelemetryDiagnosticsViewModel {
     ) {
         self.messenger = messenger
         self.snapshotStore = snapshotStore
+        self.startupDiagnosticsStore = startupDiagnosticsStore
         self.coreUpdater = coreUpdater ?? Self.makeDefaultCoreUpdater()
         self.keychainSmokeTester = keychainSmokeTester
+        self.appGroupSelfTester = appGroupSelfTester
+        self.providerPreflightService = providerPreflightService
+        self.nativeRuntimeDiagnosticService = nativeRuntimeDiagnosticService
         self.runtimeValidationService = runtimeValidationService
         self.xrayValidationService = xrayValidationService
         self.xrayLifecycleSmokeTestService = xrayLifecycleSmokeTestService
@@ -159,8 +181,12 @@ final class TunnelTelemetryDiagnosticsViewModel {
     init(
         messenger: any TunnelProviderMessaging = NetworkExtensionTunnelMessenger(),
         snapshotStore: TunnelTelemetrySnapshotStore? = TunnelTelemetrySnapshotStore.appGroupStore(),
+        startupDiagnosticsStore: TunnelStartupDiagnosticsStore? = TunnelStartupDiagnosticsStore.appGroupStore(),
         coreUpdater: TunnelTelemetryCoreUpdater? = nil,
         keychainSmokeTester: TunnelKeychainSentinelSmokeTester? = TunnelKeychainSentinelSmokeTester(),
+        appGroupSelfTester: TunnelAppGroupSelfTester? = TunnelAppGroupSelfTester(),
+        providerPreflightService: TunnelProviderPreflightService? = TunnelProviderPreflightService(),
+        nativeRuntimeDiagnosticService: NativeTunnelRuntimeDiagnosticService? = NativeTunnelRuntimeDiagnosticService(),
         runtimeValidationService: RuntimeConfigurationValidationService? = RuntimeConfigurationValidationService.appGroupService(),
         xrayValidationService: XrayConfigurationValidationService? = XrayConfigurationValidationService.appGroupService(),
         xrayLifecycleSmokeTestService: XrayLifecycleSmokeTestService? = XrayLifecycleSmokeTestService.appGroupService(),
@@ -170,8 +196,12 @@ final class TunnelTelemetryDiagnosticsViewModel {
     ) {
         self.messenger = messenger
         self.snapshotStore = snapshotStore
+        self.startupDiagnosticsStore = startupDiagnosticsStore
         self.coreUpdater = coreUpdater ?? Self.makeDefaultCoreUpdater()
         self.keychainSmokeTester = keychainSmokeTester
+        self.appGroupSelfTester = appGroupSelfTester
+        self.providerPreflightService = providerPreflightService
+        self.nativeRuntimeDiagnosticService = nativeRuntimeDiagnosticService
         self.runtimeValidationService = runtimeValidationService
         self.xrayValidationService = xrayValidationService
         self.xrayLifecycleSmokeTestService = xrayLifecycleSmokeTestService
@@ -223,7 +253,8 @@ final class TunnelTelemetryDiagnosticsViewModel {
         isRefreshing = true
         errorKey = nil
 
-        refreshTask = Task { [weak self, messenger, snapshotStore, coreUpdater] in
+        refreshTask = Task { [weak self, messenger, snapshotStore, startupDiagnosticsStore, coreUpdater] in
+            let startupAttempt = await Self.readLatestStartupAttempt(startupDiagnosticsStore)
             #if DEBUG
             guard let self else { return }
             let diagnosticState = await self.reconcileDiagnosticProviderStateNow()
@@ -259,6 +290,7 @@ final class TunnelTelemetryDiagnosticsViewModel {
                     self.healthSnapshot = health
                     self.recentEvents = events
                     self.lastKnownSnapshot = nil
+                    self.latestStartupAttempt = startupAttempt
                     self.recommendation = coreResult?.recommendation
                     self.comparability = coreResult?.comparability ?? .notUpdated
                     self.extensionReachable = true
@@ -287,6 +319,7 @@ final class TunnelTelemetryDiagnosticsViewModel {
                     self.providerStatus = providerStatus
                     #endif
                     self.lastKnownSnapshot = fallback
+                    self.latestStartupAttempt = startupAttempt
                     self.runtimeSnapshot = fallback?.stored.runtime
                     self.healthSnapshot = fallback?.stored.runtime.health
                     self.recentEvents = fallback?.stored.events ?? []
@@ -309,6 +342,7 @@ final class TunnelTelemetryDiagnosticsViewModel {
                     self.providerStatus = providerStatus
                     #endif
                     self.lastKnownSnapshot = fallback
+                    self.latestStartupAttempt = startupAttempt
                     self.runtimeSnapshot = fallback?.stored.runtime
                     self.healthSnapshot = fallback?.stored.runtime.health
                     self.recentEvents = fallback?.stored.events ?? []
@@ -316,6 +350,70 @@ final class TunnelTelemetryDiagnosticsViewModel {
                 }
             }
         }
+    }
+
+    func loadLatestStartupDiagnostics() {
+        let startupDiagnosticsStore = startupDiagnosticsStore
+        Task { [weak self] in
+            let attempt = await Self.readLatestStartupAttempt(startupDiagnosticsStore)
+            guard Task.isCancelled == false else { return }
+            await MainActor.run {
+                self?.latestStartupAttempt = attempt
+            }
+        }
+    }
+
+    func runAppGroupSelfTest() {
+        appGroupSelfTestTask?.cancel()
+        appGroupSelfTestResult = nil
+        guard let appGroupSelfTester else { return }
+        isRunningAppGroupSelfTest = true
+        appGroupSelfTestTask = Task { [weak self, appGroupSelfTester] in
+            let result = await appGroupSelfTester.run()
+            guard Task.isCancelled == false else { return }
+            await MainActor.run {
+                self?.appGroupSelfTestResult = result
+                self?.isRunningAppGroupSelfTest = false
+            }
+        }
+    }
+
+    func runProviderPreflight() {
+        providerPreflightTask?.cancel()
+        providerPreflightResult = nil
+        guard let providerPreflightService else { return }
+        isRunningProviderPreflight = true
+        providerPreflightTask = Task { [weak self, providerPreflightService] in
+            let result = await providerPreflightService.run()
+            guard Task.isCancelled == false else { return }
+            await MainActor.run {
+                self?.providerPreflightResult = result
+                self?.isRunningProviderPreflight = false
+            }
+        }
+    }
+
+    func inspectNativeRuntimeProfile(profile: VPNProfile?) {
+        nativeRuntimeDiagnosticTask?.cancel()
+        nativeRuntimeDiagnosticResult = nil
+        guard let profile,
+              profile.protocolType == .wireGuard || profile.protocolType == .amneziaWG,
+              let nativeRuntimeDiagnosticService else {
+            return
+        }
+        isRunningNativeRuntimeDiagnostic = true
+        nativeRuntimeDiagnosticTask = Task { [weak self, nativeRuntimeDiagnosticService] in
+            let result = await nativeRuntimeDiagnosticService.inspect(profileID: profile.id)
+            guard Task.isCancelled == false else { return }
+            await MainActor.run {
+                self?.nativeRuntimeDiagnosticResult = result
+                self?.isRunningNativeRuntimeDiagnostic = false
+            }
+        }
+    }
+
+    var latestDiagnosticReport: String? {
+        latestStartupAttempt.map(TunnelDiagnosticReportExporter.report)
     }
 
     #if DEBUG
@@ -1717,7 +1815,7 @@ final class TunnelTelemetryDiagnosticsViewModel {
         switch protocolType {
         case .vless, .vmess, .trojan, .shadowsocks, .hysteria2:
             return true
-        case .wireGuard, .ikev2, .tuic:
+        case .wireGuard, .amneziaWG, .ikev2, .tuic:
             return false
         }
     }
@@ -1926,6 +2024,13 @@ final class TunnelTelemetryDiagnosticsViewModel {
         }
 
         return try? await store.read()
+    }
+
+    private static func readLatestStartupAttempt(
+        _ store: TunnelStartupDiagnosticsStore?
+    ) async -> TunnelDiagnosticAttemptSnapshot? {
+        guard let store else { return nil }
+        return try? await store.latestAttempt()
     }
 
     private static func capabilities(from response: TunnelMessageResponse) throws -> TunnelCapabilitySnapshot {

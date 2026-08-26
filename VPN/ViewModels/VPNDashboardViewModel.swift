@@ -18,7 +18,7 @@ private enum SubscriptionApplicationError: LocalizedError {
     case runtimePublicationFailed
 
     var errorDescription: String? {
-        "The updated profile was saved, but its runtime configuration could not be published."
+        "The profile runtime configuration could not be published to the packet tunnel."
     }
 }
 
@@ -36,9 +36,12 @@ final class VPNDashboardViewModel {
     private let credentialStore: CredentialStoring
     private let activeProfileStore: ActiveProfileStoring
     private let runtimeProfileSynchronizer: (any RuntimeProfileSynchronizing)?
+    private let connectionTelemetryManager: any DashboardConnectionTelemetryManaging
+    private let startHapticFeedback: any StartHapticFeedbackProviding
 
     private var activeOperationID: UUID?
     private var stateObservationTask: Task<Void, Never>?
+    private var telemetryObservationTask: Task<Void, Never>?
     private var saveOperationID: UUID?
     private var inFlightImportedCredentialReferences = Set<String>()
     private var subscriptionOperationID: UUID?
@@ -47,6 +50,7 @@ final class VPNDashboardViewModel {
     private var isInitialLoadInFlight = false
 
     var connectionState: VPNConnectionState = .disconnected
+    private(set) var hasAuthoritativeManagerConflict = false
     var selectedServer: VPNServer?
     var selectedProtocol: VPNProtocolSelection = .automatic
     var activeProfileID: UUID?
@@ -55,6 +59,7 @@ final class VPNDashboardViewModel {
     var profiles: [VPNProfile] = []
     var subscriptions: [VPNSubscription] = []
     var currentMetrics: ConnectionMetrics?
+    var connectionTelemetry: DashboardConnectionTelemetrySnapshot = .unavailable
     var errorMessage: String?
     var importResult: VPNImportResult?
     var importErrorMessage: String?
@@ -76,7 +81,11 @@ final class VPNDashboardViewModel {
         credentialStore: CredentialStoring = KeychainCredentialStore(),
         activeProfileStore: ActiveProfileStoring = UserDefaultsActiveProfileStore(),
         importer: VPNProfileImporting? = nil,
-        runtimeProfileSynchronizer: (any RuntimeProfileSynchronizing)? = nil
+        runtimeProfileSynchronizer: (any RuntimeProfileSynchronizing)? = nil,
+        connectionTelemetryManager: any DashboardConnectionTelemetryManaging =
+            DisabledDashboardConnectionTelemetryManager(),
+        startHapticFeedback: any StartHapticFeedbackProviding =
+            SystemStartHapticFeedback()
     ) {
         self.serverProvider = serverProvider
         self.serverProber = serverProber
@@ -91,7 +100,10 @@ final class VPNDashboardViewModel {
         self.activeProfileStore = activeProfileStore
         self.importer = importer ?? VPNLinkParser(credentialStore: credentialStore)
         self.runtimeProfileSynchronizer = runtimeProfileSynchronizer
+        self.connectionTelemetryManager = connectionTelemetryManager
+        self.startHapticFeedback = startHapticFeedback
         observeConnectionState()
+        observeConnectionTelemetry()
     }
 
     var selectedProfile: VPNProfile? {
@@ -100,6 +112,13 @@ final class VPNDashboardViewModel {
         }
 
         return profiles.first { $0.id == activeProfileID }
+    }
+
+    var showsDemoModeNotice: Bool {
+        guard let selectedProfile else {
+            return true
+        }
+        return connectionManager.routesTrafficThroughProductionCore(using: selectedProfile) == false
     }
 
     var isSavingProfile: Bool {
@@ -111,7 +130,9 @@ final class VPNDashboardViewModel {
     }
 
     var canToggleConnection: Bool {
-        activeOperationID == nil && selectedProfile?.isEnabled != false
+        activeOperationID == nil
+            && hasAuthoritativeManagerConflict == false
+            && selectedProfile?.isEnabled != false
     }
 
     var canConnect: Bool {
@@ -160,17 +181,34 @@ final class VPNDashboardViewModel {
             }
 
             refreshEffectiveProtocol()
-            let managerState = await connectionManager.currentState()
-            if managerState != .disconnected || connectionState == .testing {
-                connectionState = managerState
+            let authoritativeConnection =
+                await connectionManager.refreshAuthoritativeConnection()
+            await applyAuthoritativeConnection(authoritativeConnection)
+            if authoritativeConnection.hasMultipleActiveManagers == false {
+                errorMessage = nil
             }
-            errorMessage = nil
         } catch is CancellationError {
             return
         } catch {
             connectionState = .failed
             errorMessage = error.localizedDescription
         }
+    }
+
+    func applicationDidBecomeActive() async {
+        guard activeOperationID == nil else {
+            return
+        }
+        let authoritativeConnection =
+            await connectionManager.refreshAuthoritativeConnection()
+        await applyAuthoritativeConnection(authoritativeConnection)
+    }
+
+    func userDidTapMainConnectionButton() async {
+        if connectionState == .disconnected || connectionState == .failed {
+            startHapticFeedback.playLightStartImpact()
+        }
+        await toggleConnection()
     }
 
     func cancelCurrentOperation() {
@@ -300,19 +338,32 @@ final class VPNDashboardViewModel {
                 return
             }
 
-            let metrics = try await connectionManager.connect(using: profile)
+            currentMetrics = nil
+            try await connectionManager.connect(using: profile)
             guard isCurrentOperation(operationID) else { return }
 
-            currentMetrics = metrics
-            connectionState = .connected
-            errorMessage = nil
+            let authoritativeConnection =
+                await connectionManager.authoritativeConnection()
+            guard isCurrentOperation(operationID) else { return }
+            guard authoritativeConnection.state == .connected else {
+                failOperation(
+                    operationID,
+                    message: "The VPN connection did not reach the connected state."
+                )
+                return
+            }
+
             finishOperation(operationID)
+            await applyAuthoritativeConnection(authoritativeConnection)
+            errorMessage = nil
         } catch is CancellationError {
             activeOperationID = nil
+            await connectionTelemetryManager.stop()
         } catch {
             connectionState = .failed
             errorMessage = error.localizedDescription
             activeOperationID = nil
+            await connectionTelemetryManager.stop()
         }
     }
 
@@ -324,10 +375,14 @@ final class VPNDashboardViewModel {
         await connectionManager.disconnect()
         guard isCurrentOperation(operationID) else { return }
 
+        let authoritativeConnection =
+            await connectionManager.refreshAuthoritativeConnection()
+        guard isCurrentOperation(operationID) else { return }
+
         currentMetrics = nil
-        connectionState = .disconnected
-        errorMessage = nil
         finishOperation(operationID)
+        await applyAuthoritativeConnection(authoritativeConnection)
+        errorMessage = nil
     }
 
     func parseImportText(_ text: String) async {
@@ -339,6 +394,32 @@ final class VPNDashboardViewModel {
         } catch {
             importErrorMessage = error.localizedDescription
         }
+    }
+
+    func reviewNativeConfiguration(
+        _ text: String,
+        expectedProtocol: VPNProtocol,
+        displayName: String
+    ) async throws -> VPNImportResult {
+        guard expectedProtocol == .wireGuard || expectedProtocol == .amneziaWG else {
+            throw VPNImportError.invalidPayload("Select WireGuard or AmneziaWG for a native configuration.")
+        }
+        var result = try await importer.parse(text)
+        guard case .profile(var profile) = result.kind,
+              profile.protocolType == expectedProtocol else {
+            _ = await discardImportResult(result)
+            throw VPNImportError.invalidPayload(
+                "The native configuration is \(profileProtocolName(in: result)); select the matching protocol mode."
+            )
+        }
+        let trimmedName = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmedName.isEmpty == false {
+            profile.name = trimmedName
+            profile.updatedAt = Date()
+            result.kind = .profile(profile)
+            result.displayName = trimmedName
+        }
+        return result
     }
 
     func routeImportPayload(data: Data, title: String) async throws -> ImportPayloadRoute {
@@ -514,6 +595,13 @@ final class VPNDashboardViewModel {
     func deleteProfile(_ profile: VPNProfile) async {
         do {
             try await profileRepository.delete(id: profile.id)
+            do {
+                try await runtimeProfileSynchronizer?.profileDeleted(id: profile.id)
+            } catch {
+                try? await profileRepository.save(profile)
+                try? await synchronizeRuntimeProfile(profile)
+                throw error
+            }
             try await deleteProfileCredentials(profile)
             profiles = try await profileRepository.profiles()
             if activeProfileID == profile.id {
@@ -527,7 +615,18 @@ final class VPNDashboardViewModel {
     func renameProfile(_ profile: VPNProfile, to name: String) async {
         do {
             try await profileRepository.rename(id: profile.id, to: name)
-            profiles = try await profileRepository.profiles()
+            let updatedProfiles = try await profileRepository.profiles()
+            guard let updatedProfile = updatedProfiles.first(where: { $0.id == profile.id }) else {
+                throw SubscriptionApplicationError.runtimePublicationFailed
+            }
+            do {
+                try await synchronizeRuntimeProfile(updatedProfile)
+            } catch {
+                try? await profileRepository.save(profile)
+                try? await synchronizeRuntimeProfile(profile)
+                throw error
+            }
+            profiles = updatedProfiles
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -536,7 +635,21 @@ final class VPNDashboardViewModel {
     func setProfileEnabled(_ profile: VPNProfile, isEnabled: Bool) async {
         do {
             try await profileRepository.setEnabled(isEnabled, id: profile.id)
-            profiles = try await profileRepository.profiles()
+            let updatedProfiles = try await profileRepository.profiles()
+            guard let updatedProfile = updatedProfiles.first(where: { $0.id == profile.id }) else {
+                throw SubscriptionApplicationError.runtimePublicationFailed
+            }
+            do {
+                try await synchronizeRuntimeProfile(updatedProfile)
+            } catch {
+                try? await profileRepository.save(profile)
+                try? await synchronizeRuntimeProfile(profile)
+                throw error
+            }
+            profiles = updatedProfiles
+            if isEnabled == false, activeProfileID == profile.id {
+                setActiveProfileID(nil)
+            }
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -682,6 +795,7 @@ final class VPNDashboardViewModel {
             try await subscriptionRepository.save(preview.subscription)
             for profile in selectedProfiles {
                 try await profileRepository.save(profile)
+                try await synchronizeRuntimeProfile(profile)
             }
 
             profiles = try await profileRepository.profiles()
@@ -957,6 +1071,7 @@ final class VPNDashboardViewModel {
                 switch mode {
                 case .deleteProfiles:
                     try await profileRepository.delete(id: profile.id)
+                    try await runtimeProfileSynchronizer?.profileDeleted(id: profile.id)
                     try await deleteProfileCredentials(profile)
                     if activeProfileID == profile.id {
                         setActiveProfileID(nil)
@@ -968,6 +1083,7 @@ final class VPNDashboardViewModel {
                     localProfile.externalIdentity = nil
                     localProfile.lastSeenAt = nil
                     try await profileRepository.save(localProfile)
+                    try await synchronizeRuntimeProfile(localProfile)
                 }
             }
 
@@ -1211,8 +1327,13 @@ final class VPNDashboardViewModel {
     }
 
     private func refreshEffectiveProtocol() {
+        if let selectedProfile {
+            effectiveProtocol = selectedProfile.protocolType
+            return
+        }
+
         guard let selectedServer else {
-            effectiveProtocol = selectedProfile?.protocolType
+            effectiveProtocol = nil
             return
         }
 
@@ -1237,20 +1358,53 @@ final class VPNDashboardViewModel {
     }
 
     private func observeConnectionState() {
-        stateObservationTask = Task { [weak self, connectionManager] in
+        stateObservationTask = Task { @MainActor [weak self, connectionManager] in
             for await _ in connectionManager.stateUpdates() {
-                // Read the manager's authoritative current state at apply time
-                // rather than trusting the (possibly stale) buffered event, so a
-                // lagging observer can never clobber state with an out-of-date
-                // value. A user-initiated operation owns the state while it is
-                // in flight; external transitions apply only when idle.
-                let current = await connectionManager.currentState()
-                await MainActor.run {
-                    guard let self, self.activeOperationID == nil else { return }
-                    self.connectionState = current
+                let authoritativeConnection =
+                    await connectionManager.authoritativeConnection()
+                guard let self, self.activeOperationID == nil else {
+                    continue
                 }
+                await self.applyAuthoritativeConnection(authoritativeConnection)
             }
         }
+    }
+
+    private func observeConnectionTelemetry() {
+        telemetryObservationTask = Task {
+            @MainActor [weak self, connectionTelemetryManager] in
+            for await snapshot in connectionTelemetryManager.updates() {
+                guard let self else {
+                    return
+                }
+                self.connectionTelemetry = snapshot
+            }
+        }
+    }
+
+    private func applyAuthoritativeConnection(
+        _ authoritativeConnection: VPNAuthoritativeConnection
+    ) async {
+        connectionState = authoritativeConnection.state
+        hasAuthoritativeManagerConflict =
+            authoritativeConnection.hasMultipleActiveManagers
+
+        if authoritativeConnection.isSystemActive,
+           let restoredProfileID = authoritativeConnection.profileID,
+           let profile = profiles.first(where: { $0.id == restoredProfileID }) {
+            if activeProfileID != restoredProfileID {
+                activeProfileID = restoredProfileID
+                await activeProfileStore.saveActiveProfileID(restoredProfileID)
+            }
+            selectedProtocol = .manual(profile.protocolType)
+            effectiveProtocol = profile.protocolType
+        }
+
+        if authoritativeConnection.hasMultipleActiveManagers {
+            errorMessage = "Multiple active VPN configurations were reported by iOS. No connection was started or stopped."
+        }
+
+        await connectionTelemetryManager.reconcile(with: authoritativeConnection)
     }
 
     private func saveProfileAndSelect(_ profile: VPNProfile) async throws -> Bool {
@@ -1273,7 +1427,20 @@ final class VPNDashboardViewModel {
         profileSaveMessage = nil
 
         do {
+            let previousProfile = try await profileRepository.profiles().first { $0.id == profile.id }
             try await profileRepository.save(profile)
+            do {
+                try await synchronizeRuntimeProfile(profile)
+            } catch {
+                if let previousProfile {
+                    try? await profileRepository.save(previousProfile)
+                    try? await synchronizeRuntimeProfile(previousProfile)
+                } else {
+                    try? await profileRepository.delete(id: profile.id)
+                    try? await runtimeProfileSynchronizer?.profileDeleted(id: profile.id)
+                }
+                throw error
+            }
             guard saveOperationID == operationID else {
                 return false
             }
@@ -1307,6 +1474,29 @@ final class VPNDashboardViewModel {
         Task {
             await activeProfileStore.saveActiveProfileID(id)
         }
+    }
+
+    private func synchronizeRuntimeProfile(_ profile: VPNProfile) async throws {
+        guard let runtimeProfileSynchronizer else { return }
+        guard profile.isEnabled else {
+            try await runtimeProfileSynchronizer.profileDeleted(id: profile.id)
+            return
+        }
+        guard profile.runtimeCapability.isReady else {
+            try await runtimeProfileSynchronizer.profileDeleted(id: profile.id)
+            return
+        }
+        let summary = try await runtimeProfileSynchronizer.profileSaved(profile)
+        guard summary.publishedProfileIDs.contains(profile.id) else {
+            throw SubscriptionApplicationError.runtimePublicationFailed
+        }
+    }
+
+    private func profileProtocolName(in result: VPNImportResult) -> String {
+        guard case .profile(let profile) = result.kind else {
+            return "not a VPN profile"
+        }
+        return profile.protocolType.displayName
     }
 
     private func clearMissingOrInvalidActiveProfileIfNeeded() {

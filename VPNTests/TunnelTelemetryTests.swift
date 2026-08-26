@@ -349,6 +349,96 @@ struct TunnelProviderMessagingTests {
     }
 
     @Test
+    func matchingDisconnectedStaleManagerIsRetargetedToXrayProvider() async throws {
+        let runtimeConfiguration = try RuntimeProviderConfiguration(
+            profileID: UUID(),
+            sharedRecordRevision: "rev-stale-provider"
+        )
+        let manager = RecordingDiagnosticTunnelProviderManager(
+            providerBundleIdentifier: PacketTunnelProviderRouting.wireGuardBundleIdentifier,
+            initialProviderConfiguration: runtimeConfiguration.propertyList
+        )
+        let store = RecordingDiagnosticTunnelProviderManagerStore(managers: [manager])
+        let bootstrapper = DiagnosticTunnelProviderSessionBootstrapper(
+            managerStore: store,
+            providerBundleIdentifier: PacketTunnelProviderRouting.xrayBundleIdentifier
+        )
+
+        _ = try await bootstrapper.sessionForRuntimeValidation(
+            providerConfiguration: runtimeConfiguration
+        )
+
+        #expect(await store.makeCount == 0)
+        #expect(
+            await manager.providerBundleIdentifier()
+                == PacketTunnelProviderRouting.xrayBundleIdentifier
+        )
+        #expect(await manager.lastRuntimeConfiguration == runtimeConfiguration)
+    }
+
+    @Test
+    func activeStaleManagerIsNeverRetargeted() async throws {
+        let runtimeConfiguration = try RuntimeProviderConfiguration(
+            profileID: UUID(),
+            sharedRecordRevision: "rev-active-provider"
+        )
+        let session = StubTunnelProviderSession(status: .connected, response: nil)
+        let manager = RecordingDiagnosticTunnelProviderManager(
+            providerBundleIdentifier: PacketTunnelProviderRouting.wireGuardBundleIdentifier,
+            session: session,
+            initialProviderConfiguration: runtimeConfiguration.propertyList
+        )
+        let store = RecordingDiagnosticTunnelProviderManagerStore(managers: [manager])
+        let bootstrapper = DiagnosticTunnelProviderSessionBootstrapper(
+            managerStore: store,
+            providerBundleIdentifier: PacketTunnelProviderRouting.xrayBundleIdentifier
+        )
+
+        _ = try await bootstrapper.sessionForRuntimeValidation(
+            providerConfiguration: runtimeConfiguration
+        )
+
+        #expect(await store.makeCount == 1)
+        #expect(
+            await manager.providerBundleIdentifier()
+                == PacketTunnelProviderRouting.wireGuardBundleIdentifier
+        )
+        #expect(await manager.lastRuntimeConfiguration == nil)
+    }
+
+    @Test
+    func mismatchedStaleManagerIsNeverRetargeted() async throws {
+        let desired = try RuntimeProviderConfiguration(
+            profileID: UUID(),
+            sharedRecordRevision: "rev-desired-provider"
+        )
+        let stale = try RuntimeProviderConfiguration(
+            profileID: UUID(),
+            sharedRecordRevision: "rev-unrelated-provider"
+        )
+        let manager = RecordingDiagnosticTunnelProviderManager(
+            providerBundleIdentifier: PacketTunnelProviderRouting.wireGuardBundleIdentifier,
+            initialProviderConfiguration: stale.propertyList
+        )
+        let store = RecordingDiagnosticTunnelProviderManagerStore(managers: [manager])
+        let bootstrapper = DiagnosticTunnelProviderSessionBootstrapper(
+            managerStore: store,
+            providerBundleIdentifier: PacketTunnelProviderRouting.xrayBundleIdentifier
+        )
+
+        _ = try await bootstrapper.sessionForRuntimeValidation(
+            providerConfiguration: desired
+        )
+
+        #expect(await store.makeCount == 1)
+        #expect(
+            await manager.providerBundleIdentifier()
+                == PacketTunnelProviderRouting.wireGuardBundleIdentifier
+        )
+        #expect(await manager.lastRuntimeConfiguration == nil)
+    }
+
+    @Test
     func persistedProviderConfigurationMismatchStopsBeforeIPCSession() async throws {
         let providerID = "su.24kvn.kvn-app.PacketTunnelExtension"
         let intended = try RuntimeProviderConfiguration(profileID: UUID(), sharedRecordRevision: "rev-intended")
@@ -969,14 +1059,7 @@ struct TunnelTelemetryLocalizationTests {
             "diagnostics.telemetry.runtime_state.notRunning",
             "diagnostics.telemetry.health_state.stopped"
         ]
-        let strings = try telemetryLocalizableStrings()
-
-        for key in keys {
-            let localization = try #require(strings[key] as? [String: Any])
-            let localizations = try #require(localization["localizations"] as? [String: Any])
-            #expect(localizations["en"] != nil)
-            #expect(localizations["ru"] != nil)
-        }
+        try Stage0TestResources.requireLocalizations(for: keys)
     }
 }
 
@@ -1447,9 +1530,8 @@ private actor CountingTelemetryConnectionManager: VPNConnectionManaging {
         }
     }
 
-    func connect(using profile: VPNProfile) async throws -> ConnectionMetrics {
+    func connect(using profile: VPNProfile) async throws {
         connectCount += 1
-        return ConnectionMetrics(latency: 0, packetLoss: 0, serverLoad: 0, connectionTime: 0)
     }
 
     func disconnect() async {
@@ -1695,13 +1777,4 @@ private final class ObservationWaiter: @unchecked Sendable {
 private func settleMainActor() async {
     await Task.yield()
     await Task.yield()
-}
-
-private nonisolated func telemetryLocalizableStrings() throws -> [String: Any] {
-    let testsURL = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
-    let projectURL = testsURL.deletingLastPathComponent()
-    let catalogURL = projectURL.appendingPathComponent("VPN/Resources/Localizable.xcstrings")
-    let data = try Data(contentsOf: catalogURL)
-    let object = try JSONSerialization.jsonObject(with: data) as? [String: Any]
-    return try #require(object?["strings"] as? [String: Any])
 }

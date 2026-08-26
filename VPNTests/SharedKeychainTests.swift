@@ -88,6 +88,23 @@ struct SharedKeychainAccessGroupTests {
     }
 
     @Test
+    func hostedAppAndEmbeddedExtensionResolveIdenticalCompiledAccessGroup() throws {
+        let appGroup = try #require(
+            Bundle.main.object(forInfoDictionaryKey: SharedKeychainAccessGroupValidator.infoPlistKey) as? String
+        )
+        let plugInsURL = try #require(Bundle.main.builtInPlugInsURL)
+        let extensionURL = plugInsURL.appendingPathComponent("PacketTunnelExtension.appex", isDirectory: true)
+        let extensionBundle = try #require(Bundle(url: extensionURL))
+        let extensionGroup = try #require(
+            extensionBundle.object(forInfoDictionaryKey: SharedKeychainAccessGroupValidator.infoPlistKey) as? String
+        )
+
+        #expect(try SharedKeychainAccessGroupValidator.validate(appGroup) == appGroup)
+        #expect(try SharedKeychainAccessGroupValidator.validate(extensionGroup) == extensionGroup)
+        #expect(appGroup == extensionGroup)
+    }
+
+    @Test
     func explicitAccessGroupIsPresentOnAddReadUpdateDeleteQueries() {
         let builder = KeychainCredentialQueryBuilder()
         let descriptor = KeychainItemDescriptor(service: service, account: account, accessGroup: accessGroup)

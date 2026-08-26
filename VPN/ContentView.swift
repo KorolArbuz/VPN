@@ -12,15 +12,20 @@ struct ContentView: View {
     @State private var healthDiagnostics = PortableHealthDiagnosticsViewModel()
     @State private var selectedTab: AppTab = .home
 
-    init(connectionManager: VPNConnectionManaging = MockVPNConnectionManager()) {
+    init(connectionManager: VPNConnectionManaging) {
         let profileRepository = FileVPNProfileRepository()
         let credentialStore = KeychainCredentialStore()
         let runtimeProfileSynchronizer: any RuntimeProfileSynchronizing
-        if let appGroupSynchronizer = RuntimeProfileSynchronizer.appGroupSynchronizer(
+        if let xraySynchronizer = RuntimeProfileSynchronizer.appGroupSynchronizer(
             profileRepository: profileRepository,
             credentialStore: credentialStore
+        ), let nativePublisher = NativeWireGuardProfilePublisher.appGroupPublisher(
+            credentialStore: credentialStore
         ) {
-            runtimeProfileSynchronizer = appGroupSynchronizer
+            runtimeProfileSynchronizer = CompositeRuntimeProfileSynchronizer(
+                xray: xraySynchronizer,
+                native: NativeWireGuardRuntimeProfileSynchronizer(publisher: nativePublisher)
+            )
         } else {
             runtimeProfileSynchronizer = UnavailableRuntimeProfileSynchronizer()
         }
@@ -29,7 +34,8 @@ struct ContentView: View {
             profileRepository: profileRepository,
             subscriptionUpdater: URLSessionSubscriptionUpdater(credentialStore: credentialStore),
             credentialStore: credentialStore,
-            runtimeProfileSynchronizer: runtimeProfileSynchronizer
+            runtimeProfileSynchronizer: runtimeProfileSynchronizer,
+            connectionTelemetryManager: DashboardConnectionTelemetryController()
         ))
     }
 
@@ -59,6 +65,26 @@ struct ContentView: View {
             }
             .tag(AppTab.settings)
         }
+        .modifier(
+            AuthoritativeConnectionScenePhaseModifier(viewModel: viewModel)
+        )
+    }
+}
+
+private struct AuthoritativeConnectionScenePhaseModifier: ViewModifier {
+    @Environment(\.scenePhase) private var scenePhase
+
+    let viewModel: VPNDashboardViewModel
+
+    func body(content: Content) -> some View {
+        content.onChange(of: scenePhase) { oldPhase, newPhase in
+            guard oldPhase != .active, newPhase == .active else {
+                return
+            }
+            Task { @MainActor in
+                await viewModel.applicationDidBecomeActive()
+            }
+        }
     }
 }
 
@@ -69,5 +95,5 @@ private enum AppTab: Hashable {
 }
 
 #Preview {
-    ContentView()
+    ContentView(connectionManager: MockVPNConnectionManager())
 }

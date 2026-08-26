@@ -26,6 +26,10 @@ nonisolated struct VPNLinkParser: VPNProfileImporting {
             throw VPNImportError.emptyInput
         }
 
+        if NativeWireGuardConfigParser.looksLikeConfiguration(trimmedText) {
+            return try await NativeWireGuardConfigParser(credentialStore: credentialStore).parse(trimmedText)
+        }
+
         guard let scheme = trimmedText.split(separator: ":", maxSplits: 1).first?.lowercased() else {
             throw VPNImportError.malformedURL
         }

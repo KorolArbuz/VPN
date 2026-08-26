@@ -45,7 +45,10 @@ actor TunnelTelemetryStore {
         runtime.backendKind = backendKind
         runtime.protocolKind = protocolKind
         runtime.transportKind = TunnelTelemetrySanitizer.safeToken(transportKind)
+        runtime.sessionID = UUID().uuidString
         runtime.startedAt = now
+        runtime.stoppedAt = nil
+        runtime.uptimeSeconds = nil
         runtime.lastStateChangeAt = now
         runtime.generatedAt = now
         runtime.origin = .packetTunnelExtension
@@ -69,6 +72,9 @@ actor TunnelTelemetryStore {
 
     func markRunning(now: Date = Date()) {
         runtime.runtimeState = .running
+        runtime.startedAt = now
+        runtime.stoppedAt = nil
+        runtime.uptimeSeconds = 0
         runtime.xrayState = runtime.xrayState == .unavailable ? .unavailable : .running
         runtime.tun2SocksState = runtime.tun2SocksState == .unavailable ? .unavailable : .running
         runtime.health = TunnelHealthSnapshot(
@@ -108,7 +114,20 @@ actor TunnelTelemetryStore {
     }
 
     func markStopped(now: Date = Date()) {
-        runtime = .notRunning(generatedAt: now)
+        runtime.runtimeState = .stopped
+        runtime.stoppedAt = now
+        runtime.xrayState = .stopped
+        runtime.tun2SocksState = .stopped
+        runtime.networkSettingsState = .stopped
+        runtime.health = TunnelHealthSnapshot(
+            state: .stopped,
+            generatedAt: now,
+            origin: .packetTunnelExtension,
+            lastSuccessfulTrafficAt: runtime.lastSuccessfulTrafficAt,
+            lastFailure: runtime.lastFailure,
+            isLive: false
+        )
+        updateGenerated(now)
         appendEvent(category: "stopped", state: .stopped, failure: nil, now: now)
     }
 

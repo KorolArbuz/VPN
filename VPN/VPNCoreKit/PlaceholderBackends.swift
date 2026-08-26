@@ -41,6 +41,6 @@ nonisolated struct HysteriaCoreBackendFactory: VPNCoreBackendFactory {
 
 nonisolated struct WireGuardCoreBackendFactory: VPNCoreBackendFactory {
     let identifier = "wireguard-core-backend"
-    let supportedProtocols: Set<CoreProtocol> = [.wireGuard]
+    let supportedProtocols: Set<CoreProtocol> = [.wireGuard, .amneziaWG]
     func makeBackend() -> VPNCoreBackend { UnavailableCoreBackend(identifier: identifier, supportedProtocols: supportedProtocols) }
 }

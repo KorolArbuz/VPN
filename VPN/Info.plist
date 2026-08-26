@@ -4,5 +4,7 @@
 <dict>
 	<key>KVNSharedKeychainAccessGroup</key>
 	<string>$(AppIdentifierPrefix)su.24kvn.app.shared</string>
+	<key>SecureLinkSourceRevision</key>
+	<string>7cce16b-dirty</string>
 </dict>
 </plist>

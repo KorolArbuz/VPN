@@ -121,9 +121,10 @@ nonisolated protocol RuntimeOnlyPacketTunnelSessionConnection: TunnelProviderSes
     func startRuntimeOnlyTunnel(options: [String: NSObject]) async throws
     func stopRuntimeOnlyTunnel() async
 }
+#endif
 
 nonisolated enum DataPlanePacketTunnelStartOptions {
-    static let dataPlaneKey = "kvn.debug.dataPlane"
+    static let dataPlaneKey = "kvn.xray.dataPlane"
     static let allowedKeys: Set<String> = [dataPlaneKey]
 
     static var propertyList: [String: NSObject] {
@@ -136,6 +137,7 @@ nonisolated protocol DataPlanePacketTunnelSessionConnection: TunnelProviderSessi
     func stopDataPlaneTunnel() async
 }
 
+#if DEBUG
 nonisolated enum LibXrayPingOnlyPacketTunnelStartOptions {
     static let libXrayPingOnlyKey = "kvn.debug.libXrayPingOnly"
     static let allowedKeys: Set<String> = [libXrayPingOnlyKey]
@@ -185,11 +187,9 @@ nonisolated final class NetworkExtensionTunnelMessenger: TunnelProviderMessaging
         try await send(request, requiresConnectedStatus: true)
     }
 
-    #if DEBUG
-    fileprivate func sendDiagnostic(_ request: TunnelMessageRequest) async throws -> TunnelMessageResponse {
+    func sendDiagnostic(_ request: TunnelMessageRequest) async throws -> TunnelMessageResponse {
         try await send(request, requiresConnectedStatus: false)
     }
-    #endif
 
     private func send(_ request: TunnelMessageRequest, requiresConnectedStatus: Bool) async throws -> TunnelMessageResponse {
         guard request.schemaVersion == TunnelMessageProtocol.schemaVersion else {
@@ -372,7 +372,6 @@ nonisolated final class NetworkExtensionTunnelSessionProvider: TunnelProviderSes
     }
 }
 
-#if DEBUG
 nonisolated struct TunnelSentinelProviderConfiguration: Equatable, Sendable {
     static let diagnosticPurpose = "sharedKeychainSentinel"
 
@@ -553,13 +552,17 @@ nonisolated final class NetworkExtensionDiagnosticTunnelProviderManager: Diagnos
     }
 }
 
+nonisolated private enum DiagnosticTunnelProviderManagerSelectionError: Error {
+    case ambiguousStaleManagers
+}
+
 actor DiagnosticTunnelProviderSessionBootstrapper {
     private let managerStore: any DiagnosticTunnelProviderManagerStore
     private let providerBundleIdentifier: String
 
     init(
         managerStore: any DiagnosticTunnelProviderManagerStore = NetworkExtensionDiagnosticTunnelProviderManagerStore(),
-        providerBundleIdentifier: String = "su.24kvn.kvn-app.PacketTunnelExtension"
+        providerBundleIdentifier: String = PacketTunnelProviderRouting.wireGuardBundleIdentifier
     ) {
         self.managerStore = managerStore
         self.providerBundleIdentifier = providerBundleIdentifier
@@ -583,6 +586,7 @@ actor DiagnosticTunnelProviderSessionBootstrapper {
 
     func sessionForRuntimeValidation(providerConfiguration: RuntimeProviderConfiguration) async throws -> DiagnosticTunnelProviderSessionBootstrapResult {
         try await configuredSession(
+            reconciling: providerConfiguration,
             configure: { manager, _ in
                 await manager.configureForRuntimeValidation(
                     providerBundleIdentifier: providerBundleIdentifier,
@@ -631,6 +635,7 @@ actor DiagnosticTunnelProviderSessionBootstrapper {
     }
 
     private func configuredSession(
+        reconciling desiredConfiguration: RuntimeProviderConfiguration? = nil,
         configure: @Sendable (any DiagnosticTunnelProviderManager, TunnelKeychainSentinelManagerAction) async -> Void,
         verifyAfterReload: (@Sendable (any DiagnosticTunnelProviderManager, TunnelKeychainSentinelManagerAction) async throws -> Void)? = nil
     ) async throws -> DiagnosticTunnelProviderSessionBootstrapResult {
@@ -643,7 +648,16 @@ actor DiagnosticTunnelProviderSessionBootstrapper {
 
         let selected: any DiagnosticTunnelProviderManager
         let managerAction: TunnelKeychainSentinelManagerAction
-        if let existing = await existingManager(in: managers) {
+        let existing: (any DiagnosticTunnelProviderManager)?
+        do {
+            existing = try await existingManager(
+                in: managers,
+                reconciling: desiredConfiguration
+            )
+        } catch {
+            throw Self.failure(stage: .managerLoad, category: .managerLoadFailed, error: error)
+        }
+        if let existing {
             selected = existing
             managerAction = .reused
         } else {
@@ -708,13 +722,44 @@ actor DiagnosticTunnelProviderSessionBootstrapper {
         }
     }
 
-    private func existingManager(in managers: [any DiagnosticTunnelProviderManager]) async -> (any DiagnosticTunnelProviderManager)? {
+    private func existingManager(
+        in managers: [any DiagnosticTunnelProviderManager],
+        reconciling desiredConfiguration: RuntimeProviderConfiguration?
+    ) async throws -> (any DiagnosticTunnelProviderManager)? {
         for manager in managers {
             if await manager.providerBundleIdentifier() == providerBundleIdentifier {
                 return manager
             }
         }
-        return nil
+
+        guard let desiredConfiguration else {
+            return nil
+        }
+
+        var eligibleStaleManagers: [any DiagnosticTunnelProviderManager] = []
+        for manager in managers {
+            let savedBundleIdentifier = await manager.providerBundleIdentifier()
+            let propertyList = await manager.providerConfigurationPropertyList()
+            let savedConfiguration = try? RuntimeProviderConfiguration.parse(propertyList)
+            guard let session = try? await manager.tunnelProviderSession() else {
+                continue
+            }
+            let status = await session.status()
+            if TunnelProviderManagerReconciler.canRetarget(
+                savedBundleIdentifier: savedBundleIdentifier,
+                savedConfiguration: savedConfiguration,
+                desiredBundleIdentifier: providerBundleIdentifier,
+                desiredConfiguration: desiredConfiguration,
+                status: status
+            ) {
+                eligibleStaleManagers.append(manager)
+            }
+        }
+
+        guard eligibleStaleManagers.count <= 1 else {
+            throw DiagnosticTunnelProviderManagerSelectionError.ambiguousStaleManagers
+        }
+        return eligibleStaleManagers.first
     }
 
     private static func runtimeConfigurationCategory(for error: any Error) -> TunnelRuntimeConfigurationValidationCategory {
@@ -917,8 +962,12 @@ nonisolated final class NetworkExtensionRuntimeConfigurationValidationMessenger:
     private let maximumResponseBytes: Int
 
     init(
-        bootstrapper: DiagnosticTunnelProviderSessionBootstrapper = DiagnosticTunnelProviderSessionBootstrapper(),
-        activeSessionProvider: any TunnelProviderSessionProviding = NetworkExtensionTunnelSessionProvider(),
+        bootstrapper: DiagnosticTunnelProviderSessionBootstrapper = DiagnosticTunnelProviderSessionBootstrapper(
+            providerBundleIdentifier: PacketTunnelProviderRouting.xrayBundleIdentifier
+        ),
+        activeSessionProvider: any TunnelProviderSessionProviding = NetworkExtensionTunnelSessionProvider(
+            providerBundleIdentifier: PacketTunnelProviderRouting.xrayBundleIdentifier
+        ),
         timeout: Duration = .seconds(3),
         maximumResponseBytes: Int = TunnelMessageProtocol.maximumResponseBytes
     ) {
@@ -1311,7 +1360,6 @@ private nonisolated struct SingleTunnelProviderSessionProvider: TunnelProviderSe
         session
     }
 }
-#endif
 
 private nonisolated enum NetworkExtensionErrorSymbol {
     static func symbol(domain: String, code: Int) -> String? {
@@ -1385,6 +1433,7 @@ extension NetworkExtensionTunnelProviderSession: RuntimeOnlyPacketTunnelSessionC
         }
     }
 }
+#endif
 
 extension NetworkExtensionTunnelProviderSession: DataPlanePacketTunnelSessionConnection {
     func startDataPlaneTunnel(options: [String: NSObject]) async throws {
@@ -1400,6 +1449,7 @@ extension NetworkExtensionTunnelProviderSession: DataPlanePacketTunnelSessionCon
     }
 }
 
+#if DEBUG
 extension NetworkExtensionTunnelProviderSession: LibXrayPingOnlyPacketTunnelSessionConnection {
     func startLibXrayPingOnlyTunnel(options: [String: NSObject]) async throws {
         try await MainActor.run {

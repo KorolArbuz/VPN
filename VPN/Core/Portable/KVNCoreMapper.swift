@@ -38,7 +38,7 @@ nonisolated enum KVNCoreMapper {
         case .trojan: .trojan
         case .vmess: .vmess
         case .hysteria2: .hysteria2
-        case .wireGuard: .wireguard
+        case .wireGuard, .amneziaWG: .wireguard
         case .shadowsocks: .shadowsocks
         case .tuic: .tuic
         case .ikev2: .ikev2
@@ -52,7 +52,7 @@ nonisolated enum KVNCoreMapper {
         switch proto {
         case .vless, .trojan, .vmess, .shadowsocks, .tuic: .xray
         case .hysteria2: .hysteria
-        case .wireGuard: .wireguard
+        case .wireGuard, .amneziaWG: .wireguard
         case .ikev2: .system
         }
     }

@@ -473,14 +473,7 @@ struct TransportHealthPrivacyAndLocalizationTests {
             "diagnostics.probe.running",
             "diagnostics.probe.error.unsupported"
         ]
-        let strings = try localizableStrings()
-
-        for key in keys {
-            let localization = try #require(strings[key] as? [String: Any])
-            let localizations = try #require(localization["localizations"] as? [String: Any])
-            #expect(localizations["en"] != nil)
-            #expect(localizations["ru"] != nil)
-        }
+        try Stage0TestResources.requireLocalizations(for: keys)
     }
 }
 
@@ -678,10 +671,9 @@ private actor CountingConnectionManager: VPNConnectionManaging {
         }
     }
 
-    func connect(using profile: VPNProfile) async throws -> ConnectionMetrics {
+    func connect(using profile: VPNProfile) async throws {
         connectCount += 1
         state = .connected
-        return ConnectionMetrics(latency: 1, packetLoss: 0, serverLoad: 0, connectionTime: 0)
     }
 
     func disconnect() async {
@@ -773,13 +765,4 @@ private nonisolated func makeFailedAttempt(
         handshakeLatencyMs: nil,
         failure: failure
     )
-}
-
-private nonisolated func localizableStrings() throws -> [String: Any] {
-    let testsURL = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
-    let projectURL = testsURL.deletingLastPathComponent()
-    let catalogURL = projectURL.appendingPathComponent("VPN/Resources/Localizable.xcstrings")
-    let data = try Data(contentsOf: catalogURL)
-    let object = try JSONSerialization.jsonObject(with: data) as? [String: Any]
-    return try #require(object?["strings"] as? [String: Any])
 }

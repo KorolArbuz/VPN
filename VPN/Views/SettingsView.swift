@@ -6,6 +6,290 @@
 //
 
 import SwiftUI
+import UIKit
+
+private enum StartupDiagnosticsStrings {
+    static let engineNative = LocalizedStringResource(
+        "diagnostics.startup.engine.native",
+        defaultValue: "Native NetworkExtension",
+        comment: "Production VPN engine shown in Settings diagnostics."
+    )
+    static let engineFallback = LocalizedStringResource(
+        "diagnostics.startup.engine.fallback",
+        defaultValue: "Fallback connection manager",
+        comment: "Non-production VPN engine shown in Settings diagnostics."
+    )
+    static let mode = LocalizedStringResource(
+        "diagnostics.startup.mode",
+        defaultValue: "Runtime mode",
+        comment: "Label for the current VPN runtime mode."
+    )
+    static let modeProduction = LocalizedStringResource(
+        "diagnostics.startup.mode.production",
+        defaultValue: "Production",
+        comment: "Value indicating the real production VPN path is in use."
+    )
+    static let modeDemo = LocalizedStringResource(
+        "diagnostics.startup.mode.demo",
+        defaultValue: "Demo",
+        comment: "Value indicating the non-production demo VPN path is in use."
+    )
+    static let networkExtensionConfigured = LocalizedStringResource(
+        "diagnostics.startup.network_extension.configured",
+        defaultValue: "Production provider configured",
+        comment: "Value indicating the production NetworkExtension provider is selected."
+    )
+    static let networkExtensionNotSelected = LocalizedStringResource(
+        "diagnostics.startup.network_extension.not_selected",
+        defaultValue: "Production provider not selected",
+        comment: "Value indicating the production NetworkExtension provider is not selected."
+    )
+    static let diagnosticsPersisted = LocalizedStringResource(
+        "diagnostics.startup.diagnostics.persisted",
+        defaultValue: "Persisted App Group timeline",
+        comment: "Value describing where startup diagnostics are retained."
+    )
+    static let title = LocalizedStringResource(
+        "diagnostics.startup.title",
+        defaultValue: "Latest connection attempt",
+        comment: "Title of the latest native tunnel startup diagnostics section."
+    )
+    static let attempt = LocalizedStringResource(
+        "diagnostics.startup.attempt",
+        defaultValue: "Attempt",
+        comment: "Label for the shortened activation attempt identifier."
+    )
+    static let started = LocalizedStringResource(
+        "diagnostics.startup.started",
+        defaultValue: "Started",
+        comment: "Label for the startup attempt timestamp."
+    )
+    static let appBuild = LocalizedStringResource(
+        "diagnostics.startup.app_build",
+        defaultValue: "App build",
+        comment: "Label for the containing application's version and build."
+    )
+    static let extensionBuild = LocalizedStringResource(
+        "diagnostics.startup.extension_build",
+        defaultValue: "Extension build",
+        comment: "Label for the PacketTunnelExtension version and build."
+    )
+    static let buildMismatch = LocalizedStringResource(
+        "diagnostics.startup.build_mismatch",
+        defaultValue: "App and PacketTunnelExtension builds do not match.",
+        comment: "Warning shown when app and embedded extension build numbers differ."
+    )
+    static let stageApp = LocalizedStringResource(
+        "diagnostics.startup.stage.app",
+        defaultValue: "App start request",
+        comment: "Startup stage for the app-side connection request."
+    )
+    static let stageProvider = LocalizedStringResource(
+        "diagnostics.startup.stage.provider",
+        defaultValue: "Provider process",
+        comment: "Startup stage for entering the packet tunnel provider process."
+    )
+    static let stageStartTunnel = LocalizedStringResource(
+        "diagnostics.startup.stage.start_tunnel",
+        defaultValue: "startTunnel entered",
+        comment: "Startup stage for entering PacketTunnelProvider.startTunnel."
+    )
+    static let stageRuntime = LocalizedStringResource(
+        "diagnostics.startup.stage.runtime",
+        defaultValue: "Runtime profile",
+        comment: "Startup stage for loading the native runtime profile."
+    )
+    static let stageCredentials = LocalizedStringResource(
+        "diagnostics.startup.stage.credentials",
+        defaultValue: "Credentials",
+        comment: "Startup stage for resolving secure WireGuard credentials."
+    )
+    static let stageConfiguration = LocalizedStringResource(
+        "diagnostics.startup.stage.configuration",
+        defaultValue: "AWG configuration",
+        comment: "Startup stage for compiling the AmneziaWG configuration."
+    )
+    static let stageAdapter = LocalizedStringResource(
+        "diagnostics.startup.stage.adapter",
+        defaultValue: "Native adapter",
+        comment: "Startup stage for starting WireGuardAdapter."
+    )
+    static let stageNetworkSettings = LocalizedStringResource(
+        "diagnostics.startup.stage.network_settings",
+        defaultValue: "Network settings",
+        comment: "Startup stage for applying NEPacketTunnelNetworkSettings."
+    )
+    static let stageCompletion = LocalizedStringResource(
+        "diagnostics.startup.stage.completion",
+        defaultValue: "Tunnel completion",
+        comment: "Startup stage for completing PacketTunnelProvider startup."
+    )
+    static let failedStage = LocalizedStringResource(
+        "diagnostics.startup.failed_stage",
+        defaultValue: "Failed stage",
+        comment: "Label for the first recorded failed startup stage."
+    )
+    static let failureCategory = LocalizedStringResource(
+        "diagnostics.startup.failure_category",
+        defaultValue: "Failure category",
+        comment: "Label for a sanitized native tunnel failure category."
+    )
+    static let nativeCode = LocalizedStringResource(
+        "diagnostics.startup.native_code",
+        defaultValue: "Native code",
+        comment: "Label for a numeric native WireGuard backend error code."
+    )
+    static let error = LocalizedStringResource(
+        "diagnostics.startup.error",
+        defaultValue: "Error",
+        comment: "Label for a sanitized error domain and code."
+    )
+    static let timeline = LocalizedStringResource(
+        "diagnostics.startup.timeline",
+        defaultValue: "Startup timeline",
+        comment: "Title for the ordered native tunnel startup event timeline."
+    )
+    static let copyReport = LocalizedStringResource(
+        "diagnostics.startup.copy_report",
+        defaultValue: "Copy diagnostic report",
+        comment: "Button that copies a secret-free native tunnel diagnostic report."
+    )
+    static let noAttempt = LocalizedStringResource(
+        "diagnostics.startup.no_attempt",
+        defaultValue: "No connection attempt has been recorded yet.",
+        comment: "Placeholder when no persisted native tunnel attempt exists."
+    )
+    static let checkProvider = LocalizedStringResource(
+        "diagnostics.startup.check_provider",
+        defaultValue: "Check tunnel provider",
+        comment: "Button that performs a PacketTunnelExtension IPC preflight."
+    )
+    static let providerState = LocalizedStringResource(
+        "diagnostics.startup.provider_state",
+        defaultValue: "Provider status",
+        comment: "Label for the detailed PacketTunnelExtension preflight state."
+    )
+    static let checkAppGroup = LocalizedStringResource(
+        "diagnostics.startup.check_app_group",
+        defaultValue: "Check App Group",
+        comment: "Button that performs a safe app/provider shared-container sentinel test."
+    )
+    static let appGroupAppWrite = LocalizedStringResource(
+        "diagnostics.startup.app_group.app_write",
+        defaultValue: "App write",
+        comment: "App Group self-test stage where the containing app writes its sentinel."
+    )
+    static let appGroupProviderRead = LocalizedStringResource(
+        "diagnostics.startup.app_group.provider_read",
+        defaultValue: "Provider read",
+        comment: "App Group self-test stage where the provider reads the app sentinel."
+    )
+    static let appGroupProviderWrite = LocalizedStringResource(
+        "diagnostics.startup.app_group.provider_write",
+        defaultValue: "Provider write",
+        comment: "App Group self-test stage where the provider writes its sentinel."
+    )
+    static let appGroupAppRead = LocalizedStringResource(
+        "diagnostics.startup.app_group.app_read",
+        defaultValue: "App read",
+        comment: "App Group self-test stage where the app reads the provider sentinel."
+    )
+    static let appGroupCleanup = LocalizedStringResource(
+        "diagnostics.startup.app_group.cleanup",
+        defaultValue: "Cleanup",
+        comment: "App Group self-test stage where disposable sentinels are removed."
+    )
+    static let checkRuntime = LocalizedStringResource(
+        "diagnostics.startup.check_runtime",
+        defaultValue: "Check runtime profile",
+        comment: "Button that validates the selected native runtime profile without exposing secrets."
+    )
+    static let runtimeExists = LocalizedStringResource(
+        "diagnostics.startup.runtime.exists",
+        defaultValue: "Runtime profile exists",
+        comment: "Runtime profile diagnostic result."
+    )
+    static let runtimeProfileMatch = LocalizedStringResource(
+        "diagnostics.startup.runtime.profile_match",
+        defaultValue: "Profile ID matches selected",
+        comment: "Runtime profile diagnostic result."
+    )
+    static let runtimeProtocol = LocalizedStringResource(
+        "diagnostics.startup.runtime.protocol",
+        defaultValue: "Protocol",
+        comment: "Runtime profile diagnostic protocol label."
+    )
+    static let runtimeRevision = LocalizedStringResource(
+        "diagnostics.startup.runtime.revision",
+        defaultValue: "Revision",
+        comment: "Runtime profile diagnostic revision label."
+    )
+    static let runtimeEnabled = LocalizedStringResource(
+        "diagnostics.startup.runtime.enabled",
+        defaultValue: "Enabled",
+        comment: "Runtime profile diagnostic enabled-state label."
+    )
+    static let runtimeReferences = LocalizedStringResource(
+        "diagnostics.startup.runtime.references",
+        defaultValue: "Credential references valid",
+        comment: "Runtime profile diagnostic credential-reference validation label."
+    )
+    static let runtimeCredentials = LocalizedStringResource(
+        "diagnostics.startup.runtime.credentials",
+        defaultValue: "Credentials available",
+        comment: "Runtime profile diagnostic result; does not expose credential values."
+    )
+    static let runtimeAWGComplete = LocalizedStringResource(
+        "diagnostics.startup.runtime.awg_complete",
+        defaultValue: "AWG fields complete",
+        comment: "Runtime profile diagnostic result for required AmneziaWG fields."
+    )
+    static let runtimeMissing = LocalizedStringResource(
+        "diagnostics.startup.runtime.missing",
+        defaultValue: "Missing fields",
+        comment: "Runtime profile diagnostic list of missing non-secret fields."
+    )
+    static let ok = LocalizedStringResource(
+        "diagnostics.startup.ok",
+        defaultValue: "OK",
+        comment: "A startup stage completed or was reached successfully."
+    )
+    static let failed = LocalizedStringResource(
+        "diagnostics.startup.failed",
+        defaultValue: "FAILED",
+        comment: "A startup stage failed."
+    )
+    static let notReached = LocalizedStringResource(
+        "diagnostics.startup.not_reached",
+        defaultValue: "NOT REACHED",
+        comment: "A startup stage was not reached before an earlier failure."
+    )
+    static let unknown = LocalizedStringResource(
+        "diagnostics.startup.unknown",
+        defaultValue: "UNKNOWN",
+        comment: "No reliable startup-stage information is available."
+    )
+}
+
+nonisolated struct SettingsConnectionRuntimeStatus: Equatable, Sendable {
+    var usesProductionCore: Bool
+
+    var engineValueKey: String {
+        usesProductionCore ? "diagnostics.startup.engine.native" : "diagnostics.startup.engine.fallback"
+    }
+
+    var modeValueKey: String {
+        usesProductionCore ? "diagnostics.startup.mode.production" : "diagnostics.startup.mode.demo"
+    }
+
+    var networkExtensionValueKey: String {
+        usesProductionCore ? "diagnostics.startup.network_extension.configured" : "diagnostics.startup.network_extension.not_selected"
+    }
+
+    var diagnosticsValueKey: String {
+        "diagnostics.startup.diagnostics.persisted"
+    }
+}
 
 struct SettingsView: View {
     private let viewModel: VPNDashboardViewModel?
@@ -39,18 +323,25 @@ struct SettingsView: View {
             }
 
             Section("App") {
-                LabeledContent("settings.connection_engine", value: "Mock")
-                LabeledContent("Mode", value: "Demo")
-                LabeledContent("NetworkExtension", value: "Not configured")
-                LabeledContent("Diagnostics", value: "Local only")
+                let runtimeStatus = SettingsConnectionRuntimeStatus(
+                    usesProductionCore: viewModel?.showsDemoModeNotice == false
+                )
+                LabeledContent("settings.connection_engine", value: localizedValue(runtimeStatus.engineValueKey))
+                LabeledContent("diagnostics.startup.mode", value: localizedValue(runtimeStatus.modeValueKey))
+                LabeledContent("NetworkExtension", value: localizedValue(runtimeStatus.networkExtensionValueKey))
+                LabeledContent("Diagnostics", value: localizedValue(runtimeStatus.diagnosticsValueKey))
             }
 
             Section("Security") {
                 Label("Credentials are stored by reference in this prototype.", systemImage: "lock.shield")
                     .foregroundStyle(.secondary)
-                Label("vpn.demo_mode", systemImage: "info.circle")
-                    .foregroundStyle(.secondary)
+                if viewModel?.showsDemoModeNotice != false {
+                    Label("vpn.demo_mode", systemImage: "info.circle")
+                        .foregroundStyle(.secondary)
+                }
             }
+
+            startupDiagnosticsSection
 
             #if DEBUG
             Section("diagnostics.transport_health") {
@@ -1281,6 +1572,9 @@ struct SettingsView: View {
             #endif
         }
         .navigationTitle("settings.title")
+        .task {
+            tunnelTelemetry.loadLatestStartupDiagnostics()
+        }
         #if DEBUG
         .onChange(of: scenePhase) {
             if scenePhase == .active {
@@ -1288,6 +1582,234 @@ struct SettingsView: View {
             }
         }
         #endif
+    }
+
+    @ViewBuilder
+    private var startupDiagnosticsSection: some View {
+        Section("diagnostics.startup.title") {
+            if let attempt = tunnelTelemetry.latestStartupAttempt {
+                LabeledContent(
+                    "diagnostics.startup.attempt",
+                    value: String(attempt.metadata.attemptID.uuidString.prefix(8))
+                )
+                LabeledContent(
+                    "diagnostics.startup.started",
+                    value: startupTimeText(attempt.metadata.startedAt)
+                )
+                LabeledContent(
+                    "diagnostics.startup.app_build",
+                    value: "\(attempt.appBuild.version) (\(attempt.appBuild.build))"
+                )
+                LabeledContent(
+                    "diagnostics.startup.extension_build",
+                    value: attempt.extensionBuild.map { "\($0.version) (\($0.build))" }
+                        ?? localizedValue("diagnostics.startup.not_reached")
+                )
+
+                if attempt.buildMismatch {
+                    Label("diagnostics.startup.build_mismatch", systemImage: "exclamationmark.triangle")
+                        .foregroundStyle(.orange)
+                }
+
+                Divider()
+
+                ForEach(Array(startupStageRows.enumerated()), id: \.offset) { _, row in
+                    LabeledContent(
+                        LocalizedStringKey(row.labelKey),
+                        value: startupStageStatusText(startupStageStatus(row.stage, in: attempt))
+                    )
+                }
+
+                if let lastEvent = startupFailureEvent(in: attempt) {
+                    Divider()
+                    LabeledContent("diagnostics.startup.failed_stage", value: lastEvent.stage.rawValue)
+                    LabeledContent(
+                        "diagnostics.startup.failure_category",
+                        value: lastEvent.failureCategory?.rawValue ?? NativeTunnelFailureCategory.unknown.rawValue
+                    )
+                    if let nativeCode = lastEvent.details["nativeCode"] {
+                        LabeledContent("diagnostics.startup.native_code", value: nativeCode)
+                    }
+                    if let error = lastEvent.error {
+                        LabeledContent(
+                            "diagnostics.startup.error",
+                            value: "\(error.domain) / \(error.code)"
+                        )
+                    }
+                }
+
+                Divider()
+
+                Text("diagnostics.startup.timeline")
+                    .font(.headline)
+                ForEach(attempt.events.suffix(32)) { event in
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text(startupTimeText(event.timestamp))
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(event.stage.rawValue)
+                                .font(.caption)
+                            if let category = event.failureCategory {
+                                Text(category.rawValue)
+                                    .font(.caption2)
+                                    .foregroundStyle(.orange)
+                            }
+                        }
+                    }
+                }
+
+                Button("diagnostics.startup.copy_report") {
+                    UIPasteboard.general.string = tunnelTelemetry.latestDiagnosticReport
+                }
+                .disabled(tunnelTelemetry.latestDiagnosticReport == nil)
+            } else {
+                Text("diagnostics.startup.no_attempt")
+                    .foregroundStyle(.secondary)
+            }
+
+            Divider()
+
+            HStack {
+                Button("diagnostics.startup.check_provider") {
+                    tunnelTelemetry.runProviderPreflight()
+                }
+                .disabled(tunnelTelemetry.isRunningProviderPreflight)
+                Spacer()
+                if tunnelTelemetry.isRunningProviderPreflight {
+                    ProgressView()
+                }
+            }
+            if let result = tunnelTelemetry.providerPreflightResult {
+                LabeledContent("diagnostics.startup.provider_state", value: result.state.rawValue)
+                LabeledContent(
+                    "diagnostics.telemetry.system_status",
+                    value: providerStatusText(result.sessionStatus)
+                )
+                if let domain = result.errorDomain, let code = result.errorCode {
+                    LabeledContent("diagnostics.startup.error", value: "\(domain) / \(code)")
+                }
+            }
+
+            Divider()
+
+            HStack {
+                Button("diagnostics.startup.check_app_group") {
+                    tunnelTelemetry.runAppGroupSelfTest()
+                }
+                .disabled(tunnelTelemetry.isRunningAppGroupSelfTest)
+                Spacer()
+                if tunnelTelemetry.isRunningAppGroupSelfTest {
+                    ProgressView()
+                }
+            }
+            if let result = tunnelTelemetry.appGroupSelfTestResult {
+                LabeledContent("diagnostics.startup.app_group.app_write", value: boolText(result.appWriteSucceeded))
+                LabeledContent("diagnostics.startup.app_group.provider_read", value: boolText(result.providerReadSucceeded))
+                LabeledContent("diagnostics.startup.app_group.provider_write", value: boolText(result.providerWriteSucceeded))
+                LabeledContent("diagnostics.startup.app_group.app_read", value: boolText(result.appReadSucceeded))
+                LabeledContent("diagnostics.startup.app_group.cleanup", value: boolText(result.cleanupSucceeded))
+                if let category = result.failureCategory {
+                    LabeledContent("diagnostics.startup.failure_category", value: category)
+                }
+            }
+
+            Divider()
+
+            HStack {
+                Button("diagnostics.startup.check_runtime") {
+                    tunnelTelemetry.inspectNativeRuntimeProfile(profile: viewModel?.selectedProfile)
+                }
+                .disabled(
+                    tunnelTelemetry.isRunningNativeRuntimeDiagnostic
+                        || (viewModel?.selectedProfile?.protocolType != .wireGuard
+                            && viewModel?.selectedProfile?.protocolType != .amneziaWG)
+                )
+                Spacer()
+                if tunnelTelemetry.isRunningNativeRuntimeDiagnostic {
+                    ProgressView()
+                }
+            }
+            if let result = tunnelTelemetry.nativeRuntimeDiagnosticResult {
+                LabeledContent("diagnostics.startup.runtime.exists", value: boolText(result.runtimeProfileExists))
+                LabeledContent("diagnostics.startup.runtime.profile_match", value: boolText(result.profileIDMatches))
+                LabeledContent("diagnostics.startup.runtime.protocol", value: result.protocolName ?? localizedValue("diagnostics.value.unknown"))
+                LabeledContent("diagnostics.startup.runtime.revision", value: result.recordRevision ?? localizedValue("diagnostics.value.unknown"))
+                LabeledContent("diagnostics.startup.runtime.enabled", value: boolText(result.enabled))
+                LabeledContent("diagnostics.startup.runtime.references", value: boolText(result.credentialReferencesValid))
+                LabeledContent("diagnostics.startup.runtime.credentials", value: boolText(result.credentialsAvailable))
+                LabeledContent("diagnostics.startup.runtime.awg_complete", value: boolText(result.awgFieldCompleteness))
+                if result.missingFields.isEmpty == false {
+                    LabeledContent("diagnostics.startup.runtime.missing", value: result.missingFields.joined(separator: ", "))
+                }
+            }
+        }
+    }
+
+    private var startupStageRows: [(labelKey: String, stage: TunnelStartupStage)] {
+        [
+            ("diagnostics.startup.stage.app", .appConnectRequested),
+            ("diagnostics.startup.stage.provider", .providerProcessEntered),
+            ("diagnostics.startup.stage.start_tunnel", .providerStartTunnelEntered),
+            ("diagnostics.startup.stage.runtime", .runtimeProfileLoaded),
+            ("diagnostics.startup.stage.credentials", .credentialsResolved),
+            ("diagnostics.startup.stage.configuration", .awgConfigurationBuilt),
+            ("diagnostics.startup.stage.adapter", .adapterStarted),
+            ("diagnostics.startup.stage.network_settings", .networkSettingsApplied),
+            ("diagnostics.startup.stage.completion", .tunnelStartCompleted)
+        ]
+    }
+
+    private enum StartupStageDisplayStatus {
+        case ok
+        case failed
+        case notReached
+        case unknown
+    }
+
+    private func startupStageStatus(
+        _ stage: TunnelStartupStage,
+        in attempt: TunnelDiagnosticAttemptSnapshot
+    ) -> StartupStageDisplayStatus {
+        if let event = attempt.events.last(where: { $0.stage == stage }) {
+            switch event.outcome {
+            case .succeeded:
+                return .ok
+            case .failed:
+                return .failed
+            case .started, .informational:
+                return .ok
+            }
+        }
+        if attempt.events.contains(where: { $0.outcome == .failed }) {
+            return .notReached
+        }
+        return .unknown
+    }
+
+    private func startupFailureEvent(
+        in attempt: TunnelDiagnosticAttemptSnapshot
+    ) -> TunnelDiagnosticEvent? {
+        attempt.events.last(where: {
+            $0.source == .provider && $0.outcome == .failed
+        }) ?? attempt.events.last(where: { $0.outcome == .failed })
+    }
+
+    private func startupStageStatusText(_ status: StartupStageDisplayStatus) -> String {
+        switch status {
+        case .ok:
+            localizedValue("diagnostics.startup.ok")
+        case .failed:
+            localizedValue("diagnostics.startup.failed")
+        case .notReached:
+            localizedValue("diagnostics.startup.not_reached")
+        case .unknown:
+            localizedValue("diagnostics.startup.unknown")
+        }
+    }
+
+    private func startupTimeText(_ date: Date) -> String {
+        date.formatted(.dateTime.hour().minute().second().secondFraction(.fractional(3)))
     }
 
     private func statusText(_ summary: TransportProbeSummary) -> String {

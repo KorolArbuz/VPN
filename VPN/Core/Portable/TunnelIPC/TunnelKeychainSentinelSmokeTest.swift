@@ -387,11 +387,7 @@ nonisolated struct TunnelKeychainSentinelSmokeTester: Sendable {
     }
 
     private static func defaultMessenger() -> any TunnelKeychainSentinelMessaging {
-        #if DEBUG
         NetworkExtensionKeychainSentinelMessenger()
-        #else
-        UnavailableTunnelKeychainSentinelMessenger()
-        #endif
     }
 }
 

@@ -1,0 +1,38 @@
+AmneziaWG Apple and userspace runtime
+
+Official upstream Apple repository: https://github.com/amnezia-vpn/amneziawg-apple
+Version: v3.1.3
+Upstream base commit: bdaf0b337b85c815e1dc462505455155b6cdfe79
+
+Trusted manifest-compatibility fork: https://github.com/KorolArbuz/amneziawg-apple
+Exact manifest-only fork commit: bf1edba79609bb7688970ed5947ce9458a289603
+Fork patch scope: Package.swift only, for Swift package manifest compatibility.
+Swift tools version: 6.2
+Pinned source Swift language mode: Swift 5
+
+Pinned Go/userspace source: https://github.com/amnezia-vpn/amneziawg-go
+Module version: v3.1.20260814
+Commit: 1b86b2ae0e493e7ea93f8c1a0f0cb6735b1551f1
+
+MIT License
+
+Copyright (C) 2018-2023 WireGuard LLC. All Rights Reserved.
+Copyright (C) AmneziaVPN contributors.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

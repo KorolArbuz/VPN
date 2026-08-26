@@ -884,6 +884,7 @@ struct VPNTests {
             .tlsPublicKey,
             .wireGuardPeerPublicKey,
             .wireGuardPresharedKey,
+            .wireGuardHeaderProtectionKey,
             .hysteria2ObfsPassword
         ]))
 
@@ -908,7 +909,7 @@ struct VPNTests {
             )
 
             switch slot {
-            case .tlsPublicKey, .wireGuardPeerPublicKey, .wireGuardPresharedKey:
+            case .tlsPublicKey, .wireGuardPeerPublicKey, .wireGuardPresharedKey, .wireGuardHeaderProtectionKey:
                 #expect(changedPlan.changes.first?.kind == .invalid, "Changed unsupported slot: \(slot)")
                 #expect(identicalPlan.changes.first?.kind == .invalid, "Identical unsupported slot: \(slot)")
             case .hysteria2ObfsPassword:
@@ -2790,7 +2791,8 @@ struct VPNTests {
         await viewModel.connect()
 
         #expect(viewModel.connectionState == .connected)
-        #expect(viewModel.currentMetrics != nil)
+        #expect(viewModel.currentMetrics == nil)
+        #expect(viewModel.connectionTelemetry == .unavailable)
 
         await viewModel.disconnect()
 
@@ -2961,7 +2963,6 @@ struct VPNTests {
 
     @Test
     func keyEnglishLocalizationsExist() throws {
-        let strings = try localizableStrings()
         let keys = [
             "app.name",
             "settings.language",
@@ -2975,16 +2976,11 @@ struct VPNTests {
             "import.progress.importing"
         ]
 
-        for key in keys {
-            let localization = try #require(strings[key] as? [String: Any])
-            let localizations = try #require(localization["localizations"] as? [String: Any])
-            #expect(localizations["en"] != nil)
-        }
+        try Stage0TestResources.requireLocalizations(for: keys, locales: ["en"])
     }
 
     @Test
     func keyRussianLocalizationsExist() throws {
-        let strings = try localizableStrings()
         let keys = [
             "app.name",
             "settings.language",
@@ -2998,11 +2994,7 @@ struct VPNTests {
             "import.progress.importing"
         ]
 
-        for key in keys {
-            let localization = try #require(strings[key] as? [String: Any])
-            let localizations = try #require(localization["localizations"] as? [String: Any])
-            #expect(localizations["ru"] != nil)
-        }
+        try Stage0TestResources.requireLocalizations(for: keys, locales: ["ru"])
     }
 
     @Test
@@ -3217,10 +3209,9 @@ struct VPNTests {
     @Test
     func homeDemoModeUsesMockCoreBackendPath() async throws {
         let manager = MockVPNConnectionManager()
-        let metrics = try await manager.connect(using: makeCompleteProfile(name: "Demo"))
+        try await manager.connect(using: makeCompleteProfile(name: "Demo"))
 
         #expect(await manager.currentState() == .connected)
-        #expect(metrics.latency > 0)
         await manager.disconnect()
     }
 
@@ -3628,6 +3619,19 @@ struct VPNTests {
                 )),
                 source: .importedURL
             )
+        case .wireGuardHeaderProtectionKey:
+            return VPNProfile.draft(
+                name: "AmneziaWG",
+                protocolType: .amneziaWG,
+                serverAddress: "amneziawg.example.invalid",
+                port: 51820,
+                credentialReference: "keychain://test.credentials/amneziawg-private-key",
+                protocolConfiguration: .amneziaWG(WireGuardProfileConfiguration(
+                    allowedIPs: ["0.0.0.0/0"],
+                    headerProtectionKeyReference: reference
+                )),
+                source: .importedURL
+            )
         case .hysteria2ObfsPassword:
             return VPNProfile.draft(
                 name: "Hysteria 2",
@@ -3864,15 +3868,6 @@ struct VPNTests {
             ]),
             credentialResolver: NonSecretReferenceCredentialResolver()
         )
-    }
-
-    private func localizableStrings() throws -> [String: Any] {
-        let testsURL = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
-        let projectURL = testsURL.deletingLastPathComponent()
-        let catalogURL = projectURL.appendingPathComponent("VPN/Resources/Localizable.xcstrings")
-        let data = try Data(contentsOf: catalogURL)
-        let object = try JSONSerialization.jsonObject(with: data) as? [String: Any]
-        return try #require(object?["strings"] as? [String: Any])
     }
 
     private func makeQRImageImportCoordinator(detector: QRCodeImageDetecting) -> QRImageImportCoordinator {
@@ -4942,11 +4937,10 @@ private actor RecordingConnectionManager: VPNConnectionManaging {
         }
     }
 
-    func connect(using profile: VPNProfile) async throws -> ConnectionMetrics {
+    func connect(using profile: VPNProfile) async throws {
         connectCount += 1
         publish(.connecting)
         publish(.connected)
-        return ConnectionMetrics(latency: 24, packetLoss: 0, serverLoad: 0.2, connectionTime: 0.1)
     }
 
     func disconnect() async {

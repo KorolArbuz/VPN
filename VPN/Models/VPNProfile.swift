@@ -48,7 +48,7 @@ nonisolated struct VPNProfile: Identifiable, Codable, Hashable, Sendable {
         }
 
         switch protocolType {
-        case .wireGuard:
+        case .wireGuard, .amneziaWG:
             if credentialReference == nil {
                 missing.append("private key reference")
             }
@@ -129,6 +129,11 @@ nonisolated struct VPNProfile: Identifiable, Codable, Hashable, Sendable {
         switch protocolType {
         case .wireGuard:
             .wireGuard(WireGuardProfileConfiguration(peerPublicKeyReference: nil, presharedKeyReference: nil, allowedIPs: ["0.0.0.0/0"]))
+        case .amneziaWG:
+            .amneziaWG(WireGuardProfileConfiguration(
+                allowedIPs: ["0.0.0.0/0"],
+                amnezia: AmneziaWGProfileParameters(junkPacketCount: 4)
+            ))
         case .ikev2:
             .ikev2(IKEv2ProfileConfiguration(remoteIdentifier: nil, localIdentifier: nil, authenticationMethod: "mock"))
         case .vless:
@@ -152,6 +157,7 @@ nonisolated enum VPNProfileCredentialSlot: CaseIterable, Sendable {
     case tlsPublicKey
     case wireGuardPeerPublicKey
     case wireGuardPresharedKey
+    case wireGuardHeaderProtectionKey
     case hysteria2ObfsPassword
 }
 
@@ -163,11 +169,26 @@ nonisolated extension VPNProfile {
         case .tlsPublicKey:
             return tlsSettings.publicKeyReference
         case .wireGuardPeerPublicKey:
-            guard case .wireGuard(let configuration) = protocolConfiguration else { return nil }
-            return configuration.peerPublicKeyReference
+            switch protocolConfiguration {
+            case .wireGuard(let configuration), .amneziaWG(let configuration):
+                return configuration.peerPublicKeyReference
+            default:
+                return nil
+            }
         case .wireGuardPresharedKey:
-            guard case .wireGuard(let configuration) = protocolConfiguration else { return nil }
-            return configuration.presharedKeyReference
+            switch protocolConfiguration {
+            case .wireGuard(let configuration), .amneziaWG(let configuration):
+                return configuration.presharedKeyReference
+            default:
+                return nil
+            }
+        case .wireGuardHeaderProtectionKey:
+            switch protocolConfiguration {
+            case .wireGuard(let configuration), .amneziaWG(let configuration):
+                return configuration.headerProtectionKeyReference
+            default:
+                return nil
+            }
         case .hysteria2ObfsPassword:
             guard case .hysteria2(let configuration) = protocolConfiguration else { return nil }
             return configuration.obfsPasswordReference
@@ -181,13 +202,38 @@ nonisolated extension VPNProfile {
         case .tlsPublicKey:
             tlsSettings.publicKeyReference = reference
         case .wireGuardPeerPublicKey:
-            guard case .wireGuard(var configuration) = protocolConfiguration else { return }
-            configuration.peerPublicKeyReference = reference
-            protocolConfiguration = .wireGuard(configuration)
+            switch protocolConfiguration {
+            case .wireGuard(var configuration):
+                configuration.peerPublicKeyReference = reference
+                protocolConfiguration = .wireGuard(configuration)
+            case .amneziaWG(var configuration):
+                configuration.peerPublicKeyReference = reference
+                protocolConfiguration = .amneziaWG(configuration)
+            default:
+                return
+            }
         case .wireGuardPresharedKey:
-            guard case .wireGuard(var configuration) = protocolConfiguration else { return }
-            configuration.presharedKeyReference = reference
-            protocolConfiguration = .wireGuard(configuration)
+            switch protocolConfiguration {
+            case .wireGuard(var configuration):
+                configuration.presharedKeyReference = reference
+                protocolConfiguration = .wireGuard(configuration)
+            case .amneziaWG(var configuration):
+                configuration.presharedKeyReference = reference
+                protocolConfiguration = .amneziaWG(configuration)
+            default:
+                return
+            }
+        case .wireGuardHeaderProtectionKey:
+            switch protocolConfiguration {
+            case .wireGuard(var configuration):
+                configuration.headerProtectionKeyReference = reference
+                protocolConfiguration = .wireGuard(configuration)
+            case .amneziaWG(var configuration):
+                configuration.headerProtectionKeyReference = reference
+                protocolConfiguration = .amneziaWG(configuration)
+            default:
+                return
+            }
         case .hysteria2ObfsPassword:
             guard case .hysteria2(var configuration) = protocolConfiguration else { return }
             configuration.obfsPasswordReference = reference
@@ -196,6 +242,13 @@ nonisolated extension VPNProfile {
     }
 
     var credentialReferences: Set<String> {
-        Set(VPNProfileCredentialSlot.allCases.compactMap { credentialReference(for: $0) })
+        var references = Set(VPNProfileCredentialSlot.allCases.compactMap { credentialReference(for: $0) })
+        switch protocolConfiguration {
+        case .wireGuard(let configuration), .amneziaWG(let configuration):
+            references.formUnion(configuration.peers.compactMap(\.presharedKeyReference))
+        default:
+            break
+        }
+        return references
     }
 }

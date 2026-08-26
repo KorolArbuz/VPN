@@ -133,6 +133,67 @@ private struct SubscriptionReviewSections: View {
     }
 }
 
+private struct NativeWireGuardReviewSections: View {
+    let configuration: WireGuardProfileConfiguration
+    let mode: VPNProtocol
+
+    var body: some View {
+        Section("Native interface") {
+            LabeledContent("Mode", value: mode.displayName)
+            LabeledContent("Addresses", value: configuration.interfaceAddresses.joined(separator: ", "))
+            if configuration.dnsServers.isEmpty == false {
+                LabeledContent("DNS", value: configuration.dnsServers.joined(separator: ", "))
+            }
+            if configuration.dnsSearchDomains.isEmpty == false {
+                LabeledContent("Search domains", value: configuration.dnsSearchDomains.joined(separator: ", "))
+            }
+            if let listenPort = configuration.listenPort {
+                LabeledContent("Listen port", value: String(listenPort))
+            }
+            if let mtu = configuration.mtu {
+                LabeledContent("MTU", value: String(mtu))
+            }
+            LabeledContent("Private key", value: "Stored securely")
+            if configuration.headerProtectionKeyReference != nil {
+                LabeledContent("Header protection key", value: "Stored securely")
+            }
+        }
+
+        Section("Peers") {
+            ForEach(configuration.peers, id: \.publicKey) { peer in
+                VStack(alignment: .leading, spacing: 6) {
+                    LabeledContent("Public key", value: abbreviatedKey(peer.publicKey))
+                    LabeledContent("Allowed IPs", value: peer.allowedIPs.joined(separator: ", "))
+                    if peer.excludedIPs.isEmpty == false {
+                        LabeledContent("Excluded IPs", value: peer.excludedIPs.joined(separator: ", "))
+                    }
+                    if let endpoint = peer.endpoint {
+                        LabeledContent("Endpoint", value: "\(endpoint.host):\(endpoint.port)")
+                    }
+                    if let keepAlive = peer.persistentKeepAlive {
+                        LabeledContent("Persistent keepalive", value: keepAlive)
+                    }
+                    if peer.presharedKeyReference != nil {
+                        LabeledContent("Preshared key", value: "Stored securely")
+                    }
+                }
+            }
+        }
+
+        if mode == .amneziaWG {
+            Section("AmneziaWG protection") {
+                LabeledContent("Manifest mode", value: "AmneziaWG")
+                LabeledContent("Obfuscation parameters", value: configuration.amnezia?.hasAnyValue == true ? "Configured" : "Header key only")
+            }
+        }
+    }
+
+    private func abbreviatedKey(_ value: String) -> String {
+        guard value.count > 16 else { return value }
+        return "\(value.prefix(8))…\(value.suffix(8))"
+    }
+}
+
 struct ReviewProfileView: View {
     let importResult: VPNImportResult
     @Bindable var viewModel: VPNDashboardViewModel
@@ -265,6 +326,10 @@ struct ReviewProfileView: View {
             LabeledContent("Credential", value: profile.maskedCredentialText)
         }
 
+        if let configuration = nativeConfiguration(for: profile) {
+            NativeWireGuardReviewSections(configuration: configuration, mode: profile.protocolType)
+        }
+
         if profile.isComplete == false {
             Section("Missing") {
                 ForEach(profile.missingRequiredFields, id: \.self) { field in
@@ -289,6 +354,15 @@ struct ReviewProfileView: View {
                     }
                 }
             }
+        }
+    }
+
+    private func nativeConfiguration(for profile: VPNProfile) -> WireGuardProfileConfiguration? {
+        switch profile.protocolConfiguration {
+        case .wireGuard(let configuration), .amneziaWG(let configuration):
+            configuration
+        default:
+            nil
         }
     }
 

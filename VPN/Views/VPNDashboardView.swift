@@ -16,7 +16,9 @@ struct VPNDashboardView: View {
             ScrollView {
                 VStack(spacing: 16) {
                     connectionStatus
-                    demoModeNotice
+                    if viewModel.showsDemoModeNotice {
+                        demoModeNotice
+                    }
                     currentConnectionCard
                     connectedMetrics
                 }
@@ -45,7 +47,7 @@ struct VPNDashboardView: View {
                 isEnabled: viewModel.canToggleConnection && viewModel.canConnect
             ) {
                 Task {
-                    await viewModel.toggleConnection()
+                    await viewModel.userDidTapMainConnectionButton()
                 }
             }
 
@@ -230,6 +232,13 @@ struct VPNDashboardView: View {
     }
 
     private var pingText: String {
+        if viewModel.connectionState == .connected {
+            guard let latency = viewModel.connectionTelemetry.latencyMilliseconds else {
+                return "--"
+            }
+            return "\(latency) ms"
+        }
+
         if viewModel.selectedProfile != nil {
             return String(localized: "home.not_tested")
         }
@@ -255,19 +264,28 @@ struct VPNDashboardView: View {
     }
 
     private var packetLossText: String {
-        guard let packetLoss = viewModel.currentMetrics?.packetLoss else {
+        guard let packetLoss = viewModel.connectionTelemetry.packetLossPercent else {
             return "Packet Loss --"
         }
 
-        return "Packet Loss " + packetLoss.formatted(.percent.precision(.fractionLength(1)))
+        return "Packet Loss "
+            + packetLoss.formatted(.number.precision(.fractionLength(1)))
+            + "%"
     }
 
     private var connectionTimeText: String {
-        guard let connectionTime = viewModel.currentMetrics?.connectionTime else {
+        guard let runtime = viewModel.connectionTelemetry.runtimeSeconds else {
             return "Session --"
         }
 
-        return "Session " + connectionTime.formatted(.number.precision(.fractionLength(2))) + " s"
+        let totalSeconds = max(0, Int(runtime.rounded(.down)))
+        let hours = totalSeconds / 3_600
+        let minutes = (totalSeconds % 3_600) / 60
+        let seconds = totalSeconds % 60
+        if hours > 0 {
+            return String(format: "Session %d:%02d:%02d", hours, minutes, seconds)
+        }
+        return String(format: "Session %02d:%02d", minutes, seconds)
     }
 
     private var connectionBadge: some View {
@@ -337,6 +355,8 @@ struct VPNDashboardView: View {
             "TC"
         case .wireGuard:
             "WG"
+        case .amneziaWG:
+            "AWG"
         case .ikev2:
             "IK"
         }

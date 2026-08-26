@@ -11,7 +11,7 @@ import UIKit
 @main
 struct VPNApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
-    @State private var connectionManager = MockVPNConnectionManager()
+    @State private var connectionManager = ProductionVPNConnectionComposition.makeConnectionManager()
     @AppStorage(AppLanguage.storageKey) private var languageRawValue = AppLanguage.system.rawValue
 
     var body: some Scene {

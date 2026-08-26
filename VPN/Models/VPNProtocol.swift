@@ -9,6 +9,7 @@ import Foundation
 
 nonisolated enum VPNProtocol: String, CaseIterable, Codable, Identifiable, Sendable {
     case wireGuard
+    case amneziaWG
     case ikev2
     case vless
     case hysteria2
@@ -23,6 +24,8 @@ nonisolated enum VPNProtocol: String, CaseIterable, Codable, Identifiable, Senda
         switch self {
         case .wireGuard:
             "WireGuard"
+        case .amneziaWG:
+            "AmneziaWG"
         case .ikev2:
             "IKEv2"
         case .vless:
@@ -44,26 +47,28 @@ nonisolated enum VPNProtocol: String, CaseIterable, Codable, Identifiable, Senda
         switch self {
         case .wireGuard:
             0
-        case .ikev2:
+        case .amneziaWG:
             1
-        case .hysteria2:
+        case .ikev2:
             2
-        case .vless:
+        case .hysteria2:
             3
-        case .trojan:
+        case .vless:
             4
-        case .shadowsocks:
+        case .trojan:
             5
-        case .tuic:
+        case .shadowsocks:
             6
-        case .vmess:
+        case .tuic:
             7
+        case .vmess:
+            8
         }
     }
 
     var iconName: String {
         switch self {
-        case .wireGuard:
+        case .wireGuard, .amneziaWG:
             "bolt.shield"
         case .ikev2:
             "building.columns"

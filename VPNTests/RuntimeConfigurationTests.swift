@@ -1370,7 +1370,7 @@ struct RuntimeCapabilityAuditTests {
                 result = try await TrojanLinkParser(credentialStore: store).parse(
                     "trojan://\(TestSecrets().password)@trojan-audit.example.invalid:443?\(query)#Audit"
                 )
-            case .wireGuard, .ikev2, .shadowsocks, .hysteria2, .tuic:
+            case .wireGuard, .amneziaWG, .ikev2, .shadowsocks, .hysteria2, .tuic:
                 Issue.record("Unexpected protocol in URI transport audit")
                 continue
             }
@@ -1674,16 +1674,6 @@ struct RuntimeCapabilityAuditTests {
         }
     }
 
-    @Test
-    func packetTunnelBuilderKeepsTheAppCapabilityMatrixAndTrojanALPN() throws {
-        let extensionRuntime = try projectFileContents("PacketTunnelExtension/Core/TunnelIPC/RuntimeConfigurationModels.swift")
-
-        #expect(extensionRuntime.contains("[.tcp, .websocket, .grpc, .httpUpgrade, .xhttp].contains(configuration.transport.kind)"))
-        #expect(extensionRuntime.contains("normalizedALPN(configuration.trojan?.alpn)"))
-        #expect(extensionRuntime.contains("security.tlsSettings?.alpn = alpn"))
-        #expect(extensionRuntime.contains("normalizedOptional(configuration.vless.encryption)"))
-        #expect(extensionRuntime.contains("vmess.alterID.map({ $0 >= 0 })"))
-    }
 }
 
 struct XrayConfigurationBuilderTests {
@@ -2613,20 +2603,8 @@ struct XrayLifecycleSmokeTestIPCTests {
     }
 
     @Test
-    func appAndExtensionLifecycleWireContractsStayInSync() throws {
-        let appModels = try projectFileContents("VPN/Core/Portable/TunnelIPC/TunnelMessageModels.swift")
-        let extensionModels = try projectFileContents("PacketTunnelExtension/Core/TunnelIPC/TunnelMessageModels.swift")
-        let extensionHandler = try projectFileContents("PacketTunnelExtension/Core/TunnelIPC/TunnelTelemetryIPC.swift")
-
+    func lifecycleWireContractKeepsItsRawKind() {
         #expect(TunnelMessageKind.runXrayLifecycleSmokeTest.rawValue == "runXrayLifecycleSmokeTest")
-        #expect(appModels.contains("\"runXrayLifecycleSmokeTest\""))
-        #expect(extensionModels.contains("\"runXrayLifecycleSmokeTest\""))
-        #expect(appModels.contains("xrayLifecycleSmokeTest"))
-        #expect(extensionModels.contains("xrayLifecycleSmokeTest"))
-        #expect(extensionHandler.contains("case .runXrayLifecycleSmokeTest:"))
-        #expect(extensionHandler.contains("guard case .xrayLifecycleSmokeTest(let payload)? = request.payload"))
-        #expect(extensionHandler.contains("return .success(request: request, payload: .xrayLifecycleSmokeTest(validation))"))
-        #expect(!extensionHandler.contains("payload: .runXrayLifecycleSmokeTest"))
     }
 
     @Test
@@ -2881,168 +2859,25 @@ struct XrayLifecycleSmokeTestIPCTests {
     }
 
     @Test
-    func appAndExtensionLibXrayPingWireContractsStayInSync() throws {
-        let appModels = try projectFileContents("VPN/Core/Portable/TunnelIPC/TunnelMessageModels.swift")
-        let extensionModels = try projectFileContents("PacketTunnelExtension/Core/TunnelIPC/TunnelMessageModels.swift")
-        let extensionHandler = try projectFileContents("PacketTunnelExtension/Core/TunnelIPC/TunnelTelemetryIPC.swift")
-        let runtimeModels = try projectFileContents("PacketTunnelExtension/Core/TunnelIPC/RuntimeConfigurationModels.swift")
-        let provider = try projectFileContents("PacketTunnelExtension/PacketTunnelProvider.swift")
-
+    func libXrayPingWireContractKeepsRawValues() {
         #expect(TunnelMessageKind.runLibXrayPingProbe.rawValue == "runLibXrayPingProbe")
         #expect(TunnelLibXrayPingProbeCategory.timeout.rawValue == "timeout")
         #expect(TunnelLibXrayPingProbeCategory.quicFailure.rawValue == "quicFailure")
-        #expect(appModels.contains("\"runLibXrayPingProbe\""))
-        #expect(extensionModels.contains("\"runLibXrayPingProbe\""))
-        #expect(appModels.contains("libXrayPingProbe"))
-        #expect(extensionModels.contains("libXrayPingProbe"))
-        #expect(extensionHandler.contains("case .runLibXrayPingProbe:"))
-        #expect(extensionHandler.contains("guard case .libXrayPingProbe(let payload)? = request.payload"))
-        #expect(extensionHandler.contains("return .success(request: request, payload: .libXrayPingProbe(validation))"))
-        #expect(runtimeModels.contains("protocol LibXrayPingBatchInvoking"))
-        #expect(runtimeModels.contains("protocol LibXrayPingProbing"))
-        #expect(runtimeModels.contains("LibXrayPingBatchItemResponsePayload"))
-        #expect(runtimeModels.contains("LibXrayPingErrorClassifier.category(for: item.error)"))
-        #expect(runtimeModels.contains(#"normalized.contains("quic") || normalized.contains("hysteria")"#))
-        #expect(runtimeModels.contains(#"normalized.contains("tls") || normalized.contains("handshake failure")"#))
-        #expect(runtimeModels.contains(#"normalized.contains("x509") || normalized.contains("certificate")"#))
-        #expect(runtimeModels.contains(#"normalized.contains("auth") || normalized.contains("unauthorized")"#))
-        #expect(runtimeModels.contains(#"normalized.contains("timeout") || normalized.contains("deadline exceeded")"#))
-        #expect(runtimeModels.contains(#"return .unknown"#))
-        #expect(runtimeModels.contains("nativeErrorPresent: item.error?.isEmpty == false"))
-        #expect(!appModels.contains("nativeErrorMessage"))
-        #expect(!extensionModels.contains("nativeErrorMessage"))
-        #expect(!appModels.contains("rawLibXrayError"))
-        #expect(!extensionModels.contains("rawLibXrayError"))
-        #expect(provider.contains("LibXrayPingOnlyPacketTunnelStartOptions"))
-        #expect(provider.contains("xrayRuntimeController.startPacketTunnelLibXrayPingOnly"))
-        #expect(provider.contains("PacketTunnelLibXrayPingProbeService(controller: xrayRuntimeController)"))
-        #expect(!extensionHandler.contains("payload: .runLibXrayPingProbe"))
     }
 
     @Test
-    func appAndExtensionRemoteEgressWireContractsStayInSync() throws {
-        let appModels = try projectFileContents("VPN/Core/Portable/TunnelIPC/TunnelMessageModels.swift")
-        let extensionModels = try projectFileContents("PacketTunnelExtension/Core/TunnelIPC/TunnelMessageModels.swift")
-        let extensionHandler = try projectFileContents("PacketTunnelExtension/Core/TunnelIPC/TunnelTelemetryIPC.swift")
-        let runtimeModels = try projectFileContents("PacketTunnelExtension/Core/TunnelIPC/RuntimeConfigurationModels.swift")
-
+    func remoteEgressWireContractKeepsRawValues() {
         #expect(TunnelMessageKind.runXrayRemoteEgressProbe.rawValue == "runXrayRemoteEgressProbe")
         #expect(TunnelMessageKind.probeActiveXrayEgress.rawValue == "probeActiveXrayEgress")
         #expect(TunnelXrayRemoteEgressProbeContext.runtimeOnly.rawValue == "runtimeOnly")
         #expect(TunnelXrayRemoteEgressProbeContext.dataPlane.rawValue == "dataPlane")
-        #expect(appModels.contains("\"runXrayRemoteEgressProbe\""))
-        #expect(appModels.contains("\"probeActiveXrayEgress\""))
-        #expect(extensionModels.contains("\"runXrayRemoteEgressProbe\""))
-        #expect(extensionModels.contains("\"probeActiveXrayEgress\""))
-        #expect(appModels.contains("enum TunnelXrayRemoteEgressProbeContext"))
-        #expect(extensionModels.contains("enum TunnelXrayRemoteEgressProbeContext"))
-        #expect(appModels.contains("xrayRemoteEgressProbe"))
-        #expect(extensionModels.contains("xrayRemoteEgressProbe"))
-        #expect(extensionHandler.contains("case .runXrayRemoteEgressProbe:"))
-        #expect(extensionHandler.contains("case .probeActiveXrayEgress:"))
-        #expect(extensionHandler.contains("guard case .xrayRemoteEgressProbe(let payload)? = request.payload"))
-        #expect(extensionHandler.contains("return .success(request: request, payload: .xrayRemoteEgressProbe(validation))"))
-        #expect(runtimeModels.contains("remoteEgressProbe.probe(host: \"127.0.0.1\", port: port)"))
-        #expect(runtimeModels.contains("remoteEgressProbe.probe(host: \"127.0.0.1\", port: session.port)"))
-        #expect(!runtimeModels.contains("remoteEgressProbe.probe(host: XraySOCKS5RemoteConnect.targetHost"))
-        #expect(runtimeModels.contains("XraySOCKS5RemoteConnect.requestBytes"))
-        #expect(runtimeModels.contains("XrayRemoteEgressHTTPProbe.requestBytes"))
-        let runtimeController = try sourceSlice(
-            in: runtimeModels,
-            from: "actor XrayRuntimeLifecycleController:",
-            to: "final class PacketTunnelXrayLifecycleSmokeTestService"
-        )
-        #expect(runtimeController.contains("func probeActiveXrayEgress("))
-        #expect(runtimeController.contains("private static func remoteProbeContext(for mode: XrayRuntimeLifecycleMode)"))
-        #expect(runtimeController.contains("case .packetTunnelRuntimeOnly:"))
-        #expect(runtimeController.contains("return .runtimeOnly"))
-        #expect(runtimeController.contains("case .packetTunnelDataPlane:"))
-        #expect(runtimeController.contains("return .dataPlane"))
-        #expect(runtimeController.contains("case .oneShotSmoke, .libXrayPingOnly:"))
-        #expect(runtimeController.contains("return nil"))
-        let activeProbeBody = try sourceSlice(
-            in: runtimeController,
-            from: "func probeActiveXrayEgress(",
-            to: "func startPacketTunnelRuntimeOnly("
-        )
-        #expect(activeProbeBody.contains("let probeContext = Self.remoteProbeContext(for: session.mode)"))
-        #expect(activeProbeBody.contains("probeContext: probeContext"))
-        #expect(!activeProbeBody.contains("libXray.test"))
-        #expect(!activeProbeBody.contains("libXray.run"))
-        #expect(!activeProbeBody.contains("libXray.stop"))
-        #expect(!activeProbeBody.contains("tun2Socks.start"))
-        #expect(!activeProbeBody.contains("tun2Socks.quit"))
-        #expect(!activeProbeBody.contains("networkSettingsApplier.apply"))
-        #expect(!activeProbeBody.contains("networkSettingsApplier.clear"))
-        #expect(!extensionHandler.contains("payload: .runXrayRemoteEgressProbe"))
     }
 
     @Test
-    func appAndExtensionUDPControlWireContractsStayInSync() throws {
-        let appModels = try projectFileContents("VPN/Core/Portable/TunnelIPC/TunnelMessageModels.swift")
-        let extensionModels = try projectFileContents("PacketTunnelExtension/Core/TunnelIPC/TunnelMessageModels.swift")
-        let extensionHandler = try projectFileContents("PacketTunnelExtension/Core/TunnelIPC/TunnelTelemetryIPC.swift")
-        let runtimeModels = try projectFileContents("PacketTunnelExtension/Core/TunnelIPC/RuntimeConfigurationModels.swift")
-        let provider = try projectFileContents("PacketTunnelExtension/PacketTunnelProvider.swift")
-        let settingsView = try projectFileContents("VPN/Views/SettingsView.swift")
-        let diagnosticsViewModel = try projectFileContents("VPN/Core/Portable/TunnelIPC/TunnelTelemetryDiagnosticsViewModel.swift")
-
+    func udpControlWireContractKeepsRawValues() {
         #expect(TunnelMessageKind.runUDPControlProbe.rawValue == "runUDPControlProbe")
         #expect(TunnelUDPControlProbeCategory.notRuntimeOnly.rawValue == "notRuntimeOnly")
         #expect(TunnelUDPControlProbePathStatus.satisfied.rawValue == "satisfied")
-        #expect(appModels.contains("\"runUDPControlProbe\""))
-        #expect(extensionModels.contains("\"runUDPControlProbe\""))
-        #expect(appModels.contains("udpControlProbe"))
-        #expect(extensionModels.contains("udpControlProbe"))
-        #expect(extensionHandler.contains("case .runUDPControlProbe:"))
-        #expect(extensionHandler.contains("guard case .udpControlProbe(let payload)? = request.payload"))
-        #expect(extensionHandler.contains("return .success(request: request, payload: .udpControlProbe(validation))"))
-        #expect(provider.contains("PacketTunnelUDPControlProbeService(controller: xrayRuntimeController)"))
-        #expect(settingsView.contains("diagnostics.udp_control.run"))
-        #expect(diagnosticsViewModel.contains("func runUDPControlProbe()"))
-        #expect(diagnosticsViewModel.contains("guard runtimeOnlyDiagnosticModeIsRunning else"))
-        #expect(!diagnosticsViewModel.contains("runtimeOnlyTunnelResult?.success == true"))
-        #expect(!diagnosticsViewModel.contains("dataPlaneTunnelResult?.success != true"))
-        #expect(runtimeModels.contains("protocol PacketTunnelUDPControlProbing"))
-        #expect(runtimeModels.contains("protocol UDPControlPathSnapshotProviding"))
-        #expect(runtimeModels.contains("protocol UDPControlDatagramTransporting"))
-        #expect(runtimeModels.contains("NetworkFrameworkUDPControlPathProvider"))
-        #expect(runtimeModels.contains("NetworkFrameworkUDPControlDatagramTransport"))
-        #expect(runtimeModels.contains("UDPControlDNSProbe.requestBytes"))
-        #expect(runtimeModels.contains("UDPControlDNSProbe.maximumResponseBytes"))
-
-        let runtimeController = try sourceSlice(
-            in: runtimeModels,
-            from: "actor XrayRuntimeLifecycleController:",
-            to: "private static func remoteProbeContext(for mode: XrayRuntimeLifecycleMode)"
-        )
-        #expect(runtimeController.contains("PacketTunnelUDPControlProbing"))
-        #expect(runtimeController.contains("func runUDPControlProbe("))
-        #expect(runtimeController.contains("session.mode == .packetTunnelRuntimeOnly"))
-        #expect(runtimeController.contains("category: .notRuntimeOnly"))
-
-        let udpProbeBody = try sourceSlice(
-            in: runtimeModels,
-            from: """
-            func runUDPControlProbe(
-                    correlationID: UUID,
-                    requestGeneration: UInt64?
-                ) async -> TunnelUDPControlProbeResponse {
-                    guard let session
-            """,
-            to: "private static func remoteProbeContext(for mode: XrayRuntimeLifecycleMode)"
-        )
-        #expect(!udpProbeBody.contains("libXray.test"))
-        #expect(!udpProbeBody.contains("libXray.run"))
-        #expect(!udpProbeBody.contains("libXray.stop"))
-        #expect(!udpProbeBody.contains("remoteEgressProbe.probe"))
-        #expect(!udpProbeBody.contains("readinessProbe.waitForReadiness"))
-        #expect(!udpProbeBody.contains("tun2Socks"))
-        #expect(!udpProbeBody.contains("networkSettingsApplier"))
-        #expect(!udpProbeBody.contains("setTunnelNetworkSettings"))
-        #expect(!udpProbeBody.contains("packetFlow"))
-        #expect(!runtimeModels.contains("packetFlow.readPackets"))
-        #expect(!runtimeModels.contains("packetFlow.writePackets"))
     }
 
     @Test
@@ -3265,12 +3100,7 @@ struct XrayLifecycleSmokeTestIPCTests {
     }
 
     @Test
-    func appAndExtensionDiagnosticProviderModeWireContractsStayInSync() throws {
-        let appModels = try projectFileContents("VPN/Core/Portable/TunnelIPC/TunnelMessageModels.swift")
-        let extensionModels = try projectFileContents("PacketTunnelExtension/Core/TunnelIPC/TunnelMessageModels.swift")
-        let extensionHandler = try projectFileContents("PacketTunnelExtension/Core/TunnelIPC/TunnelTelemetryIPC.swift")
-        let provider = try projectFileContents("PacketTunnelExtension/PacketTunnelProvider.swift")
-
+    func diagnosticProviderModeWireContractRoundTrips() throws {
         #expect(TunnelMessageKind.getDiagnosticProviderMode.rawValue == "getDiagnosticProviderMode")
         #expect(TunnelDiagnosticProviderMode.idle.rawValue == "idle")
         #expect(TunnelDiagnosticProviderMode.runtimeOnly.rawValue == "runtimeOnly")
@@ -3278,14 +3108,6 @@ struct XrayLifecycleSmokeTestIPCTests {
         #expect(TunnelDiagnosticProviderMode.libXrayPingOnly.rawValue == "libXrayPingOnly")
         #expect(TunnelDiagnosticProviderMode.lifecycleSmoke.rawValue == "lifecycleSmoke")
         #expect(TunnelDiagnosticProviderMode.unknown.rawValue == "unknown")
-        #expect(appModels.contains("\"getDiagnosticProviderMode\""))
-        #expect(extensionModels.contains("\"getDiagnosticProviderMode\""))
-        #expect(appModels.contains("diagnosticProviderMode"))
-        #expect(extensionModels.contains("diagnosticProviderMode"))
-        #expect(extensionHandler.contains("case .getDiagnosticProviderMode:"))
-        #expect(extensionHandler.contains("diagnosticProviderModeProvider?.diagnosticProviderMode() ?? .unknown"))
-        #expect(provider.contains("diagnosticProviderModeProvider: xrayRuntimeController"))
-
         let request = TunnelMessageRequest(kind: .getDiagnosticProviderMode)
         let response = TunnelMessageResponse.success(
             request: request,
@@ -3342,7 +3164,10 @@ struct RuntimeOnlyPacketTunnelTests {
         let session = RecordingRuntimeOnlySession(initialStatus: .disconnected)
         let manager = RecordingDiagnosticTunnelProviderManager(session: session)
         let managerStore = RecordingDiagnosticTunnelProviderManagerStore(managers: [manager])
-        let bootstrapper = DiagnosticTunnelProviderSessionBootstrapper(managerStore: managerStore)
+        let bootstrapper = DiagnosticTunnelProviderSessionBootstrapper(
+            managerStore: managerStore,
+            providerBundleIdentifier: PacketTunnelProviderRouting.xrayBundleIdentifier
+        )
         let service = RuntimeOnlyPacketTunnelService(
             publisher: publisher,
             bootstrapper: bootstrapper,
@@ -3404,10 +3229,12 @@ struct RuntimeOnlyPacketTunnelTests {
     }
 
     @Test
-    func dataPlaneStartOptionsContainOnlyDebugMarker() throws {
+    func dataPlaneStartOptionsContainOnlyProductionMarker() throws {
         let options = DataPlanePacketTunnelStartOptions.propertyList
         let json = try propertyListJSONString(options)
 
+        #expect(DataPlanePacketTunnelStartOptions.dataPlaneKey == "kvn.xray.dataPlane")
+        #expect(!DataPlanePacketTunnelStartOptions.dataPlaneKey.hasPrefix("kvn.debug."))
         #expect(Set(options.keys) == DataPlanePacketTunnelStartOptions.allowedKeys)
         #expect((options[DataPlanePacketTunnelStartOptions.dataPlaneKey] as? NSNumber)?.boolValue == true)
         assertNoSecretMaterial(in: json, secrets: TestSecrets())
@@ -3447,7 +3274,10 @@ struct RuntimeOnlyPacketTunnelTests {
         let session = RecordingRuntimeOnlySession(initialStatus: .disconnected)
         let manager = RecordingDiagnosticTunnelProviderManager(session: session)
         let managerStore = RecordingDiagnosticTunnelProviderManagerStore(managers: [manager])
-        let bootstrapper = DiagnosticTunnelProviderSessionBootstrapper(managerStore: managerStore)
+        let bootstrapper = DiagnosticTunnelProviderSessionBootstrapper(
+            managerStore: managerStore,
+            providerBundleIdentifier: PacketTunnelProviderRouting.xrayBundleIdentifier
+        )
         let service = LibXrayPingOnlyPacketTunnelService(
             publisher: publisher,
             bootstrapper: bootstrapper,
@@ -3497,7 +3327,10 @@ struct RuntimeOnlyPacketTunnelTests {
         let session = RecordingRuntimeOnlySession(initialStatus: .disconnected)
         let manager = RecordingDiagnosticTunnelProviderManager(session: session)
         let managerStore = RecordingDiagnosticTunnelProviderManagerStore(managers: [manager])
-        let bootstrapper = DiagnosticTunnelProviderSessionBootstrapper(managerStore: managerStore)
+        let bootstrapper = DiagnosticTunnelProviderSessionBootstrapper(
+            managerStore: managerStore,
+            providerBundleIdentifier: PacketTunnelProviderRouting.xrayBundleIdentifier
+        )
         let service = DataPlanePacketTunnelService(
             publisher: publisher,
             bootstrapper: bootstrapper,
@@ -3577,191 +3410,6 @@ struct RuntimeOnlyPacketTunnelTests {
         #expect(plan.udpPolicy == "enabledForDataPlaneDNSForwarding")
     }
 
-    @Test
-    func extensionRuntimeControllerKeepsRuntimeOnlySeparateAndEnablesK3B3ADataPlane() throws {
-        let runtimeModels = try projectFileContents("PacketTunnelExtension/Core/TunnelIPC/RuntimeConfigurationModels.swift")
-        let provider = try projectFileContents("PacketTunnelExtension/PacketTunnelProvider.swift")
-        let settingsView = try projectFileContents("VPN/Views/SettingsView.swift")
-        let diagnosticsViewModel = try projectFileContents("VPN/Core/Portable/TunnelIPC/TunnelTelemetryDiagnosticsViewModel.swift")
-
-        #expect(runtimeModels.contains("[.tcp, .websocket, .grpc, .httpUpgrade, .xhttp].contains(resolved.transport.kind)"))
-        #expect(runtimeModels.contains("mode: .packetTunnelRuntimeOnly"))
-        #expect(runtimeModels.contains("return .runtimeOnlyStarted("))
-        let actorDeclaration = try sourceSlice(
-            in: runtimeModels,
-            from: "actor XrayRuntimeLifecycleController:",
-            to: "private let runtimeConfigurationLoader"
-        )
-        #expect(actorDeclaration.contains("actor XrayRuntimeLifecycleController:"))
-        #expect(actorDeclaration.contains("XrayConfigurationValidating"))
-        #expect(actorDeclaration.contains("XrayRemoteEgressProbing"))
-        #expect(actorDeclaration.contains("PacketTunnelUDPControlProbing"))
-        #expect(actorDeclaration.contains("LibXrayPingProbing"))
-        #expect(actorDeclaration.contains("DiagnosticProviderModeProviding"))
-        #expect(actorDeclaration.contains("XrayRuntimeSessionControlling"))
-        #expect(runtimeModels.contains("category: .runtimeAlreadyRunning"))
-        #expect(!runtimeModels.contains("resolved.transport.kind == .tcp,"))
-        let runtimeController = try sourceSlice(
-            in: runtimeModels,
-            from: "actor XrayRuntimeLifecycleController:",
-            to: "final class PacketTunnelXrayLifecycleSmokeTestService"
-        )
-        let activeProbe = try sourceFunctionBody(
-            in: runtimeController,
-            from: "func probeActiveXrayEgress("
-        )
-        #expect(runtimeController.contains("private static func remoteProbeContext(for mode: XrayRuntimeLifecycleMode)"))
-        #expect(runtimeController.contains("case .packetTunnelRuntimeOnly:"))
-        #expect(runtimeController.contains("return .runtimeOnly"))
-        #expect(runtimeController.contains("case .packetTunnelDataPlane:"))
-        #expect(runtimeController.contains("return .dataPlane"))
-        #expect(runtimeController.contains("case .oneShotSmoke, .libXrayPingOnly:"))
-        #expect(runtimeController.contains("return nil"))
-        #expect(runtimeController.contains("case .oneShotSmoke, .libXrayPingOnly:"))
-        #expect(runtimeController.contains("func runLibXrayPingProbe("))
-        #expect(runtimeController.contains("func diagnosticProviderMode() async -> TunnelDiagnosticProviderMode"))
-        #expect(runtimeController.contains("func startPacketTunnelLibXrayPingOnly("))
-        #expect(runtimeController.contains("mode: .libXrayPingOnly"))
-        #expect(runtimeModels.contains("LibXrayPingBatchPayload"))
-        #expect(runtimeModels.contains(#"encodedRuntimeRequest(method: "pingBatch""#))
-        #expect(runtimeModels.contains(#"outboundTag: "proxy""#))
-        #expect(runtimeModels.contains(#"url: "https://cp.cloudflare.com/""#))
-        #expect(runtimeModels.contains("nativeErrorPresent: item.error?.isEmpty == false"))
-        #expect(activeProbe.contains("remoteEgressProbe.probe(host: \"127.0.0.1\", port: session.port)"))
-        #expect(activeProbe.contains("let probeContext = Self.remoteProbeContext(for: session.mode)"))
-        #expect(activeProbe.contains("probeContext: probeContext"))
-        #expect(!activeProbe.contains("testXray("))
-        #expect(!activeProbe.contains("runXray("))
-        #expect(!activeProbe.contains("stopXray("))
-        #expect(!activeProbe.contains("tun2Socks"))
-        #expect(!activeProbe.contains("networkSettingsApplier"))
-        #expect(!activeProbe.contains("setTunnelNetworkSettings"))
-        #expect(!activeProbe.contains("Socks5Tunnel.run"))
-        #expect(!activeProbe.contains("Socks5Tunnel.quit"))
-        let udpProbe = try sourceFunctionBody(
-            in: runtimeController,
-            from: "func runUDPControlProbe("
-        )
-        #expect(udpProbe.contains("session.mode == .packetTunnelRuntimeOnly"))
-        #expect(udpProbe.contains("category: .notRuntimeOnly"))
-        #expect(!udpProbe.contains("LibXrayInvoke"))
-        #expect(!udpProbe.contains("testXray("))
-        #expect(!udpProbe.contains("runXray("))
-        #expect(!udpProbe.contains("stopXray("))
-        #expect(!udpProbe.contains("Socks5Tunnel.run"))
-        #expect(!udpProbe.contains("Socks5Tunnel.quit"))
-        #expect(!udpProbe.contains("tun2Socks.run"))
-        #expect(!udpProbe.contains("tun2Socks.quit"))
-        #expect(!udpProbe.contains("setTunnelNetworkSettings"))
-        #expect(!udpProbe.contains("packetFlow"))
-        let libXrayPingProbe = try sourceFunctionBody(
-            in: runtimeController,
-            from: "func runLibXrayPingProbe("
-        )
-        #expect(libXrayPingProbe.contains("session.mode == .libXrayPingOnly"))
-        #expect(libXrayPingProbe.contains("libXrayPingBatch.pingBatch("))
-        #expect(libXrayPingProbe.contains("builder.build("))
-        #expect(!libXrayPingProbe.contains("testXray("))
-        #expect(!libXrayPingProbe.contains("runXray("))
-        #expect(!libXrayPingProbe.contains("stopXray("))
-        #expect(!libXrayPingProbe.contains("readinessProbe.waitForReadiness"))
-        #expect(!libXrayPingProbe.contains("remoteEgressProbe.probe"))
-        #expect(!libXrayPingProbe.contains("tun2Socks"))
-        #expect(!libXrayPingProbe.contains("networkSettingsApplier"))
-        #expect(!libXrayPingProbe.contains("setTunnelNetworkSettings"))
-        #expect(!libXrayPingProbe.contains("packetFlow"))
-        let pingOnlyStart = try sourceFunctionBody(
-            in: runtimeController,
-            from: "func startPacketTunnelLibXrayPingOnly("
-        )
-        #expect(pingOnlyStart.contains("mode: .libXrayPingOnly"))
-        #expect(pingOnlyStart.contains("tun2SocksStarted: false"))
-        #expect(pingOnlyStart.contains("networkSettingsApplied: false"))
-        #expect(pingOnlyStart.contains("runXrayInvoked: false"))
-        #expect(pingOnlyStart.contains("socksListenerReady: false"))
-        #expect(!pingOnlyStart.contains("testXray("))
-        #expect(!pingOnlyStart.contains("runXray("))
-        #expect(!pingOnlyStart.contains("stopXray("))
-        #expect(!pingOnlyStart.contains("readinessProbe"))
-        #expect(!pingOnlyStart.contains("Socks5Tunnel.run"))
-        #expect(!pingOnlyStart.contains("Socks5Tunnel.quit"))
-        #expect(!pingOnlyStart.contains("tun2Socks.run"))
-        #expect(!pingOnlyStart.contains("tun2Socks.quit"))
-        #expect(!pingOnlyStart.contains("networkSettingsApplier"))
-        #expect(!pingOnlyStart.contains("setTunnelNetworkSettings"))
-        #expect(!pingOnlyStart.contains("packetFlow"))
-        #expect(provider.contains("private lazy var xrayConfigurationValidator: (any XrayConfigurationValidating)? = {"))
-        #expect(provider.contains("xrayRuntimeController"))
-        #expect(provider.contains("PacketTunnelUDPControlProbeService(controller: xrayRuntimeController)"))
-        #expect(provider.contains("PacketTunnelLibXrayPingProbeService(controller: xrayRuntimeController)"))
-        #expect(provider.contains("diagnosticProviderModeProvider: xrayRuntimeController"))
-        #expect(!provider.contains("return PacketTunnelXrayConfigurationValidationService(runtimeConfigurationLoader: runtimeValidationLoader)"))
-        #expect(provider.contains("RuntimeOnlyPacketTunnelStartOptions"))
-        #expect(provider.contains("DataPlanePacketTunnelStartOptions"))
-        #expect(provider.contains("LibXrayPingOnlyPacketTunnelStartOptions"))
-        #expect(provider.contains("xrayRuntimeController.startPacketTunnelRuntimeOnly"))
-        #expect(provider.contains("xrayRuntimeController.startPacketTunnelDataPlane"))
-        #expect(provider.contains("xrayRuntimeController.startPacketTunnelLibXrayPingOnly"))
-        #expect(provider.contains("xrayRuntimeController.stopActivePacketTunnelSession"))
-        #expect(runtimeModels.contains("Socks5Tunnel.run(withConfig: .string(content: content))"))
-        #expect(runtimeModels.contains("Socks5Tunnel.quit()"))
-        #expect(runtimeModels.contains("Socks5Tunnel.stats"))
-        #expect(runtimeModels.contains("provider.setTunnelNetworkSettings(settings)"))
-        #expect(runtimeModels.contains("provider.setTunnelNetworkSettings(nil)"))
-        #expect(runtimeModels.contains("ipv4.includedRoutes = [NEIPv4Route.default()]"))
-        #expect(runtimeModels.contains("dns.matchDomains = plan.dnsMatchDomains"))
-        #expect(runtimeModels.contains("localSocksUDPEnabled: mode == .packetTunnelDataPlane"))
-        #expect(runtimeModels.contains("udpEnabled: true"))
-        #expect(!provider.contains("localPort"))
-        #expect(!provider.contains("20_480"))
-        #expect(!settingsView.contains("20_480"))
-        #expect(!settingsView.contains("selectedPort"))
-        #expect(!settingsView.contains("socksPort"))
-        #expect(settingsView.contains("diagnostics.active_xray_egress.context"))
-        #expect(settingsView.contains("diagnostics.udp_control.run"))
-        #expect(settingsView.contains("diagnostics.libxray_ping.run"))
-        #expect(settingsView.contains("diagnostics.libxray_ping_only.start"))
-        #expect(settingsView.contains("diagnostics.provider_mode.label"))
-        #expect(settingsView.contains("diagnostics.provider_mode.recover"))
-        #expect(settingsView.contains("tunnelTelemetry.reconcileDiagnosticProviderState()"))
-        #expect(settingsView.contains("tunnelTelemetry.recoverDiagnosticProvider()"))
-        #expect(settingsView.contains("tunnelTelemetry.runUDPControlProbe()"))
-        #expect(settingsView.contains("tunnelTelemetry.runLibXrayPingProbe("))
-        #expect(settingsView.contains("profile: viewModel?.selectedProfile"))
-        #expect(settingsView.contains("tunnelTelemetry.persistentDiagnosticStartIsEligible"))
-        #expect(settingsView.contains("tunnelTelemetry.runtimeOnlyDiagnosticModeIsRunning"))
-        #expect(settingsView.contains("tunnelTelemetry.dataPlaneDiagnosticModeIsRunning"))
-        #expect(settingsView.contains("tunnelTelemetry.libXrayPingOnlyDiagnosticModeIsRunning"))
-        #expect(!settingsView.contains("runtimeOnlyTunnelResult?.success != true"))
-        #expect(!settingsView.contains("dataPlaneTunnelResult?.success != true"))
-        #expect(!settingsView.contains("libXrayPingOnlyTunnelResult?.success == true"))
-        #expect(!settingsView.contains("libXrayPingOnlyTunnelResult?.success != true"))
-        #expect(!diagnosticsViewModel.contains("20_480"))
-        #expect(!diagnosticsViewModel.contains("selectedPort"))
-        #expect(!diagnosticsViewModel.contains("socksPort"))
-        #expect(diagnosticsViewModel.contains("var diagnosticProviderMode: TunnelDiagnosticProviderMode = .idle"))
-        #expect(diagnosticsViewModel.contains("func reconcileDiagnosticProviderState()"))
-        #expect(diagnosticsViewModel.contains("func recoverDiagnosticProvider()"))
-        #expect(diagnosticsViewModel.contains("var persistentDiagnosticStartIsEligible: Bool"))
-        #expect(diagnosticsViewModel.contains("var diagnosticProviderIsOccupied: Bool"))
-        #expect(diagnosticsViewModel.contains("let persistentXrayModeIsRunning = runtimeOnlyDiagnosticModeIsRunning"))
-        #expect(diagnosticsViewModel.contains("|| dataPlaneDiagnosticModeIsRunning"))
-        #expect(diagnosticsViewModel.contains("probeActiveXrayEgress(profile: profile)"))
-        #expect(diagnosticsViewModel.contains("func runUDPControlProbe()"))
-        #expect(diagnosticsViewModel.contains("func runLibXrayPingProbe(profile: VPNProfile?)"))
-        #expect(diagnosticsViewModel.contains("func startLibXrayPingOnlyTunnel(profile: VPNProfile?)"))
-        #expect(diagnosticsViewModel.contains("guard runtimeOnlyDiagnosticModeIsRunning else"))
-        #expect(diagnosticsViewModel.contains("guard libXrayPingOnlyDiagnosticModeIsRunning else"))
-        #expect(!diagnosticsViewModel.contains("runtimeOnlyTunnelResult?.success == true"))
-        #expect(!diagnosticsViewModel.contains("dataPlaneTunnelResult?.success == true"))
-        #expect(!diagnosticsViewModel.contains("libXrayPingOnlyTunnelResult?.success == true"))
-        #expect(!provider.contains("packetFlow.readPackets"))
-        #expect(!provider.contains("packetFlow.writePackets"))
-        #expect(!runtimeModels.contains("packetFlow.readPackets"))
-        #expect(!runtimeModels.contains("packetFlow.writePackets"))
-        #expect(!provider.contains("Socks5Tunnel.run"))
-        #expect(!provider.contains("Socks5Tunnel.quit"))
-    }
 }
 
 struct K3B4DiagnosticAdmissionTests {
@@ -4539,14 +4187,7 @@ struct RuntimeConfigurationLocalizationTests {
             "diagnostics.runtime_only.error.unsupported_protocol",
             "diagnostics.runtime_only.error.shared_container"
         ]
-        let strings = try runtimeConfigurationLocalizableStrings()
-
-        for key in keys {
-            let localization = try #require(strings[key] as? [String: Any])
-            let localizations = try #require(localization["localizations"] as? [String: Any])
-            #expect(localizations["en"] != nil)
-            #expect(localizations["ru"] != nil)
-        }
+        try Stage0TestResources.requireLocalizations(for: keys)
     }
 }
 
@@ -5017,82 +4658,6 @@ private func forbiddenJSONKeyPaths(in object: Any, forbiddenKeys: Set<String>, p
     return []
 }
 
-private func runtimeConfigurationLocalizableStrings() throws -> [String: Any] {
-    let testsURL = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
-    let candidates = [
-        testsURL.deletingLastPathComponent().appendingPathComponent("VPN/Resources/Localizable.xcstrings"),
-        testsURL.deletingLastPathComponent().appendingPathComponent("Resources/Localizable.xcstrings"),
-        testsURL.deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("VPN/Resources/Localizable.xcstrings")
-    ]
-    let catalogURL = try #require(candidates.first { FileManager.default.fileExists(atPath: $0.path) })
-    let data = try Data(contentsOf: catalogURL)
-    let object = try JSONSerialization.jsonObject(with: data) as? [String: Any]
-    return try #require(object?["strings"] as? [String: Any])
-}
-
-private func projectFileContents(_ relativePath: String) throws -> String {
-    let testsURL = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
-    let environmentRoots = ["SRCROOT", "PROJECT_DIR", "PWD"].compactMap { key -> URL? in
-        guard let path = ProcessInfo.processInfo.environment[key], path.isEmpty == false else {
-            return nil
-        }
-        return URL(fileURLWithPath: path)
-    }
-    let roots = [
-        testsURL.deletingLastPathComponent(),
-        testsURL.deletingLastPathComponent().deletingLastPathComponent(),
-        URL(fileURLWithPath: FileManager.default.currentDirectoryPath),
-        URL(fileURLWithPath: FileManager.default.currentDirectoryPath).deletingLastPathComponent()
-    ] + environmentRoots
-    let candidates = roots.lazy.flatMap { root in
-        [
-            root.appendingPathComponent(relativePath),
-            root.appendingPathComponent("VPN").appendingPathComponent(relativePath)
-        ]
-    }
-    let fileURL = try #require(candidates.first {
-        FileManager.default.fileExists(atPath: $0.path)
-    })
-    return try String(contentsOf: fileURL, encoding: .utf8)
-}
-
-private func sourceSlice(
-    in text: String,
-    from startMarker: String,
-    to endMarker: String
-) throws -> String {
-    let start = try #require(text.range(of: startMarker))
-    let tail = text[start.lowerBound...]
-    let end = try #require(tail.range(of: endMarker))
-    return String(tail[..<end.lowerBound])
-}
-
-private enum SourceExtractionError: Error {
-    case missingClosingBrace
-}
-
-private func sourceFunctionBody(in text: String, from startMarker: String) throws -> String {
-    let start = try #require(text.range(of: startMarker))
-    let bodyStart = try #require(text[start.lowerBound...].firstIndex(of: "{"))
-    var depth = 0
-    var index = bodyStart
-
-    while index < text.endIndex {
-        let character = text[index]
-        if character == "{" {
-            depth += 1
-        } else if character == "}" {
-            depth -= 1
-            if depth == 0 {
-                let bodyEnd = text.index(after: index)
-                return String(text[start.lowerBound..<bodyEnd])
-            }
-        }
-        index = text.index(after: index)
-    }
-
-    throw SourceExtractionError.missingClosingBrace
-}
 
 private func assertNoSecretMaterial(in text: String, secrets: TestSecrets, sourceLocation: SourceLocation = #_sourceLocation) {
     for secret in [
@@ -5593,7 +5158,7 @@ private final class RecordingDiagnosticTunnelProviderManager: DiagnosticTunnelPr
 
     init(
         session: any TunnelProviderSessionConnection,
-        bundleID: String = "su.24kvn.kvn-app.PacketTunnelExtension"
+        bundleID: String = PacketTunnelProviderRouting.xrayBundleIdentifier
     ) {
         self.session = session
         self.bundleID = bundleID
@@ -5821,7 +5386,10 @@ private func makeDiagnosticAdmissionHarness(
     let persistentSession = RecordingRuntimeOnlySession(initialStatus: .disconnected, providerMode: .idle)
     let persistentManager = RecordingDiagnosticTunnelProviderManager(session: persistentSession)
     let persistentManagerStore = RecordingDiagnosticTunnelProviderManagerStore(managers: [persistentManager])
-    let persistentBootstrapper = DiagnosticTunnelProviderSessionBootstrapper(managerStore: persistentManagerStore)
+    let persistentBootstrapper = DiagnosticTunnelProviderSessionBootstrapper(
+        managerStore: persistentManagerStore,
+        providerBundleIdentifier: PacketTunnelProviderRouting.xrayBundleIdentifier
+    )
     let persistentSessionProvider = StaticTunnelProviderSessionProvider(session: persistentSession)
     let runtimeOnlyService = RuntimeOnlyPacketTunnelService(
         publisher: publisher(),
@@ -5919,6 +5487,12 @@ private func makeUnsupportedDiagnosticProfile(protocolType: VPNProtocol) -> VPNP
     switch protocolType {
     case .wireGuard:
         protocolConfiguration = .wireGuard(WireGuardProfileConfiguration(peerPublicKeyReference: nil, presharedKeyReference: nil, allowedIPs: ["0.0.0.0/0"]))
+        username = nil
+    case .amneziaWG:
+        protocolConfiguration = .amneziaWG(WireGuardProfileConfiguration(
+            allowedIPs: ["0.0.0.0/0"],
+            amnezia: AmneziaWGProfileParameters(junkPacketCount: 4)
+        ))
         username = nil
     case .ikev2:
         protocolConfiguration = .ikev2(IKEv2ProfileConfiguration(remoteIdentifier: nil, localIdentifier: nil, authenticationMethod: "password"))

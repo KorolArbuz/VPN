@@ -69,21 +69,39 @@ actor TunnelTelemetryStore {
     }
 
     func markStopped(now: Date = Date()) {
-        runtime = .notRunning(generatedAt: now)
+        runtime.runtimeState = .stopped
+        runtime.stoppedAt = now
+        runtime.xrayState = .stopped
+        runtime.tun2SocksState = .stopped
+        runtime.networkSettingsState = .stopped
+        runtime.health = TunnelHealthSnapshot(
+            state: .stopped,
+            generatedAt: now,
+            origin: .packetTunnelExtension,
+            lastSuccessfulTrafficAt: runtime.lastSuccessfulTrafficAt,
+            lastFailure: runtime.lastFailure,
+            isLive: false
+        )
+        updateGenerated(now)
         appendEvent(category: "stopped", state: .stopped, failure: nil, now: now)
     }
 
     func markDataPlaneStarting(
+        profileID: UUID? = nil,
         protocolName: String? = nil,
         transportName: String? = nil,
         now: Date = Date()
     ) {
         runtime.runtimeGeneration += 1
         runtime.runtimeState = .starting
+        runtime.activeProfileID = profileID?.uuidString
         runtime.backendKind = .xray
         runtime.protocolKind = TunnelProtocolKind(rawValue: protocolName ?? "") ?? .unknown
         runtime.transportKind = safeToken(transportName)
+        runtime.sessionID = UUID().uuidString
         runtime.startedAt = now
+        runtime.stoppedAt = nil
+        runtime.uptimeSeconds = nil
         runtime.lastStateChangeAt = now
         runtime.generatedAt = now
         runtime.origin = .packetTunnelExtension
@@ -100,6 +118,73 @@ actor TunnelTelemetryStore {
             isLive: true
         )
         appendEvent(category: "dataPlaneStarting", state: .starting, failure: nil, now: now)
+    }
+
+    func markNativeStarting(
+        profileID: UUID? = nil,
+        protocolKind: TunnelProtocolKind,
+        now: Date = Date()
+    ) {
+        runtime.runtimeGeneration += 1
+        runtime.runtimeState = .starting
+        runtime.activeProfileID = profileID?.uuidString
+        runtime.candidateID = nil
+        runtime.backendKind = .wireguard
+        runtime.protocolKind = protocolKind
+        runtime.transportKind = "native"
+        runtime.sessionID = UUID().uuidString
+        runtime.startedAt = now
+        runtime.stoppedAt = nil
+        runtime.uptimeSeconds = nil
+        runtime.lastStateChangeAt = now
+        runtime.generatedAt = now
+        runtime.origin = .packetTunnelExtension
+        runtime.xrayState = .notRunning
+        runtime.tun2SocksState = .notRunning
+        runtime.networkSettingsState = .starting
+        runtime.counters = .unavailable
+        runtime.health = TunnelHealthSnapshot(
+            state: .starting,
+            generatedAt: now,
+            origin: .packetTunnelExtension,
+            lastSuccessfulTrafficAt: nil,
+            lastFailure: runtime.lastFailure,
+            isLive: true
+        )
+        appendEvent(category: "nativeStarting", state: .starting, failure: nil, now: now)
+    }
+
+    func markNativeProfileResolved(profileID: UUID, now: Date = Date()) {
+        runtime.activeProfileID = profileID.uuidString
+        updateGenerated(now)
+        appendEvent(category: "nativeProfileResolved", state: .starting, failure: nil, now: now)
+    }
+
+    func markNativeRunning(now: Date = Date()) {
+        runtime.runtimeState = .running
+        runtime.startedAt = now
+        runtime.stoppedAt = nil
+        runtime.uptimeSeconds = 0
+        runtime.xrayState = .notRunning
+        runtime.tun2SocksState = .notRunning
+        runtime.networkSettingsState = .running
+        runtime.health = TunnelHealthSnapshot(
+            state: .healthy,
+            generatedAt: now,
+            origin: .packetTunnelExtension,
+            lastSuccessfulTrafficAt: nil,
+            lastFailure: runtime.lastFailure,
+            isLive: true
+        )
+        updateGenerated(now)
+        appendEvent(category: "nativeRunning", state: .running, failure: nil, now: now)
+    }
+
+    func markNativeFailure(category: TunnelFailureCategory = .transportUnavailable, now: Date = Date()) {
+        markDataPlaneFailure(category: category, now: now)
+        runtime.xrayState = .notRunning
+        runtime.tun2SocksState = .notRunning
+        appendEvent(category: "nativeFailure", state: .failed, failure: category, now: now)
     }
 
     func markTun2SocksStarted(now: Date = Date()) {
@@ -123,6 +208,9 @@ actor TunnelTelemetryStore {
 
     func markDataPlaneRunning(counters: TunnelTrafficCounters, now: Date = Date()) {
         runtime.runtimeState = .running
+        runtime.startedAt = now
+        runtime.stoppedAt = nil
+        runtime.uptimeSeconds = 0
         runtime.xrayState = .running
         runtime.tun2SocksState = .running
         runtime.networkSettingsState = .running
@@ -205,6 +293,7 @@ actor TunnelAppMessageHandler {
     private let telemetryStore: TunnelTelemetryStore
     private let snapshotStore: TunnelTelemetrySnapshotStore?
     private let keychainSentinelReader: (any TunnelKeychainSentinelReading)?
+    private let appGroupSentinelReader: (any TunnelAppGroupSentinelReading)?
     private let runtimeValidationLoader: (any RuntimeConfigurationValidationLoading)?
     private let xrayConfigurationValidator: (any XrayConfigurationValidating)?
     private let xrayLifecycleSmokeTester: (any XrayLifecycleSmokeTesting)?
@@ -212,6 +301,7 @@ actor TunnelAppMessageHandler {
     private let udpControlProbe: (any PacketTunnelUDPControlProbing)?
     private let libXrayPingProbe: (any LibXrayPingProbing)?
     private let diagnosticProviderModeProvider: (any DiagnosticProviderModeProviding)?
+    private let providerProcess: TunnelProviderProcessIdentity
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
 
@@ -219,17 +309,20 @@ actor TunnelAppMessageHandler {
         telemetryStore: TunnelTelemetryStore = TunnelTelemetryStore(),
         snapshotStore: TunnelTelemetrySnapshotStore? = nil,
         keychainSentinelReader: (any TunnelKeychainSentinelReading)? = nil,
+        appGroupSentinelReader: (any TunnelAppGroupSentinelReading)? = nil,
         runtimeValidationLoader: (any RuntimeConfigurationValidationLoading)? = nil,
         xrayConfigurationValidator: (any XrayConfigurationValidating)? = nil,
         xrayLifecycleSmokeTester: (any XrayLifecycleSmokeTesting)? = nil,
         xrayRemoteEgressProbe: (any XrayRemoteEgressProbing)? = nil,
         udpControlProbe: (any PacketTunnelUDPControlProbing)? = nil,
         libXrayPingProbe: (any LibXrayPingProbing)? = nil,
-        diagnosticProviderModeProvider: (any DiagnosticProviderModeProviding)? = nil
+        diagnosticProviderModeProvider: (any DiagnosticProviderModeProviding)? = nil,
+        providerProcess: TunnelProviderProcessIdentity = PacketTunnelProviderIdentity.currentProcess
     ) {
         self.telemetryStore = telemetryStore
         self.snapshotStore = snapshotStore
         self.keychainSentinelReader = keychainSentinelReader
+        self.appGroupSentinelReader = appGroupSentinelReader
         self.runtimeValidationLoader = runtimeValidationLoader
         self.xrayConfigurationValidator = xrayConfigurationValidator
         self.xrayLifecycleSmokeTester = xrayLifecycleSmokeTester
@@ -237,6 +330,7 @@ actor TunnelAppMessageHandler {
         self.udpControlProbe = udpControlProbe
         self.libXrayPingProbe = libXrayPingProbe
         self.diagnosticProviderModeProvider = diagnosticProviderModeProvider
+        self.providerProcess = providerProcess
         encoder.outputFormatting = [.sortedKeys]
         encoder.dateEncodingStrategy = .iso8601
         decoder.dateDecodingStrategy = .iso8601
@@ -259,10 +353,16 @@ actor TunnelAppMessageHandler {
         case .ping:
             response = .success(
                 request: request,
-                payload: .pong(TunnelPongSnapshot(extensionProcessAlive: true, schemaVersion: TunnelMessageProtocol.schemaVersion))
+                payload: .pong(
+                    TunnelPongSnapshot(
+                        extensionProcessAlive: true,
+                        schemaVersion: TunnelMessageProtocol.schemaVersion,
+                        providerProcess: providerProcess
+                    )
+                )
             )
         case .getCapabilities:
-            response = .success(request: request, payload: .capabilities(.current))
+            response = .success(request: request, payload: .capabilities(capabilitySnapshot()))
         case .getRuntimeSnapshot:
             let snapshot = await telemetryStore.runtimeSnapshot()
             await persistFallbackSnapshot(runtime: snapshot)
@@ -272,11 +372,7 @@ actor TunnelAppMessageHandler {
         case .getRecentEvents:
             response = .success(request: request, payload: .events(await telemetryStore.recentEvents()))
         case .verifyKeychainSentinel:
-            #if DEBUG
             response = await keychainSentinelResponse(for: request)
-            #else
-            response = .failure(requestID: request.requestID, code: .unsupportedRequest)
-            #endif
         case .validateRuntimeConfiguration:
             #if DEBUG
             response = await runtimeConfigurationValidationResponse(for: request)
@@ -332,11 +428,50 @@ actor TunnelAppMessageHandler {
         return encode(response)
     }
 
-    #if DEBUG
+    private func capabilitySnapshot() -> TunnelCapabilitySnapshot {
+        var snapshot = TunnelCapabilitySnapshot.current
+        snapshot.providerProcess = providerProcess
+
+        switch providerProcess {
+        case .wireGuard:
+            snapshot.supportedRequests.removeAll { kind in
+                switch kind {
+                case .validateRuntimeConfiguration,
+                     .validateXrayConfiguration,
+                     .runXrayLifecycleSmokeTest,
+                     .runXrayRemoteEgressProbe,
+                     .probeActiveXrayEgress,
+                     .runUDPControlProbe,
+                     .runLibXrayPingProbe:
+                    return true
+                default:
+                    return false
+                }
+            }
+            snapshot.supportsLiveTun2SocksStats = false
+            snapshot.supportsXrayState = false
+        case .xray:
+            snapshot.supportsLiveTun2SocksStats = true
+            snapshot.supportsXrayState = true
+        case .unknown:
+            snapshot.supportedRequests = []
+            snapshot.supportsRuntimeSnapshot = false
+            snapshot.supportsHealthSnapshot = false
+            snapshot.supportsRecentEvents = false
+            snapshot.supportsLiveTun2SocksStats = false
+            snapshot.supportsXrayState = false
+        }
+
+        return snapshot
+    }
+
     private func keychainSentinelResponse(for request: TunnelMessageRequest) async -> TunnelMessageResponse {
         guard case .keychainSentinel(let payload)? = request.payload else {
             return .failure(requestID: request.requestID, code: .malformedRequest)
         }
+        let appGroupSentinel = await appGroupSentinelReader?.readAndRespond(
+            correlationID: payload.correlationID
+        )
         guard let keychainSentinelReader else {
             return .success(
                 request: request,
@@ -350,7 +485,8 @@ actor TunnelAppMessageHandler {
                             category: .keychainUnavailable,
                             extensionRequestReached: true,
                             correlationIDPrefix: String(payload.correlationID.uuidString.prefix(8))
-                        )
+                        ),
+                        appGroupSentinel: appGroupSentinel
                     )
                 )
             )
@@ -363,12 +499,14 @@ actor TunnelAppMessageHandler {
                 TunnelKeychainSentinelResponse(
                     found: lookup.found,
                     correlationID: payload.correlationID,
-                    diagnostic: lookup.diagnostic
+                    diagnostic: lookup.diagnostic,
+                    appGroupSentinel: appGroupSentinel
                 )
             )
         )
     }
 
+    #if DEBUG
     private func runtimeConfigurationValidationResponse(for request: TunnelMessageRequest) async -> TunnelMessageResponse {
         guard case .runtimeConfigurationValidation(let payload)? = request.payload else {
             return .failure(requestID: request.requestID, code: .malformedRequest)
@@ -536,7 +674,12 @@ actor TunnelAppMessageHandler {
         let mode = await diagnosticProviderModeProvider?.diagnosticProviderMode() ?? .unknown
         return .success(
             request: request,
-            payload: .diagnosticProviderMode(TunnelDiagnosticProviderModeResponse(mode: mode))
+            payload: .diagnosticProviderMode(
+                TunnelDiagnosticProviderModeResponse(
+                    mode: mode,
+                    providerProcess: providerProcess
+                )
+            )
         )
     }
     #endif

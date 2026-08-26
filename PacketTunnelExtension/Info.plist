@@ -11,5 +11,7 @@
 		<key>NSExtensionPrincipalClass</key>
 		<string>$(PRODUCT_MODULE_NAME).PacketTunnelProvider</string>
 	</dict>
+	<key>SecureLinkSourceRevision</key>
+	<string>7cce16b-dirty</string>
 </dict>
 </plist>

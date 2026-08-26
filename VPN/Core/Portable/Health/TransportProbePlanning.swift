@@ -77,7 +77,7 @@ nonisolated struct DefaultProbePlanner: ProbePlanning {
         switch profile.protocolType {
         case .vless, .trojan, .vmess, .shadowsocks:
             break
-        case .hysteria2, .wireGuard, .tuic, .ikev2:
+        case .hysteria2, .wireGuard, .amneziaWG, .tuic, .ikev2:
             return false
         }
 

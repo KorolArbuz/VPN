@@ -41,7 +41,7 @@ actor MockVPNConnectionManager: VPNConnectionManaging {
         }
     }
 
-    func connect(using profile: VPNProfile) async throws -> ConnectionMetrics {
+    func connect(using profile: VPNProfile) async throws {
         guard profile.isEnabled else {
             await publish(.failed)
             throw MockVPNError.incompleteProfile(["enabled profile"])
@@ -60,15 +60,7 @@ actor MockVPNConnectionManager: VPNConnectionManaging {
             throw error
         }
 
-        let statistics = await coordinator.statistics()
         await publish(.connected)
-
-        return ConnectionMetrics(
-            latency: Int(((statistics.currentLatency ?? 0.035) * 1_000).rounded()),
-            packetLoss: statistics.packetLoss,
-            serverLoad: 0.35,
-            connectionTime: 0.45
-        )
     }
 
     func disconnect() async {

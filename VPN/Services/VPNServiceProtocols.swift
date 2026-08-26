@@ -18,8 +18,31 @@ nonisolated protocol ServerProbing: Sendable {
 nonisolated protocol VPNConnectionManaging: Sendable {
     func currentState() async -> VPNConnectionState
     func stateUpdates() -> AsyncStream<VPNConnectionState>
-    func connect(using profile: VPNProfile) async throws -> ConnectionMetrics
+    func authoritativeConnection() async -> VPNAuthoritativeConnection
+    func refreshAuthoritativeConnection() async -> VPNAuthoritativeConnection
+    func connect(using profile: VPNProfile) async throws
     func disconnect() async
+    func routesTrafficThroughProductionCore(using profile: VPNProfile) -> Bool
+}
+
+extension VPNConnectionManaging {
+    func authoritativeConnection() async -> VPNAuthoritativeConnection {
+        VPNAuthoritativeConnection(
+            state: await currentState(),
+            systemStatus: nil,
+            profileID: nil,
+            provider: nil,
+            hasMultipleActiveManagers: false
+        )
+    }
+
+    func refreshAuthoritativeConnection() async -> VPNAuthoritativeConnection {
+        await authoritativeConnection()
+    }
+
+    nonisolated func routesTrafficThroughProductionCore(using profile: VPNProfile) -> Bool {
+        false
+    }
 }
 
 nonisolated protocol ServerSelecting: Sendable {

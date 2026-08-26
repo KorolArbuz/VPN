@@ -7,6 +7,24 @@
       parallelizeBuildables = "YES"
       buildImplicitDependencies = "YES"
       buildArchitectures = "Automatic">
+      <PreActions>
+         <ExecutionAction
+            ActionType = "Xcode.IDEStandardExecutionActionsCore.ExecutionActionType.ShellScriptAction">
+            <ActionContent
+               title = "Prepare audited WireGuardAdapter"
+               scriptText = "&quot;${SRCROOT}/scripts/prepare-amneziawg-wireguard-adapter.sh&quot;&#10;">
+               <EnvironmentBuildable>
+                  <BuildableReference
+                     BuildableIdentifier = "primary"
+                     BlueprintIdentifier = "5C54520A30253BAE00EE5EA6"
+                     BuildableName = "PacketTunnelExtension.appex"
+                     BlueprintName = "PacketTunnelExtension"
+                     ReferencedContainer = "container:VPN.xcodeproj">
+                  </BuildableReference>
+               </EnvironmentBuildable>
+            </ActionContent>
+         </ExecutionAction>
+      </PreActions>
       <BuildActionEntries>
          <BuildActionEntry
             buildForTesting = "YES"
@@ -59,9 +77,9 @@
       launchAutomaticallySubstyle = "2"
       queueDebuggingEnableBacktraceRecording = "Yes">
       <RemoteRunnable
-         runnableDebuggingMode = "1"
-         BundleIdentifier = "su.24kvn.kvn-app"
-         RemotePath = "/Users/denischizhov/Library/Developer/CoreSimulator/Devices/8AAD127E-A4CB-4BA6-B25B-7FD9315208FC/data/Containers/Bundle/Application/76BFA377-9C19-48B9-9A41-342056849C5A/VPN.app">
+         runnableDebuggingMode = "0"
+         BundleIdentifier = "denischizhov.VPN"
+         RemotePath = "/var/containers/Bundle/Application/4349DF21-76A9-4509-806F-C8107C3AD77D/VPN.app">
       </RemoteRunnable>
       <MacroExpansion>
          <BuildableReference

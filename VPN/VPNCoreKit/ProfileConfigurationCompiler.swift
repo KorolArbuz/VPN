@@ -130,7 +130,7 @@ nonisolated struct VLESSProfileConfigurationCompiler: ProfileConfigurationCompil
             supportedRequestedSecurities = ["none", "tls", "reality"]
         case .trojan:
             supportedRequestedSecurities = ["tls", "reality"]
-        case .wireGuard, .ikev2, .shadowsocks, .hysteria2, .tuic:
+        case .wireGuard, .amneziaWG, .ikev2, .shadowsocks, .hysteria2, .tuic:
             supportedRequestedSecurities = []
         }
         if let security, supportedRequestedSecurities.contains(security) == false {
@@ -197,7 +197,7 @@ nonisolated struct CompositeProfileConfigurationCompiler: ProfileConfigurationCo
         switch profile.protocolType {
         case .vless:
             return try vlessCompiler.compile(profile: profile)
-        case .trojan, .hysteria2, .wireGuard, .shadowsocks, .vmess, .tuic, .ikev2:
+        case .trojan, .hysteria2, .wireGuard, .amneziaWG, .shadowsocks, .vmess, .tuic, .ikev2:
             return try compileGeneric(profile: profile)
         }
     }
@@ -268,7 +268,7 @@ nonisolated struct CompositeProfileConfigurationCompiler: ProfileConfigurationCo
                 fingerprint: profile.tlsSettings.fingerprint,
                 alpn: profile.tlsSettings.alpn
             ))
-        case .wireGuard, .tuic, .ikev2, .vless:
+        case .wireGuard, .amneziaWG, .tuic, .ikev2, .vless:
             throw CoreError.unsupportedProtocol(CoreProtocol(vpnProtocol: profile.protocolType))
         }
 

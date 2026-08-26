@@ -38,10 +38,10 @@ nonisolated enum TunnelMessageKind: Equatable, Codable, Sendable {
             .getCapabilities,
             .getRuntimeSnapshot,
             .getHealthSnapshot,
-            .getRecentEvents
+            .getRecentEvents,
+            .verifyKeychainSentinel
         ]
         #if DEBUG
-        cases.append(.verifyKeychainSentinel)
         cases.append(.validateRuntimeConfiguration)
         cases.append(.validateXrayConfiguration)
         cases.append(.runXrayLifecycleSmokeTest)
@@ -378,6 +378,12 @@ nonisolated enum TunnelMessagePayload: Codable, Sendable {
     }
 }
 
+nonisolated enum TunnelProviderProcessIdentity: String, Codable, Equatable, Sendable {
+    case wireGuard
+    case xray
+    case unknown
+}
+
 nonisolated enum TunnelDiagnosticProviderMode: String, Codable, Equatable, Sendable {
     case idle
     case runtimeOnly
@@ -389,9 +395,14 @@ nonisolated enum TunnelDiagnosticProviderMode: String, Codable, Equatable, Senda
 
 nonisolated struct TunnelDiagnosticProviderModeResponse: Codable, Equatable, Sendable {
     var mode: TunnelDiagnosticProviderMode
+    var providerProcess: TunnelProviderProcessIdentity? = nil
 
-    init(mode: TunnelDiagnosticProviderMode) {
+    init(
+        mode: TunnelDiagnosticProviderMode,
+        providerProcess: TunnelProviderProcessIdentity? = nil
+    ) {
         self.mode = mode
+        self.providerProcess = providerProcess
     }
 }
 
@@ -421,6 +432,7 @@ nonisolated struct TunnelMessageFailure: Codable, Equatable, Sendable {
 nonisolated struct TunnelPongSnapshot: Codable, Equatable, Sendable {
     var extensionProcessAlive: Bool
     var schemaVersion: UInt32
+    var providerProcess: TunnelProviderProcessIdentity? = nil
 }
 
 nonisolated struct TunnelKeychainSentinelRequest: Codable, Equatable, Sendable {
@@ -440,16 +452,25 @@ nonisolated struct TunnelKeychainSentinelResponse: Codable, Equatable, Sendable 
     var found: Bool
     var correlationID: UUID
     var diagnostic: TunnelKeychainSentinelDiagnostic?
+    var appGroupSentinel: TunnelAppGroupSentinelResponse?
 
     init(
         found: Bool,
         correlationID: UUID,
-        diagnostic: TunnelKeychainSentinelDiagnostic? = nil
+        diagnostic: TunnelKeychainSentinelDiagnostic? = nil,
+        appGroupSentinel: TunnelAppGroupSentinelResponse? = nil
     ) {
         self.found = found
         self.correlationID = correlationID
         self.diagnostic = diagnostic
+        self.appGroupSentinel = appGroupSentinel
     }
+}
+
+nonisolated struct TunnelAppGroupSentinelResponse: Codable, Equatable, Sendable {
+    var correlationID: UUID
+    var providerReadSucceeded: Bool
+    var providerWriteSucceeded: Bool
 }
 
 nonisolated struct TunnelRuntimeConfigurationValidationRequest: Codable, Equatable, Sendable {
@@ -1894,7 +1915,7 @@ nonisolated enum TunnelFailureCategory: String, Codable, Equatable, Sendable {
 }
 
 nonisolated enum TunnelProtocolKind: String, Codable, Equatable, Sendable {
-    case vless, trojan, vmess, hysteria2, wireguard, shadowsocks, tuic, ikev2, unknown
+    case vless, trojan, vmess, hysteria2, wireguard, amneziawg, shadowsocks, tuic, ikev2, unknown
 }
 
 nonisolated enum TunnelBackendKind: String, Codable, Equatable, Sendable {
@@ -1910,6 +1931,7 @@ nonisolated struct TunnelCapabilitySnapshot: Codable, Equatable, Sendable {
     var supportsLiveTun2SocksStats: Bool
     var supportsXrayState: Bool
     var isReadOnly: Bool
+    var providerProcess: TunnelProviderProcessIdentity? = nil
 
     static var current: TunnelCapabilitySnapshot {
         TunnelCapabilitySnapshot(
@@ -1963,7 +1985,9 @@ nonisolated struct TunnelRuntimeSnapshot: Codable, Equatable, Sendable {
     var backendKind: TunnelBackendKind
     var protocolKind: TunnelProtocolKind
     var transportKind: String?
+    var sessionID: String? = nil
     var startedAt: Date?
+    var stoppedAt: Date? = nil
     var lastStateChangeAt: Date
     var uptimeSeconds: Double?
     var xrayState: TunnelComponentState

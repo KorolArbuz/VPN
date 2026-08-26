@@ -8,10 +8,14 @@
 
 /* Begin PBXBuildFile section */
 		5C54520E30253BAF00EE5EA6 /* NetworkExtension.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 5C54520D30253BAF00EE5EA6 /* NetworkExtension.framework */; };
-		5C54521630253BAF00EE5EA6 /* PacketTunnelExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 5C54520B30253BAE00EE5EA6 /* PacketTunnelExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		5C54521630253BAF00EE5EA6 /* PacketTunnelExtension.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = 5C54520B30253BAE00EE5EA6 /* PacketTunnelExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		5C590005302BBF3C00A1448C /* KVNCore.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 5C590004302BBF3C00A1448C /* KVNCore.xcframework */; };
 		5C59FFEB302584FD00A1448C /* Tun2SocksKit in Frameworks */ = {isa = PBXBuildFile; productRef = 5C59FFEA302584FD00A1448C /* Tun2SocksKit */; };
+		5CA4BA643038A2D200260748 /* WireGuardKit in Frameworks */ = {isa = PBXBuildFile; productRef = 5CA4BA633038A2D200260748 /* WireGuardKit */; };
+		5CA4BA98303CA07500260748 /* NetworkExtension.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 5C54520D30253BAF00EE5EA6 /* NetworkExtension.framework */; };
+		5CA4BAA0303CA07500260748 /* PacketTunnelXrayExtension.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = 5CA4BA97303CA07500260748 /* PacketTunnelXrayExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		5CC8D99030304B7500796938 /* libresolv.tbd in Frameworks */ = {isa = PBXBuildFile; fileRef = 5CC8D98F30304B7500796938 /* libresolv.tbd */; };
+		63A34F3733012C1646736115 /* libresolv.tbd in Frameworks */ = {isa = PBXBuildFile; fileRef = 5CC8D98F30304B7500796938 /* libresolv.tbd */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -36,18 +40,33 @@
 			remoteGlobalIDString = 5C54520A30253BAE00EE5EA6;
 			remoteInfo = PacketTunnelExtension;
 		};
+		5CA4BA603038731B00260748 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 5C5451683025211D00EE5EA6 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 5CA4BA513037DCE400260748;
+			remoteInfo = AmneziaWGGoBridgeiOS;
+		};
+		5CA4BA9E303CA07500260748 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 5C5451683025211D00EE5EA6 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 5CA4BA96303CA07500260748;
+			remoteInfo = PacketTunnelXrayExtension;
+		};
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXCopyFilesBuildPhase section */
-		5C54521B30253BAF00EE5EA6 /* Embed Foundation Extensions */ = {
+		5C54521B30253BAF00EE5EA6 /* Embed App Extensions */ = {
 			isa = PBXCopyFilesBuildPhase;
 			buildActionMask = 2147483647;
 			dstPath = "";
 			dstSubfolderSpec = 13;
 			files = (
-				5C54521630253BAF00EE5EA6 /* PacketTunnelExtension.appex in Embed Foundation Extensions */,
+				5CA4BAA0303CA07500260748 /* PacketTunnelXrayExtension.appex in Embed App Extensions */,
+				5C54521630253BAF00EE5EA6 /* PacketTunnelExtension.appex in Embed App Extensions */,
 			);
-			name = "Embed Foundation Extensions";
+			name = "Embed App Extensions";
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXCopyFilesBuildPhase section */
@@ -59,6 +78,7 @@
 		5C54520B30253BAE00EE5EA6 /* PacketTunnelExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = PacketTunnelExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		5C54520D30253BAF00EE5EA6 /* NetworkExtension.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = NetworkExtension.framework; path = System/Library/Frameworks/NetworkExtension.framework; sourceTree = SDKROOT; };
 		5C590004302BBF3C00A1448C /* KVNCore.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = KVNCore.xcframework; path = Generated/KVNCore.xcframework; sourceTree = "<group>"; };
+		5CA4BA97303CA07500260748 /* PacketTunnelXrayExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = PacketTunnelXrayExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		5CC8D98F30304B7500796938 /* libresolv.tbd */ = {isa = PBXFileReference; lastKnownFileType = "sourcecode.text-based-dylib-definition"; name = libresolv.tbd; path = usr/lib/libresolv.tbd; sourceTree = SDKROOT; };
 /* End PBXFileReference section */
 
@@ -70,6 +90,13 @@
 			);
 			target = 5C54520A30253BAE00EE5EA6 /* PacketTunnelExtension */;
 		};
+		5CA4BAA4303CA07500260748 /* Exceptions for "PacketTunnelXrayExtension" folder in "PacketTunnelXrayExtension" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = 5CA4BA96303CA07500260748 /* PacketTunnelXrayExtension */;
+		};
 		5CC8D988302E54E300796938 /* Exceptions for "VPN" folder in "VPN" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
@@ -80,6 +107,11 @@
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
+		2E18EC58DE679E1C20931D9C /* PacketTunnelShared */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = PacketTunnelShared;
+			sourceTree = "<group>";
+		};
 		5C5451723025211D00EE5EA6 /* VPN */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			exceptions = (
@@ -104,6 +136,14 @@
 				5C54521730253BAF00EE5EA6 /* Exceptions for "PacketTunnelExtension" folder in "PacketTunnelExtension" target */,
 			);
 			path = PacketTunnelExtension;
+			sourceTree = "<group>";
+		};
+		5CA4BA99303CA07500260748 /* PacketTunnelXrayExtension */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				5CA4BAA4303CA07500260748 /* Exceptions for "PacketTunnelXrayExtension" folder in "PacketTunnelXrayExtension" target */,
+			);
+			path = PacketTunnelXrayExtension;
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
@@ -137,7 +177,17 @@
 			files = (
 				5CC8D99030304B7500796938 /* libresolv.tbd in Frameworks */,
 				5C54520E30253BAF00EE5EA6 /* NetworkExtension.framework in Frameworks */,
+				5CA4BA643038A2D200260748 /* WireGuardKit in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		5CA4BA94303CA07500260748 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				5CA4BA98303CA07500260748 /* NetworkExtension.framework in Frameworks */,
 				5C59FFEB302584FD00A1448C /* Tun2SocksKit in Frameworks */,
+				63A34F3733012C1646736115 /* libresolv.tbd in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -151,8 +201,11 @@
 				5C5451803025211F00EE5EA6 /* VPNTests */,
 				5C54518A3025211F00EE5EA6 /* VPNUITests */,
 				5C54520F30253BAF00EE5EA6 /* PacketTunnelExtension */,
+				5CA4BA99303CA07500260748 /* PacketTunnelXrayExtension */,
 				5C54520C30253BAF00EE5EA6 /* Frameworks */,
 				5C5451713025211D00EE5EA6 /* Products */,
+				2E18EC58DE679E1C20931D9C /* PacketTunnelShared */,
+				5CA4BAB9303E2F6400260748 /* Recovered References */,
 			);
 			sourceTree = "<group>";
 		};
@@ -163,6 +216,7 @@
 				5C54517D3025211F00EE5EA6 /* VPNTests.xctest */,
 				5C5451873025211F00EE5EA6 /* VPNUITests.xctest */,
 				5C54520B30253BAE00EE5EA6 /* PacketTunnelExtension.appex */,
+				5CA4BA97303CA07500260748 /* PacketTunnelXrayExtension.appex */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -177,7 +231,31 @@
 			name = Frameworks;
 			sourceTree = "<group>";
 		};
+		5CA4BAB9303E2F6400260748 /* Recovered References */ = {
+			isa = PBXGroup;
+			children = (
+			);
+			name = "Recovered References";
+			sourceTree = "<group>";
+		};
 /* End PBXGroup section */
+
+/* Begin PBXLegacyTarget section */
+		5CA4BA513037DCE400260748 /* AmneziaWGGoBridgeiOS */ = {
+			isa = PBXLegacyTarget;
+			buildArgumentsString = "\"$(SRCROOT)/scripts/build-amneziawg-go.sh\"";
+			buildConfigurationList = 5CA4BA523037DCE400260748 /* Build configuration list for PBXLegacyTarget "AmneziaWGGoBridgeiOS" */;
+			buildPhases = (
+			);
+			buildToolPath = /bin/bash;
+			buildWorkingDirectory = "$(SRCROOT)";
+			dependencies = (
+			);
+			name = AmneziaWGGoBridgeiOS;
+			passBuildSettingsInEnvironment = 1;
+			productName = AmneziaWGGoBridgeiOS;
+		};
+/* End PBXLegacyTarget section */
 
 /* Begin PBXNativeTarget section */
 		5C54516F3025211D00EE5EA6 /* VPN */ = {
@@ -187,19 +265,18 @@
 				5C54516C3025211D00EE5EA6 /* Sources */,
 				5C54516D3025211D00EE5EA6 /* Frameworks */,
 				5C54516E3025211D00EE5EA6 /* Resources */,
-				5C54521B30253BAF00EE5EA6 /* Embed Foundation Extensions */,
+				5C54521B30253BAF00EE5EA6 /* Embed App Extensions */,
 			);
 			buildRules = (
 			);
 			dependencies = (
 				5C54521530253BAF00EE5EA6 /* PBXTargetDependency */,
+				5CA4BA9F303CA07500260748 /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				5C5451723025211D00EE5EA6 /* VPN */,
 			);
 			name = VPN;
-			packageProductDependencies = (
-			);
 			productName = VPN;
 			productReference = 5C5451703025211D00EE5EA6 /* VPN.app */;
 			productType = "com.apple.product-type.application";
@@ -221,8 +298,6 @@
 				5C5451803025211F00EE5EA6 /* VPNTests */,
 			);
 			name = VPNTests;
-			packageProductDependencies = (
-			);
 			productName = VPNTests;
 			productReference = 5C54517D3025211F00EE5EA6 /* VPNTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
@@ -244,8 +319,6 @@
 				5C54518A3025211F00EE5EA6 /* VPNUITests */,
 			);
 			name = VPNUITests;
-			packageProductDependencies = (
-			);
 			productName = VPNUITests;
 			productReference = 5C5451873025211F00EE5EA6 /* VPNUITests.xctest */;
 			productType = "com.apple.product-type.bundle.ui-testing";
@@ -261,16 +334,42 @@
 			buildRules = (
 			);
 			dependencies = (
+				5CA4BA613038731B00260748 /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
+				2E18EC58DE679E1C20931D9C /* PacketTunnelShared */,
 				5C54520F30253BAF00EE5EA6 /* PacketTunnelExtension */,
 			);
 			name = PacketTunnelExtension;
 			packageProductDependencies = (
-				5C59FFEA302584FD00A1448C /* Tun2SocksKit */,
+				5CA4BA633038A2D200260748 /* WireGuardKit */,
 			);
 			productName = PacketTunnelExtension;
 			productReference = 5C54520B30253BAE00EE5EA6 /* PacketTunnelExtension.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
+		5CA4BA96303CA07500260748 /* PacketTunnelXrayExtension */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 5CA4BAA1303CA07500260748 /* Build configuration list for PBXNativeTarget "PacketTunnelXrayExtension" */;
+			buildPhases = (
+				5CA4BA93303CA07500260748 /* Sources */,
+				5CA4BA94303CA07500260748 /* Frameworks */,
+				5CA4BA95303CA07500260748 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				2E18EC58DE679E1C20931D9C /* PacketTunnelShared */,
+				5CA4BA99303CA07500260748 /* PacketTunnelXrayExtension */,
+			);
+			name = PacketTunnelXrayExtension;
+			packageProductDependencies = (
+				5C59FFEA302584FD00A1448C /* Tun2SocksKit */,
+			);
+			productName = PacketTunnelXrayExtension;
+			productReference = 5CA4BA97303CA07500260748 /* PacketTunnelXrayExtension.appex */;
 			productType = "com.apple.product-type.app-extension";
 		};
 /* End PBXNativeTarget section */
@@ -280,7 +379,7 @@
 			isa = PBXProject;
 			attributes = {
 				BuildIndependentTargetsInParallel = 1;
-				LastSwiftUpdateCheck = 2660;
+				LastSwiftUpdateCheck = 2700;
 				LastUpgradeCheck = 2660;
 				TargetAttributes = {
 					5C54516F3025211D00EE5EA6 = {
@@ -297,6 +396,12 @@
 					5C54520A30253BAE00EE5EA6 = {
 						CreatedOnToolsVersion = 26.6;
 					};
+					5CA4BA513037DCE400260748 = {
+						CreatedOnToolsVersion = 27.0;
+					};
+					5CA4BA96303CA07500260748 = {
+						CreatedOnToolsVersion = 27.0;
+					};
 				};
 			};
 			buildConfigurationList = 5C54516B3025211D00EE5EA6 /* Build configuration list for PBXProject "VPN" */;
@@ -305,11 +410,13 @@
 			knownRegions = (
 				en,
 				Base,
+				ru,
 			);
 			mainGroup = 5C5451673025211D00EE5EA6;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				5C59FFE93025841E00A1448C /* XCRemoteSwiftPackageReference "Tun2SocksKit" */,
+				5CA4BA623038A2D200260748 /* XCRemoteSwiftPackageReference "amneziawg-apple" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 5C5451713025211D00EE5EA6 /* Products */;
@@ -320,6 +427,8 @@
 				5C54517C3025211F00EE5EA6 /* VPNTests */,
 				5C5451863025211F00EE5EA6 /* VPNUITests */,
 				5C54520A30253BAE00EE5EA6 /* PacketTunnelExtension */,
+				5CA4BA96303CA07500260748 /* PacketTunnelXrayExtension */,
+				5CA4BA513037DCE400260748 /* AmneziaWGGoBridgeiOS */,
 			);
 		};
 /* End PBXProject section */
@@ -347,6 +456,13 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		5C54520930253BAE00EE5EA6 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		5CA4BA95303CA07500260748 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -384,6 +500,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		5CA4BA93303CA07500260748 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -401,6 +524,16 @@
 			isa = PBXTargetDependency;
 			target = 5C54520A30253BAE00EE5EA6 /* PacketTunnelExtension */;
 			targetProxy = 5C54521430253BAF00EE5EA6 /* PBXContainerItemProxy */;
+		};
+		5CA4BA613038731B00260748 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 5CA4BA513037DCE400260748 /* AmneziaWGGoBridgeiOS */;
+			targetProxy = 5CA4BA603038731B00260748 /* PBXContainerItemProxy */;
+		};
+		5CA4BA9F303CA07500260748 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 5CA4BA96303CA07500260748 /* PacketTunnelXrayExtension */;
+			targetProxy = 5CA4BA9E303CA07500260748 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -534,7 +667,7 @@
 				CODE_SIGN_ENTITLEMENTS = VPN/VPN.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 6;
 				DEVELOPMENT_TEAM = 4Q3236JB9E;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -571,7 +704,7 @@
 				CODE_SIGN_ENTITLEMENTS = VPN/VPN.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 6;
 				DEVELOPMENT_TEAM = 4Q3236JB9E;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -690,12 +823,14 @@
 				CODE_SIGN_ENTITLEMENTS = PacketTunnelExtension/PacketTunnelExtension.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 6;
 				DEVELOPMENT_TEAM = 4Q3236JB9E;
+				ENABLE_DEBUG_DYLIB = NO;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = PacketTunnelExtension/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = PacketTunnelExtension;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				LD_GENERATE_MAP_FILE = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -707,6 +842,7 @@
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				SKIP_INSTALL = YES;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) KVN_WIREGUARD_PROVIDER";
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
@@ -721,12 +857,14 @@
 				CODE_SIGN_ENTITLEMENTS = PacketTunnelExtension/PacketTunnelExtension.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 6;
 				DEVELOPMENT_TEAM = 4Q3236JB9E;
+				ENABLE_DEBUG_DYLIB = NO;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = PacketTunnelExtension/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = PacketTunnelExtension;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				LD_GENERATE_MAP_FILE = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -738,6 +876,100 @@
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				SKIP_INSTALL = YES;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) KVN_WIREGUARD_PROVIDER";
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		5CA4BA533037DCE400260748 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				DEBUGGING_SYMBOLS = YES;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				GCC_GENERATE_DEBUGGING_SYMBOLS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				OTHER_CFLAGS = "";
+				OTHER_LDFLAGS = "";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+			};
+			name = Debug;
+		};
+		5CA4BA543037DCE400260748 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				OTHER_CFLAGS = "";
+				OTHER_LDFLAGS = "";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+			};
+			name = Release;
+		};
+		5CA4BAA2303CA07500260748 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = PacketTunnelXrayExtension/PacketTunnelXrayExtension.entitlements;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 6;
+				DEVELOPMENT_TEAM = 4Q3236JB9E;
+				ENABLE_DEBUG_DYLIB = NO;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = PacketTunnelXrayExtension/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = PacketTunnelXrayExtension;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				IPHONEOS_DEPLOYMENT_TARGET = 26.5;
+				LD_GENERATE_MAP_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "su.24kvn.kvn-app.PacketTunnelXrayExtension";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) KVN_XRAY_PROVIDER";
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		5CA4BAA3303CA07500260748 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = PacketTunnelXrayExtension/PacketTunnelXrayExtension.entitlements;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 6;
+				DEVELOPMENT_TEAM = 4Q3236JB9E;
+				ENABLE_DEBUG_DYLIB = NO;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = PacketTunnelXrayExtension/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = PacketTunnelXrayExtension;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				IPHONEOS_DEPLOYMENT_TARGET = 26.5;
+				LD_GENERATE_MAP_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "su.24kvn.kvn-app.PacketTunnelXrayExtension";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) KVN_XRAY_PROVIDER";
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
@@ -794,6 +1026,24 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
+		5CA4BA523037DCE400260748 /* Build configuration list for PBXLegacyTarget "AmneziaWGGoBridgeiOS" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				5CA4BA533037DCE400260748 /* Debug */,
+				5CA4BA543037DCE400260748 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		5CA4BAA1303CA07500260748 /* Build configuration list for PBXNativeTarget "PacketTunnelXrayExtension" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				5CA4BAA2303CA07500260748 /* Debug */,
+				5CA4BAA3303CA07500260748 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 /* End XCConfigurationList section */
 
 /* Begin XCRemoteSwiftPackageReference section */
@@ -805,6 +1055,14 @@
 				minimumVersion = 5.16.0;
 			};
 		};
+		5CA4BA623038A2D200260748 /* XCRemoteSwiftPackageReference "amneziawg-apple" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/KorolArbuz/amneziawg-apple.git";
+			requirement = {
+				kind = revision;
+				revision = bf1edba79609bb7688970ed5947ce9458a289603;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -812,6 +1070,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 5C59FFE93025841E00A1448C /* XCRemoteSwiftPackageReference "Tun2SocksKit" */;
 			productName = Tun2SocksKit;
+		};
+		5CA4BA633038A2D200260748 /* WireGuardKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 5CA4BA623038A2D200260748 /* XCRemoteSwiftPackageReference "amneziawg-apple" */;
+			productName = WireGuardKit;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

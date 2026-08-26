@@ -12,6 +12,7 @@ nonisolated enum CoreProtocol: String, CaseIterable, Codable, Hashable, Sendable
     case trojan
     case hysteria2
     case wireGuard
+    case amneziaWG
     case shadowsocks
     case vmess
     case tuic
@@ -154,6 +155,7 @@ extension CoreProtocol {
         case .trojan: self = .trojan
         case .hysteria2: self = .hysteria2
         case .wireGuard: self = .wireGuard
+        case .amneziaWG: self = .amneziaWG
         case .shadowsocks: self = .shadowsocks
         case .vmess: self = .vmess
         case .tuic: self = .tuic

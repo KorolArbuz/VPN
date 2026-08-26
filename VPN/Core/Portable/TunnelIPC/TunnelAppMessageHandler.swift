@@ -15,6 +15,7 @@ actor TunnelAppMessageHandler {
     private let runtimeValidationLoader: (any RuntimeConfigurationValidationLoading)?
     private let xrayConfigurationValidator: (any XrayConfigurationValidating)?
     private let diagnosticProviderModeProvider: (any DiagnosticProviderModeProviding)?
+    private let providerProcess: TunnelProviderProcessIdentity
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
 
@@ -24,7 +25,8 @@ actor TunnelAppMessageHandler {
         keychainSentinelStore: (any TunnelKeychainSentinelStoring)? = nil,
         runtimeValidationLoader: (any RuntimeConfigurationValidationLoading)? = nil,
         xrayConfigurationValidator: (any XrayConfigurationValidating)? = nil,
-        diagnosticProviderModeProvider: (any DiagnosticProviderModeProviding)? = nil
+        diagnosticProviderModeProvider: (any DiagnosticProviderModeProviding)? = nil,
+        providerProcess: TunnelProviderProcessIdentity = .unknown
     ) {
         self.telemetryStore = telemetryStore
         self.snapshotStore = snapshotStore
@@ -32,6 +34,7 @@ actor TunnelAppMessageHandler {
         self.runtimeValidationLoader = runtimeValidationLoader
         self.xrayConfigurationValidator = xrayConfigurationValidator
         self.diagnosticProviderModeProvider = diagnosticProviderModeProvider
+        self.providerProcess = providerProcess
         encoder.outputFormatting = [.sortedKeys]
         encoder.dateEncodingStrategy = .iso8601
         decoder.dateDecodingStrategy = .iso8601
@@ -54,10 +57,16 @@ actor TunnelAppMessageHandler {
         case .ping:
             response = .success(
                 request: request,
-                payload: .pong(TunnelPongSnapshot(extensionProcessAlive: true, schemaVersion: TunnelMessageProtocol.schemaVersion))
+                payload: .pong(
+                    TunnelPongSnapshot(
+                        extensionProcessAlive: true,
+                        schemaVersion: TunnelMessageProtocol.schemaVersion,
+                        providerProcess: providerProcess
+                    )
+                )
             )
         case .getCapabilities:
-            response = .success(request: request, payload: .capabilities(.current))
+            response = .success(request: request, payload: .capabilities(capabilitySnapshot()))
         case .getRuntimeSnapshot:
             let snapshot = await telemetryStore.runtimeSnapshot()
             await persistFallbackSnapshot(runtime: snapshot)
@@ -105,6 +114,43 @@ actor TunnelAppMessageHandler {
         }
 
         return encode(response)
+    }
+
+    private func capabilitySnapshot() -> TunnelCapabilitySnapshot {
+        var snapshot = TunnelCapabilitySnapshot.current
+        snapshot.providerProcess = providerProcess
+
+        switch providerProcess {
+        case .wireGuard:
+            snapshot.supportedRequests.removeAll { kind in
+                switch kind {
+                case .validateRuntimeConfiguration,
+                     .validateXrayConfiguration,
+                     .runXrayLifecycleSmokeTest,
+                     .runXrayRemoteEgressProbe,
+                     .probeActiveXrayEgress,
+                     .runUDPControlProbe,
+                     .runLibXrayPingProbe:
+                    return true
+                default:
+                    return false
+                }
+            }
+            snapshot.supportsLiveTun2SocksStats = false
+            snapshot.supportsXrayState = false
+        case .xray:
+            snapshot.supportsLiveTun2SocksStats = true
+            snapshot.supportsXrayState = true
+        case .unknown:
+            snapshot.supportedRequests = []
+            snapshot.supportsRuntimeSnapshot = false
+            snapshot.supportsHealthSnapshot = false
+            snapshot.supportsRecentEvents = false
+            snapshot.supportsLiveTun2SocksStats = false
+            snapshot.supportsXrayState = false
+        }
+
+        return snapshot
     }
 
     #if DEBUG
@@ -255,7 +301,12 @@ actor TunnelAppMessageHandler {
         let mode = await diagnosticProviderModeProvider?.diagnosticProviderMode() ?? .unknown
         return .success(
             request: request,
-            payload: .diagnosticProviderMode(TunnelDiagnosticProviderModeResponse(mode: mode))
+            payload: .diagnosticProviderMode(
+                TunnelDiagnosticProviderModeResponse(
+                    mode: mode,
+                    providerProcess: providerProcess
+                )
+            )
         )
     }
     #endif

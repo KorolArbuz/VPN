@@ -1,6 +1,14 @@
 {
-  "originHash" : "957b1ed25696e59c7f65a0092ad37a942c768c7b0527d67fc89b83875201765b",
+  "originHash" : "84602cac8f5db8da62f3594dabb46e10f2f54881ec9c16626781239683dba93d",
   "pins" : [
+    {
+      "identity" : "amneziawg-apple",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/KorolArbuz/amneziawg-apple.git",
+      "state" : {
+        "revision" : "bf1edba79609bb7688970ed5947ce9458a289603"
+      }
+    },
     {
       "identity" : "tun2sockskit",
       "kind" : "remoteSourceControl",

@@ -793,6 +793,7 @@ nonisolated enum VPNRuntimeUnsupportedFeature: String, Equatable, Sendable {
     case vlessFlow
     case vmessCipher
     case runtimeConfiguration
+    case nativeProtocolMode
 }
 
 nonisolated enum VPNRuntimeCapabilityIssue: Equatable, Sendable {
@@ -852,6 +853,8 @@ nonisolated enum VPNRuntimeCapabilityIssue: Equatable, Sendable {
                 return "The requested VMess cipher is not supported by this build."
             case .runtimeConfiguration:
                 return "This \(protocolType.displayName) configuration is not supported by the current runtime."
+            case .nativeProtocolMode:
+                return "This \(protocolType.displayName) native protocol configuration is not supported."
             }
         case .invalidConfiguration(let protocolType, let component):
             return "The \(protocolType.displayName) \(component) configuration is invalid."
@@ -905,6 +908,11 @@ nonisolated struct VPNRuntimeCapabilityEvaluator {
     }
 
     func evaluate(_ profile: VPNProfile) -> VPNRuntimeCapability {
+        if profile.protocolType == .wireGuard || profile.protocolType == .amneziaWG {
+            var enabledProfile = profile
+            enabledProfile.isEnabled = true
+            return NativeWireGuardProfileValidator.capability(for: enabledProfile)
+        }
         guard profile.isComplete else {
             return .incomplete(profile.missingRequiredFields)
         }
@@ -931,7 +939,7 @@ nonisolated struct VPNRuntimeCapabilityEvaluator {
 
     private func explicitCapabilityFailure(in profile: VPNProfile) -> VPNRuntimeCapability? {
         switch profile.protocolType {
-        case .wireGuard, .ikev2, .tuic:
+        case .wireGuard, .amneziaWG, .ikev2, .tuic:
             return .unsupported(.unsupportedProtocol(profile.protocolType))
         case .vless, .vmess, .trojan, .shadowsocks, .hysteria2:
             break
@@ -967,7 +975,7 @@ nonisolated struct VPNRuntimeCapabilityEvaluator {
             supportedSecurities = ["none", "tls", "reality"]
         case .trojan:
             supportedSecurities = ["tls", "reality"]
-        case .wireGuard, .ikev2, .shadowsocks, .hysteria2, .tuic:
+        case .wireGuard, .amneziaWG, .ikev2, .shadowsocks, .hysteria2, .tuic:
             supportedSecurities = nil
         }
         if let supportedSecurities, supportedSecurities.contains(requestedSecurity) == false {
@@ -1046,7 +1054,7 @@ nonisolated struct VPNRuntimeCapabilityEvaluator {
                     return .invalid(.invalidConfiguration(protocolType: .hysteria2, component: "obfuscation password"))
                 }
             }
-        case .wireGuard, .ikev2, .tuic:
+        case .wireGuard, .amneziaWG, .ikev2, .tuic:
             break
         }
 
@@ -1158,7 +1166,7 @@ nonisolated struct VPNRuntimeCapabilityEvaluator {
                 return .unsupported(.unsupportedFeature(protocolType: .hysteria2, feature: .hysteria2Bandwidth))
             }
             return .unsupported(.unsupportedFeature(protocolType: .hysteria2, feature: .hysteria2Obfuscation))
-        case .wireGuard, .ikev2, .tuic:
+        case .wireGuard, .amneziaWG, .ikev2, .tuic:
             return .unsupported(.unsupportedProtocol(profile.protocolType))
         case .vless, .vmess, .trojan:
             return .unsupported(.unsupportedFeature(protocolType: profile.protocolType, feature: .runtimeConfiguration))
@@ -1261,7 +1269,7 @@ private nonisolated struct SharedRuntimeProtocolParameters {
                 bandwidthHint: configuration.bandwidthHint,
                 obfsPasswordReference: configuration.obfsPasswordReference
             )
-        case .wireGuard, .ikev2, .tuic:
+        case .wireGuard, .amneziaWG, .ikev2, .tuic:
             throw RuntimeConfigurationError.unsupportedProtocol
         }
     }
@@ -1280,7 +1288,7 @@ private extension SharedRuntimeProtocolKind {
             self = .shadowsocks
         case .hysteria2:
             self = .hysteria2
-        case .wireGuard, .ikev2, .tuic:
+        case .wireGuard, .amneziaWG, .ikev2, .tuic:
             return nil
         }
     }
@@ -2155,8 +2163,12 @@ actor RuntimeOnlyPacketTunnelService {
 
     init(
         publisher: SharedRuntimeProfilePublisher,
-        bootstrapper: DiagnosticTunnelProviderSessionBootstrapper = DiagnosticTunnelProviderSessionBootstrapper(),
-        sessionProvider: any TunnelProviderSessionProviding = NetworkExtensionTunnelSessionProvider(),
+        bootstrapper: DiagnosticTunnelProviderSessionBootstrapper = DiagnosticTunnelProviderSessionBootstrapper(
+            providerBundleIdentifier: PacketTunnelProviderRouting.xrayBundleIdentifier
+        ),
+        sessionProvider: any TunnelProviderSessionProviding = NetworkExtensionTunnelSessionProvider(
+            providerBundleIdentifier: PacketTunnelProviderRouting.xrayBundleIdentifier
+        ),
         statusTimeout: Duration = .seconds(6),
         statusPollInterval: Duration = .milliseconds(100)
     ) {
@@ -2271,8 +2283,12 @@ actor LibXrayPingOnlyPacketTunnelService {
 
     init(
         publisher: SharedRuntimeProfilePublisher,
-        bootstrapper: DiagnosticTunnelProviderSessionBootstrapper = DiagnosticTunnelProviderSessionBootstrapper(),
-        sessionProvider: any TunnelProviderSessionProviding = NetworkExtensionTunnelSessionProvider(),
+        bootstrapper: DiagnosticTunnelProviderSessionBootstrapper = DiagnosticTunnelProviderSessionBootstrapper(
+            providerBundleIdentifier: PacketTunnelProviderRouting.xrayBundleIdentifier
+        ),
+        sessionProvider: any TunnelProviderSessionProviding = NetworkExtensionTunnelSessionProvider(
+            providerBundleIdentifier: PacketTunnelProviderRouting.xrayBundleIdentifier
+        ),
         statusTimeout: Duration = .seconds(6),
         statusPollInterval: Duration = .milliseconds(100)
     ) {
@@ -2424,6 +2440,7 @@ actor LibXrayPingOnlyPacketTunnelService {
         )
     }
 }
+#endif
 
 actor DataPlanePacketTunnelService {
     private let publisher: SharedRuntimeProfilePublisher
@@ -2434,8 +2451,12 @@ actor DataPlanePacketTunnelService {
 
     init(
         publisher: SharedRuntimeProfilePublisher,
-        bootstrapper: DiagnosticTunnelProviderSessionBootstrapper = DiagnosticTunnelProviderSessionBootstrapper(),
-        sessionProvider: any TunnelProviderSessionProviding = NetworkExtensionTunnelSessionProvider(),
+        bootstrapper: DiagnosticTunnelProviderSessionBootstrapper = DiagnosticTunnelProviderSessionBootstrapper(
+            providerBundleIdentifier: PacketTunnelProviderRouting.xrayBundleIdentifier
+        ),
+        sessionProvider: any TunnelProviderSessionProviding = NetworkExtensionTunnelSessionProvider(
+            providerBundleIdentifier: PacketTunnelProviderRouting.xrayBundleIdentifier
+        ),
         statusTimeout: Duration = .seconds(8),
         statusPollInterval: Duration = .milliseconds(100)
     ) {
@@ -2541,6 +2562,7 @@ actor DataPlanePacketTunnelService {
     }
 }
 
+#if DEBUG
 nonisolated struct DiagnosticProviderStateSnapshot: Equatable, Sendable {
     var providerStatus: TunnelProviderSessionStatus
     var mode: TunnelDiagnosticProviderMode
@@ -2568,7 +2590,7 @@ actor DiagnosticProviderStateService {
 
     init(
         managerStore: any DiagnosticTunnelProviderManagerStore = NetworkExtensionDiagnosticTunnelProviderManagerStore(),
-        providerBundleIdentifier: String = "su.24kvn.kvn-app.PacketTunnelExtension",
+        providerBundleIdentifier: String = PacketTunnelProviderRouting.xrayBundleIdentifier,
         timeout: Duration = .seconds(3),
         maximumResponseBytes: Int = TunnelMessageProtocol.maximumResponseBytes
     ) {
@@ -2685,7 +2707,7 @@ actor DiagnosticProviderRecoveryService {
 
     init(
         managerStore: any DiagnosticTunnelProviderManagerStore = NetworkExtensionDiagnosticTunnelProviderManagerStore(),
-        providerBundleIdentifier: String = "su.24kvn.kvn-app.PacketTunnelExtension",
+        providerBundleIdentifier: String = PacketTunnelProviderRouting.xrayBundleIdentifier,
         statusTimeout: Duration = .seconds(6),
         statusPollInterval: Duration = .milliseconds(100)
     ) {

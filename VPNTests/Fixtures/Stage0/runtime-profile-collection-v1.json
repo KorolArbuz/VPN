@@ -1,0 +1,182 @@
+{
+  "records" : [
+    {
+      "backendKind" : "xray",
+      "completeness" : "complete",
+      "credentialReference" : "keychain:\/\/stage0.runtime\/vless-primary",
+      "enabled" : true,
+      "endpoint" : {
+        "host" : "vless.stage0.example.invalid",
+        "port" : 443
+      },
+      "profileID" : "11111111-1111-4111-8111-111111111111",
+      "protocolKind" : "vless",
+      "recordRevision" : "v1-a0191e87b3919948",
+      "schemaVersion" : 1,
+      "security" : {
+        "allowInsecure" : false,
+        "kind" : "reality",
+        "reality" : {
+          "fingerprint" : "chrome",
+          "publicKey" : "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+          "serverName" : "reality.stage0.example.invalid",
+          "shortID" : "a1b2c3d4",
+          "spiderX" : "\/"
+        }
+      },
+      "transport" : {
+        "host" : "cdn.stage0.example.invalid",
+        "kind" : "xhttp",
+        "mode" : "packet-up",
+        "path" : "\/stage0-vless",
+        "xhttp" : {
+          "host" : "cdn.stage0.example.invalid",
+          "mode" : "packet-up",
+          "path" : "\/stage0-vless"
+        }
+      },
+      "updatedAt" : "2024-01-01T00:00:00Z",
+      "vless" : {
+        "encryption" : "none",
+        "flow" : "xtls-rprx-vision"
+      }
+    },
+    {
+      "backendKind" : "xray",
+      "completeness" : "complete",
+      "credentialReference" : "keychain:\/\/stage0.runtime\/vmess-primary",
+      "enabled" : true,
+      "endpoint" : {
+        "host" : "vmess.stage0.example.invalid",
+        "port" : 8443
+      },
+      "profileID" : "22222222-2222-4222-8222-222222222222",
+      "protocolKind" : "vmess",
+      "recordRevision" : "v1-b8bf2c0e535a4cb6",
+      "schemaVersion" : 1,
+      "security" : {
+        "allowInsecure" : false,
+        "alpn" : [
+          "h2",
+          "http\/1.1"
+        ],
+        "fingerprint" : "chrome",
+        "kind" : "tls",
+        "serverName" : "vmess-sni.stage0.example.invalid"
+      },
+      "transport" : {
+        "host" : "ws.stage0.example.invalid",
+        "kind" : "websocket",
+        "path" : "\/stage0-vmess"
+      },
+      "updatedAt" : "2024-01-02T00:00:00Z",
+      "vless" : {
+
+      },
+      "vmess" : {
+        "alterID" : 0,
+        "security" : "auto"
+      }
+    },
+    {
+      "backendKind" : "xray",
+      "completeness" : "complete",
+      "credentialReference" : "keychain:\/\/stage0.runtime\/trojan-primary",
+      "enabled" : true,
+      "endpoint" : {
+        "host" : "trojan.stage0.example.invalid",
+        "port" : 443
+      },
+      "profileID" : "33333333-3333-4333-8333-333333333333",
+      "protocolKind" : "trojan",
+      "recordRevision" : "v1-f6bc9f53fd68e72a",
+      "schemaVersion" : 1,
+      "security" : {
+        "allowInsecure" : false,
+        "alpn" : [
+          "h2"
+        ],
+        "fingerprint" : "safari",
+        "kind" : "tls",
+        "serverName" : "trojan-sni.stage0.example.invalid"
+      },
+      "transport" : {
+        "kind" : "grpc",
+        "serviceName" : "stage0-trojan"
+      },
+      "trojan" : {
+        "alpn" : [
+          "h2"
+        ]
+      },
+      "updatedAt" : "2024-01-03T00:00:00Z",
+      "vless" : {
+
+      }
+    },
+    {
+      "backendKind" : "xray",
+      "completeness" : "complete",
+      "credentialReference" : "keychain:\/\/stage0.runtime\/outline-primary",
+      "enabled" : true,
+      "endpoint" : {
+        "host" : "outline.stage0.example.invalid",
+        "port" : 8388
+      },
+      "profileID" : "44444444-4444-4444-8444-444444444444",
+      "protocolKind" : "shadowsocks",
+      "recordRevision" : "v1-f83bce6ca614c958",
+      "schemaVersion" : 1,
+      "security" : {
+        "allowInsecure" : false,
+        "kind" : "none"
+      },
+      "shadowsocks" : {
+        "isOutlineStaticKey" : true,
+        "method" : "chacha20-ietf-poly1305"
+      },
+      "transport" : {
+        "kind" : "tcp"
+      },
+      "updatedAt" : "2024-01-04T00:00:00Z",
+      "vless" : {
+
+      }
+    },
+    {
+      "backendKind" : "xray",
+      "completeness" : "complete",
+      "credentialReference" : "keychain:\/\/stage0.runtime\/hysteria2-primary",
+      "enabled" : true,
+      "endpoint" : {
+        "host" : "hy2.stage0.example.invalid",
+        "port" : 443
+      },
+      "hysteria2" : {
+        "obfs" : "salamander",
+        "obfsPasswordReference" : "keychain:\/\/stage0.runtime\/hysteria2-obfs"
+      },
+      "profileID" : "55555555-5555-4555-8555-555555555555",
+      "protocolKind" : "hysteria2",
+      "recordRevision" : "v1-d58e63ced98fb916",
+      "schemaVersion" : 1,
+      "security" : {
+        "allowInsecure" : false,
+        "alpn" : [
+          "h3"
+        ],
+        "fingerprint" : "chrome",
+        "kind" : "tls",
+        "serverName" : "hy2-sni.stage0.example.invalid"
+      },
+      "transport" : {
+        "kind" : "hysteria"
+      },
+      "updatedAt" : "2024-01-05T00:00:00Z",
+      "vless" : {
+
+      }
+    }
+  ],
+  "schemaVersion" : 1
+}

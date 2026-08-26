@@ -80,6 +80,7 @@ nonisolated struct VPNRoutingSettings: Codable, Hashable, Sendable {
 
 nonisolated enum VPNProtocolConfiguration: Codable, Hashable, Sendable {
     case wireGuard(WireGuardProfileConfiguration)
+    case amneziaWG(WireGuardProfileConfiguration)
     case ikev2(IKEv2ProfileConfiguration)
     case vless(VLESSProfileConfiguration)
     case hysteria2(Hysteria2ProfileConfiguration)
@@ -93,6 +94,153 @@ nonisolated struct WireGuardProfileConfiguration: Codable, Hashable, Sendable {
     var peerPublicKeyReference: String?
     var presharedKeyReference: String?
     var allowedIPs: [String]
+    var interfaceAddresses: [String]
+    var dnsServers: [String]
+    var dnsSearchDomains: [String]
+    var listenPort: UInt16?
+    var mtu: UInt16?
+    var peers: [WireGuardPeerProfileConfiguration]
+    var headerProtectionKeyReference: String?
+    var amnezia: AmneziaWGProfileParameters?
+
+    init(
+        peerPublicKeyReference: String? = nil,
+        presharedKeyReference: String? = nil,
+        allowedIPs: [String] = [],
+        interfaceAddresses: [String] = [],
+        dnsServers: [String] = [],
+        dnsSearchDomains: [String] = [],
+        listenPort: UInt16? = nil,
+        mtu: UInt16? = nil,
+        peers: [WireGuardPeerProfileConfiguration] = [],
+        headerProtectionKeyReference: String? = nil,
+        amnezia: AmneziaWGProfileParameters? = nil
+    ) {
+        self.peerPublicKeyReference = peerPublicKeyReference
+        self.presharedKeyReference = presharedKeyReference
+        self.allowedIPs = allowedIPs
+        self.interfaceAddresses = interfaceAddresses
+        self.dnsServers = dnsServers
+        self.dnsSearchDomains = dnsSearchDomains
+        self.listenPort = listenPort
+        self.mtu = mtu
+        self.peers = peers
+        self.headerProtectionKeyReference = headerProtectionKeyReference
+        self.amnezia = amnezia
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case peerPublicKeyReference
+        case presharedKeyReference
+        case allowedIPs
+        case interfaceAddresses
+        case dnsServers
+        case dnsSearchDomains
+        case listenPort
+        case mtu
+        case peers
+        case headerProtectionKeyReference
+        case amnezia
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        peerPublicKeyReference = try container.decodeIfPresent(String.self, forKey: .peerPublicKeyReference)
+        presharedKeyReference = try container.decodeIfPresent(String.self, forKey: .presharedKeyReference)
+        allowedIPs = try container.decodeIfPresent([String].self, forKey: .allowedIPs) ?? []
+        interfaceAddresses = try container.decodeIfPresent([String].self, forKey: .interfaceAddresses) ?? []
+        dnsServers = try container.decodeIfPresent([String].self, forKey: .dnsServers) ?? []
+        dnsSearchDomains = try container.decodeIfPresent([String].self, forKey: .dnsSearchDomains) ?? []
+        listenPort = try container.decodeIfPresent(UInt16.self, forKey: .listenPort)
+        mtu = try container.decodeIfPresent(UInt16.self, forKey: .mtu)
+        peers = try container.decodeIfPresent([WireGuardPeerProfileConfiguration].self, forKey: .peers) ?? []
+        headerProtectionKeyReference = try container.decodeIfPresent(String.self, forKey: .headerProtectionKeyReference)
+        amnezia = try container.decodeIfPresent(AmneziaWGProfileParameters.self, forKey: .amnezia)
+    }
+}
+
+nonisolated struct WireGuardEndpointProfileConfiguration: Codable, Hashable, Sendable {
+    var host: String
+    var port: UInt16
+}
+
+nonisolated struct WireGuardPeerProfileConfiguration: Codable, Hashable, Sendable {
+    var publicKey: String
+    var presharedKeyReference: String?
+    var allowedIPs: [String]
+    var excludedIPs: [String]
+    var endpoint: WireGuardEndpointProfileConfiguration?
+    var persistentKeepAlive: String?
+
+    init(
+        publicKey: String,
+        presharedKeyReference: String? = nil,
+        allowedIPs: [String],
+        excludedIPs: [String] = [],
+        endpoint: WireGuardEndpointProfileConfiguration? = nil,
+        persistentKeepAlive: String? = nil
+    ) {
+        self.publicKey = publicKey
+        self.presharedKeyReference = presharedKeyReference
+        self.allowedIPs = allowedIPs
+        self.excludedIPs = excludedIPs
+        self.endpoint = endpoint
+        self.persistentKeepAlive = persistentKeepAlive
+    }
+}
+
+nonisolated struct AmneziaWGProfileParameters: Codable, Hashable, Sendable {
+    var junkPacketCount: UInt16? = nil
+    var junkPacketMinSize: UInt16? = nil
+    var junkPacketMaxSize: UInt16? = nil
+    var initPacketJunkSize: UInt16? = nil
+    var responsePacketJunkSize: UInt16? = nil
+    var cookieReplyPacketJunkSize: UInt16? = nil
+    var transportPacketJunkSize: UInt16? = nil
+    var initPacketMagicHeader: String? = nil
+    var responsePacketMagicHeader: String? = nil
+    var underloadPacketMagicHeader: String? = nil
+    var transportPacketMagicHeader: String? = nil
+    var specialJunk1: String? = nil
+    var specialJunk2: String? = nil
+    var specialJunk3: String? = nil
+    var specialJunk4: String? = nil
+    var specialJunk5: String? = nil
+    var contentPaddingAddition: String? = nil
+    var rekeyAfterTime: String? = nil
+    var rekeyTimeout: String? = nil
+    var rejectAfterTime: String? = nil
+    var keepaliveTimeout: String? = nil
+    var maxHandshakeAttempts: String? = nil
+    var randomTrailers: String? = nil
+    var disableCookies: String? = nil
+
+    var hasAnyValue: Bool {
+        junkPacketCount != nil
+            || junkPacketMinSize != nil
+            || junkPacketMaxSize != nil
+            || initPacketJunkSize != nil
+            || responsePacketJunkSize != nil
+            || cookieReplyPacketJunkSize != nil
+            || transportPacketJunkSize != nil
+            || initPacketMagicHeader != nil
+            || responsePacketMagicHeader != nil
+            || underloadPacketMagicHeader != nil
+            || transportPacketMagicHeader != nil
+            || specialJunk1 != nil
+            || specialJunk2 != nil
+            || specialJunk3 != nil
+            || specialJunk4 != nil
+            || specialJunk5 != nil
+            || contentPaddingAddition != nil
+            || rekeyAfterTime != nil
+            || rekeyTimeout != nil
+            || rejectAfterTime != nil
+            || keepaliveTimeout != nil
+            || maxHandshakeAttempts != nil
+            || randomTrailers != nil
+            || disableCookies != nil
+    }
 }
 
 nonisolated struct IKEv2ProfileConfiguration: Codable, Hashable, Sendable {
