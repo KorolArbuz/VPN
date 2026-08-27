@@ -236,12 +236,26 @@ nonisolated struct SmartConnectionScoreCalculator: Sendable {
         case .latency:
             guard let latency = statistics.ewmaLatencyMilliseconds,
                   statistics.latencySampleCount > 0 else { return nil }
-            quality = Self.latencyQuality(milliseconds: latency)
+            let effectiveLatency: Double
+            if let tailLatency = statistics.ewmaTailLatencyMilliseconds {
+                effectiveLatency = 0.6 * latency + 0.4 * tailLatency
+            } else {
+                // Preserve Build-8 IEEE-754 behavior exactly for legacy data.
+                effectiveLatency = latency
+            }
+            quality = Self.latencyQuality(milliseconds: effectiveLatency)
             rawSampleCount = statistics.latencySampleCount
         case .packetLoss:
             guard let loss = statistics.ewmaPacketLossPercent,
                   statistics.packetLossSampleCount > 0 else { return nil }
-            quality = Self.packetLossQuality(percent: loss)
+            let effectiveLoss: Double
+            if let tailLoss = statistics.ewmaTailPacketLossPercent {
+                effectiveLoss = 0.6 * loss + 0.4 * tailLoss
+            } else {
+                // Preserve Build-8 IEEE-754 behavior exactly for legacy data.
+                effectiveLoss = loss
+            }
+            quality = Self.packetLossQuality(percent: effectiveLoss)
             rawSampleCount = statistics.packetLossSampleCount
         case .connectSpeed:
             guard let duration = statistics.ewmaConnectDurationSeconds,

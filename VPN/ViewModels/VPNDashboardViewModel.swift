@@ -43,40 +43,108 @@ private enum SmartConnectionAttemptError: LocalizedError {
 }
 
 private struct SmartConnectionSessionQualityAccumulator {
-    private(set) var latencyMeanMilliseconds: Double?
+    private static let maximumTailObservations = 20
+
+    private var latencySum = 0.0
     private(set) var latencyValidSampleCount = 0
-    private(set) var packetLossMeanPercent: Double?
+    private var packetLossSum = 0.0
     private(set) var packetLossValidSampleCount = 0
+    private var tailLatencyObservations: [Double] = []
+    private var tailPacketLossObservations: [Double] = []
+
+    init(pendingRecord: SmartConnectionPendingQualityRecord? = nil) {
+        guard let pendingRecord else { return }
+        latencyValidSampleCount = max(0, pendingRecord.latencyCount)
+        latencySum = latencyValidSampleCount == 0
+            ? 0
+            : max(0, pendingRecord.latencySum)
+        packetLossValidSampleCount = max(0, pendingRecord.packetLossCount)
+        packetLossSum = packetLossValidSampleCount == 0
+            ? 0
+            : min(
+                Double(packetLossValidSampleCount) * 100,
+                max(0, pendingRecord.packetLossSum)
+            )
+        if let tailLatency = pendingRecord.tailLatencyMilliseconds {
+            tailLatencyObservations = Array(
+                repeating: max(0, tailLatency),
+                count: min(Self.maximumTailObservations, latencyValidSampleCount)
+            )
+        }
+        if let tailLoss = pendingRecord.tailPacketLossPercent {
+            tailPacketLossObservations = Array(
+                repeating: min(100, max(0, tailLoss)),
+                count: min(Self.maximumTailObservations, packetLossValidSampleCount)
+            )
+        }
+    }
+
+    var latencyMeanMilliseconds: Double? {
+        guard latencyValidSampleCount > 0 else { return nil }
+        return latencySum / Double(latencyValidSampleCount)
+    }
+
+    var packetLossMeanPercent: Double? {
+        guard packetLossValidSampleCount > 0 else { return nil }
+        return packetLossSum / Double(packetLossValidSampleCount)
+    }
+
+    var tailLatencyMilliseconds: Double? {
+        Self.mean(of: tailLatencyObservations)
+    }
+
+    var tailPacketLossPercent: Double? {
+        Self.mean(of: tailPacketLossObservations)
+    }
+
+    var qualityAggregate: SmartConnectionSessionQualityAggregate {
+        SmartConnectionSessionQualityAggregate(
+            latencySum: latencySum,
+            latencyCount: latencyValidSampleCount,
+            tailLatencyMilliseconds: tailLatencyMilliseconds,
+            packetLossSum: packetLossSum,
+            packetLossCount: packetLossValidSampleCount,
+            tailPacketLossPercent: tailPacketLossPercent
+        )
+    }
 
     mutating func record(
         latencyMilliseconds: Double?,
         packetLossPercent: Double?
     ) {
         if let latencyMilliseconds {
+            let observation = max(0, latencyMilliseconds)
             latencyValidSampleCount += 1
-            latencyMeanMilliseconds = Self.incrementalMean(
-                previous: latencyMeanMilliseconds,
-                observation: max(0, latencyMilliseconds),
-                count: latencyValidSampleCount
+            latencySum += observation
+            Self.appendTailObservation(
+                observation,
+                to: &tailLatencyObservations
             )
         }
         if let packetLossPercent {
+            let observation = min(100, max(0, packetLossPercent))
             packetLossValidSampleCount += 1
-            packetLossMeanPercent = Self.incrementalMean(
-                previous: packetLossMeanPercent,
-                observation: min(100, max(0, packetLossPercent)),
-                count: packetLossValidSampleCount
+            packetLossSum += observation
+            Self.appendTailObservation(
+                observation,
+                to: &tailPacketLossObservations
             )
         }
     }
 
-    private static func incrementalMean(
-        previous: Double?,
-        observation: Double,
-        count: Int
-    ) -> Double {
-        guard let previous, count > 1 else { return observation }
-        return previous + (observation - previous) / Double(count)
+    private static func appendTailObservation(
+        _ observation: Double,
+        to observations: inout [Double]
+    ) {
+        observations.append(observation)
+        if observations.count > maximumTailObservations {
+            observations.removeFirst(observations.count - maximumTailObservations)
+        }
+    }
+
+    private static func mean(of observations: [Double]) -> Double? {
+        guard observations.isEmpty == false else { return nil }
+        return observations.reduce(0, +) / Double(observations.count)
     }
 }
 
@@ -1790,7 +1858,17 @@ final class VPNDashboardViewModel {
             session.checkpointRuntimeSeconds =
                 session.countsInitialRuntimeFromZero ? 0 : runtimeSeconds
             session.countsInitialRuntimeFromZero = false
-            session.qualityAccumulator = SmartConnectionSessionQualityAccumulator()
+            let commitKey = SmartConnectionLearningTransform.commitKey(
+                profileID: session.profileID,
+                protocolType: session.protocolType,
+                context: session.context,
+                sessionID: sessionID
+            )
+            let pendingRecord = smartConnectionLearning.pendingQualityRecords?
+                .first { $0.commitKey == commitKey }
+            session.qualityAccumulator = SmartConnectionSessionQualityAccumulator(
+                pendingRecord: pendingRecord
+            )
             session.anomalyDetector = SmartConnectionAnomalyDetector()
             smartConnectionQualityState = .normal
         }
@@ -1828,11 +1906,17 @@ final class VPNDashboardViewModel {
                 0,
                 runtimeSeconds - checkpointRuntimeSeconds
             ),
-            latencyMilliseconds: nil,
-            packetLossPercent: nil,
+            latencyMilliseconds: session.qualityAccumulator.latencyMeanMilliseconds,
+            packetLossPercent: session.qualityAccumulator.packetLossMeanPercent,
             sessionEnded: false,
             unexpectedDisconnect: false,
-            sessionID: session.telemetrySessionID
+            sessionID: session.telemetrySessionID,
+            tailLatencyMilliseconds:
+                session.qualityAccumulator.tailLatencyMilliseconds,
+            tailPacketLossPercent:
+                session.qualityAccumulator.tailPacketLossPercent,
+            qualityAggregate: session.qualityAccumulator.qualityAggregate,
+            qualityAggregateIsCumulative: true
         )
         session.checkpointRuntimeSeconds = runtimeSeconds
         learningSession = session
@@ -1875,7 +1959,13 @@ final class VPNDashboardViewModel {
             packetLossPercent: session.qualityAccumulator.packetLossMeanPercent,
             sessionEnded: true,
             unexpectedDisconnect: unexpectedDisconnect,
-            sessionID: session.telemetrySessionID
+            sessionID: session.telemetrySessionID,
+            tailLatencyMilliseconds:
+                session.qualityAccumulator.tailLatencyMilliseconds,
+            tailPacketLossPercent:
+                session.qualityAccumulator.tailPacketLossPercent,
+            qualityAggregate: session.qualityAccumulator.qualityAggregate,
+            qualityAggregateIsCumulative: true
         )
         await learningStore.recordSessionSummary(
             summary,

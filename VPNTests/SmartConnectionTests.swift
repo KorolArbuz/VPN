@@ -920,6 +920,330 @@ struct SmartConnectionLearningStoreTests {
             ).attemptCount == attempt)
         }
     }
+
+    @Test(arguments: SmartLearningStoreKind.allCases)
+    func qualityCheckpointPersistsPendingAggregateWithoutCommittingSamples(
+        kind: SmartLearningStoreKind
+    ) async throws {
+        let profile = makeSmartProfile(index: 1)
+        let harness = try makeLearningStoreHarness(
+            kind: kind,
+            clock: FixedSmartConnectionClock(now: smartTestNow)
+        )
+        defer { harness.cleanup() }
+
+        await harness.store.recordSessionSummary(
+            qualitySummary(
+                sessionID: "checkpoint-session",
+                latencyValues: [80, 100],
+                lossValues: [1, 3],
+                additionalSeconds: 60,
+                sessionEnded: false
+            ),
+            profileID: profile.id,
+            protocolType: profile.protocolType,
+            context: smartWiFiContext,
+            at: smartTestNow
+        )
+        let snapshot = await harness.store.snapshot(for: [profile])
+        let statistics = snapshot.contextStatistics(
+            profileID: profile.id,
+            protocolType: profile.protocolType,
+            context: smartWiFiContext
+        )
+        let pendingRecords = try #require(snapshot.pendingQualityRecords)
+        #expect(pendingRecords.count == 1)
+        let pending = try #require(pendingRecords.first)
+
+        #expect(pending.latencySum == 180)
+        #expect(pending.latencyCount == 2)
+        #expect(pending.packetLossSum == 4)
+        #expect(pending.packetLossCount == 2)
+        #expect(pending.accumulatedSessionSeconds == 60)
+        #expect(statistics.latencySampleCount == 0)
+        #expect(statistics.packetLossSampleCount == 0)
+        #expect(statistics.completedSessionCount == 0)
+
+        if let fileURL = harness.fileURL {
+            let persistedBytes = try String(
+                decoding: Data(contentsOf: fileURL),
+                as: UTF8.self
+            )
+            #expect(persistedBytes.contains("\"latencySum\" : 180"))
+            #expect(persistedBytes.contains("\"latencyCount\" : 2"))
+        }
+    }
+
+    @Test
+    func jetsamRestorationCommitsPendingQualityExactlyOnceWithoutPenalty() async throws {
+        let profile = makeSmartProfile(index: 1)
+        let fileURL = temporaryLearningFileURL()
+        defer { try? FileManager.default.removeItem(at: fileURL) }
+
+        do {
+            let firstStore = FileSmartConnectionLearningStore(
+                fileURL: fileURL,
+                clock: FixedSmartConnectionClock(now: smartTestNow)
+            )
+            await firstStore.recordSessionSummary(
+                qualitySummary(
+                    sessionID: "jetsam-session",
+                    latencyValues: [50, 70],
+                    lossValues: [1, 2],
+                    additionalSeconds: 60,
+                    sessionEnded: false
+                ),
+                profileID: profile.id,
+                protocolType: profile.protocolType,
+                context: smartWiFiContext,
+                at: smartTestNow
+            )
+            await firstStore.recordSessionSummary(
+                qualitySummary(
+                    sessionID: "jetsam-session",
+                    latencyValues: [50, 70, 90],
+                    lossValues: [1, 2, 3],
+                    additionalSeconds: 60,
+                    sessionEnded: false
+                ),
+                profileID: profile.id,
+                protocolType: profile.protocolType,
+                context: smartWiFiContext,
+                at: smartTestNow
+            )
+        }
+
+        let restoredStore = FileSmartConnectionLearningStore(
+            fileURL: fileURL,
+            clock: FixedSmartConnectionClock(
+                now: smartTestNow.addingTimeInterval(11 * 60)
+            )
+        )
+        let restored = await restoredStore.snapshot(for: [profile])
+        let statistics = restored.contextStatistics(
+            profileID: profile.id,
+            protocolType: profile.protocolType,
+            context: smartWiFiContext
+        )
+
+        #expect(restored.pendingQualityRecords == nil)
+        #expect(statistics.ewmaLatencyMilliseconds == 70)
+        #expect(statistics.ewmaTailLatencyMilliseconds == 70)
+        #expect(statistics.latencySampleCount == 1)
+        #expect(statistics.packetLossSampleCount == 1)
+        #expect(statistics.completedSessionCount == 1)
+        #expect(statistics.successfulSessionSeconds == 120)
+        #expect(statistics.unexpectedDisconnectCount == 0)
+        #expect(statistics.failedConnectionCount == 0)
+        #expect(statistics.consecutiveFailures == 0)
+        #expect(statistics.lastFailureAt == nil)
+
+        let loadedAgain = await restoredStore.snapshot(for: [profile])
+        #expect(loadedAgain == restored)
+    }
+
+    @Test(arguments: SmartLearningStoreKind.allCases)
+    func recoveredPendingThenRealFinishWithSameSessionRemainsIdempotent(
+        kind: SmartLearningStoreKind
+    ) async throws {
+        let profile = makeSmartProfile(index: 1)
+        let sessionID = "restored-then-finished"
+        let pending = pendingQualityRecord(
+            profile: profile,
+            sessionID: sessionID,
+            updatedAt: smartTestNow,
+            latencyValues: [80, 100],
+            lossValues: [1, 3],
+            accumulatedSeconds: 120
+        )
+        let harness = try makeLearningStoreHarness(
+            kind: kind,
+            snapshot: SmartConnectionLearningSnapshot(
+                pendingQualityRecords: [pending]
+            ),
+            clock: FixedSmartConnectionClock(
+                now: smartTestNow.addingTimeInterval(11 * 60)
+            )
+        )
+        defer { harness.cleanup() }
+
+        _ = await harness.store.snapshot(for: [profile])
+        await harness.store.recordSessionSummary(
+            qualitySummary(
+                sessionID: sessionID,
+                latencyValues: [80, 100, 120],
+                lossValues: [1, 3, 5],
+                additionalSeconds: 30,
+                sessionEnded: true
+            ),
+            profileID: profile.id,
+            protocolType: profile.protocolType,
+            context: smartWiFiContext,
+            at: smartTestNow.addingTimeInterval(11 * 60)
+        )
+        let value = await harness.store.snapshot(for: [profile])
+        let statistics = value.contextStatistics(
+            profileID: profile.id,
+            protocolType: profile.protocolType,
+            context: smartWiFiContext
+        )
+
+        #expect(statistics.latencySampleCount == 1)
+        #expect(statistics.packetLossSampleCount == 1)
+        #expect(statistics.completedSessionCount == 1)
+        #expect(statistics.successfulSessionSeconds == 120)
+    }
+
+    @Test(arguments: SmartLearningStoreKind.allCases)
+    func recentPendingQualityRecordRemainsLive(
+        kind: SmartLearningStoreKind
+    ) async throws {
+        let profile = makeSmartProfile(index: 1)
+        let pending = pendingQualityRecord(
+            profile: profile,
+            sessionID: "live-session",
+            updatedAt: smartTestNow,
+            latencyValues: [75],
+            lossValues: [1],
+            accumulatedSeconds: 60
+        )
+        let harness = try makeLearningStoreHarness(
+            kind: kind,
+            snapshot: SmartConnectionLearningSnapshot(
+                pendingQualityRecords: [pending]
+            ),
+            clock: FixedSmartConnectionClock(
+                now: smartTestNow.addingTimeInterval(5 * 60)
+            )
+        )
+        defer { harness.cleanup() }
+
+        let value = await harness.store.snapshot(for: [profile])
+        let statistics = value.contextStatistics(
+            profileID: profile.id,
+            protocolType: profile.protocolType,
+            context: smartWiFiContext
+        )
+
+        #expect(value.pendingQualityRecords == [pending])
+        #expect(statistics.latencySampleCount == 0)
+        #expect(statistics.completedSessionCount == 0)
+    }
+
+    @Test(arguments: SmartLearningStoreKind.allCases)
+    func completedQualityStoresSeparateTailEWMAAndLowersLatencyScore(
+        kind: SmartLearningStoreKind
+    ) async throws {
+        let profile = makeSmartProfile(index: 1)
+        let latencyValues = Array(repeating: 50.0, count: 55)
+            + Array(repeating: 900.0, count: 5)
+        let harness = try makeLearningStoreHarness(
+            kind: kind,
+            clock: FixedSmartConnectionClock(now: smartTestNow)
+        )
+        defer { harness.cleanup() }
+
+        await harness.store.recordSessionSummary(
+            qualitySummary(
+                sessionID: "tail-session",
+                latencyValues: latencyValues,
+                lossValues: [],
+                additionalSeconds: 3_600,
+                sessionEnded: true
+            ),
+            profileID: profile.id,
+            protocolType: profile.protocolType,
+            context: smartWiFiContext,
+            at: smartTestNow
+        )
+        let value = await harness.store.snapshot(for: [profile])
+        let statistics = value.contextStatistics(
+            profileID: profile.id,
+            protocolType: profile.protocolType,
+            context: smartWiFiContext
+        )
+        let mean = try #require(statistics.ewmaLatencyMilliseconds)
+        let tail = try #require(statistics.ewmaTailLatencyMilliseconds)
+
+        #expect(abs(mean - 120.833_333_333_333_33) < 0.000_001)
+        #expect(abs(tail - 262.5) < 0.000_001)
+        #expect(statistics.latencySampleCount == 1)
+
+        let withTail = SmartConnectionScoreCalculator().score(
+            profile: profile,
+            context: smartWiFiContext,
+            learning: value,
+            now: smartTestNow
+        )
+        var withoutTailLearning = value
+        for index in withoutTailLearning.contextProfileRecords.indices {
+            withoutTailLearning.contextProfileRecords[index].statistics
+                .ewmaTailLatencyMilliseconds = nil
+        }
+        for index in withoutTailLearning.profileRecords.indices {
+            withoutTailLearning.profileRecords[index].statistics
+                .ewmaTailLatencyMilliseconds = nil
+        }
+        for index in withoutTailLearning.protocolRecords.indices {
+            withoutTailLearning.protocolRecords[index].statistics
+                .ewmaTailLatencyMilliseconds = nil
+        }
+        let withoutTail = SmartConnectionScoreCalculator().score(
+            profile: profile,
+            context: smartWiFiContext,
+            learning: withoutTailLearning,
+            now: smartTestNow
+        )
+        #expect(withTail.breakdown.latency < withoutTail.breakdown.latency)
+
+        var detector = SmartConnectionAnomalyDetector()
+        _ = detector.observe(
+            latencyMilliseconds: 250,
+            packetLossPercent: nil,
+            baselineLatencyMilliseconds: statistics.ewmaLatencyMilliseconds,
+            baselinePacketLossPercent: nil
+        )
+        #expect(detector.observe(
+            latencyMilliseconds: 250,
+            packetLossPercent: nil,
+            baselineLatencyMilliseconds: statistics.ewmaLatencyMilliseconds,
+            baselinePacketLossPercent: nil
+        ) == .degraded)
+    }
+
+    @Test(arguments: SmartLearningStoreKind.allCases)
+    func ninthPendingQualityRecordEvictsOldestByUpdatedAt(
+        kind: SmartLearningStoreKind
+    ) async throws {
+        let profiles = (1...9).map { makeSmartProfile(index: $0) }
+        let harness = try makeLearningStoreHarness(
+            kind: kind,
+            clock: FixedSmartConnectionClock(now: smartTestNow)
+        )
+        defer { harness.cleanup() }
+
+        for (index, profile) in profiles.enumerated() {
+            await harness.store.recordSessionSummary(
+                qualitySummary(
+                    sessionID: "bounded-\(index)",
+                    latencyValues: [Double(50 + index)],
+                    lossValues: [],
+                    additionalSeconds: 60,
+                    sessionEnded: false
+                ),
+                profileID: profile.id,
+                protocolType: profile.protocolType,
+                context: smartWiFiContext,
+                at: smartTestNow.addingTimeInterval(Double(index))
+            )
+        }
+        let value = await harness.store.snapshot(for: profiles)
+        let pending = try #require(value.pendingQualityRecords)
+
+        #expect(pending.count == SmartConnectionLearningTransform.maximumPendingQualityRecords)
+        #expect(pending.contains { $0.profileID == profiles[0].id } == false)
+        #expect(pending.contains { $0.profileID == profiles[8].id })
+    }
 }
 
 @Suite(.serialized)
@@ -969,6 +1293,82 @@ struct SmartConnectionScoringTests {
 
         #expect(fastScore.breakdown.latency > slowScore.breakdown.latency)
         #expect(fastScore.breakdown.effectiveScore > slowScore.breakdown.effectiveScore)
+    }
+
+    @Test
+    func build8JSONWithoutPendingOrTailFieldsPreservesScoreBitPatterns() throws {
+        let profile = makeSmartProfile(index: 1)
+        var statistics = SmartConnectionStatistics()
+        statistics.attemptCount = 7
+        statistics.successfulConnectionCount = 5
+        statistics.failedConnectionCount = 2
+        statistics.ewmaConnectDurationSeconds = 4.25
+        statistics.connectDurationSampleCount = 5
+        statistics.ewmaLatencyMilliseconds = 137.5
+        statistics.latencySampleCount = 4
+        statistics.ewmaPacketLossPercent = 2.75
+        statistics.packetLossSampleCount = 4
+        statistics.successfulSessionSeconds = 2_345
+        statistics.completedSessionCount = 4
+        statistics.unexpectedDisconnectCount = 1
+        statistics.lastAttemptAt = now
+        statistics.lastSuccessAt = now
+        statistics.lastUpdatedAt = now
+        let build8Snapshot = SmartConnectionLearningSnapshot(
+            contextProfileRecords: [SmartConnectionContextProfileRecord(
+                context: smartWiFiContext,
+                profileID: profile.id,
+                protocolType: profile.protocolType,
+                statistics: statistics
+            )]
+        )
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        let build8JSON = try encoder.encode(build8Snapshot)
+        let bytes = String(decoding: build8JSON, as: UTF8.self)
+        #expect(bytes.contains("pendingQualityRecords") == false)
+        #expect(bytes.contains("ewmaTailLatencyMilliseconds") == false)
+        #expect(bytes.contains("ewmaTailPacketLossPercent") == false)
+
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let decoded = try decoder.decode(
+            SmartConnectionLearningSnapshot.self,
+            from: build8JSON
+        )
+        #expect(decoded.schemaVersion == 1)
+        #expect(decoded.pendingQualityRecords == nil)
+        let result = calculator.score(
+            profile: profile,
+            context: smartWiFiContext,
+            learning: decoded,
+            now: now
+        )
+        let bitPatterns = [
+            result.breakdown.reliability,
+            result.breakdown.latency,
+            result.breakdown.packetLoss,
+            result.breakdown.connectSpeed,
+            result.breakdown.stability,
+            result.breakdown.baseScore,
+            result.breakdown.recentFailurePenalty,
+            result.breakdown.recentSuccessBonus,
+            result.breakdown.explorationBonus,
+            result.breakdown.effectiveScore
+        ].map(\.bitPattern)
+
+        #expect(bitPatterns == [
+            4_634_673_141_525_424_811,
+            4_635_113_872_081_063_864,
+            4_635_007_393_060_268_715,
+            4_635_134_862_525_020_252,
+            4_634_859_447_662_353_521,
+            4_634_899_314_130_411_394,
+            0,
+            4_616_189_618_054_758_400,
+            0,
+            4_635_180_789_107_122_050
+        ])
     }
 
     @Test
@@ -1755,6 +2155,48 @@ struct SmartConnectionSessionIntegrationTests {
 
     @Test
     @MainActor
+    func sessionAccumulatorKeepsLastTwentyLatencyObservationsAsTail() async throws {
+        let profile = makeSmartProfile(index: 1)
+        let telemetry = TestSmartConnectionTelemetryManager()
+        let harness = try await makeSmartHarness(
+            profiles: [profile],
+            telemetry: telemetry
+        )
+        await harness.viewModel.connect()
+
+        let observations = Array(repeating: 50, count: 55)
+            + Array(repeating: 900, count: 5)
+        for (index, latency) in observations.enumerated() {
+            let runtime = Double(index + 1)
+            await telemetry.emit(DashboardConnectionTelemetrySnapshot(
+                sessionID: "ring-tail-session",
+                connectedStartedAt: smartTestNow,
+                runtimeSeconds: runtime,
+                latencyMilliseconds: latency,
+                packetLossPercent: nil
+            ))
+            #expect(await eventually {
+                harness.viewModel.connectionTelemetry.runtimeSeconds == runtime
+            })
+        }
+        #expect(await eventually {
+            let snapshot = await harness.learningStore.snapshot(for: [profile])
+            return snapshot.pendingQualityRecords?.first?.latencyCount == 60
+        })
+        await harness.viewModel.disconnect()
+
+        let statistics = await contextStatistics(
+            store: harness.learningStore,
+            profile: profile
+        )
+        let mean = try #require(statistics.ewmaLatencyMilliseconds)
+        let tail = try #require(statistics.ewmaTailLatencyMilliseconds)
+        #expect(abs(mean - 120.833_333_333_333_33) < 0.000_001)
+        #expect(abs(tail - 262.5) < 0.000_001)
+    }
+
+    @Test
+    @MainActor
     func checkpointDoesNotInflateIndependentQualitySamples() async throws {
         let profile = makeSmartProfile(index: 1)
         let telemetry = TestSmartConnectionTelemetryManager()
@@ -1772,11 +2214,9 @@ struct SmartConnectionSessionIntegrationTests {
             packetLossPercent: 2
         ))
         let checkpointed = await eventually {
-            let statistics = await contextStatistics(
-                store: harness.learningStore,
-                profile: profile
-            )
-            return statistics.successfulSessionSeconds == 61
+            let value = await harness.learningStore.snapshot(for: [profile])
+            return value.pendingQualityRecords?.first?
+                .accumulatedSessionSeconds == 61
         }
 
         #expect(checkpointed)
@@ -1786,6 +2226,7 @@ struct SmartConnectionSessionIntegrationTests {
         )
         #expect(statistics.latencySampleCount == 0)
         #expect(statistics.packetLossSampleCount == 0)
+        #expect(statistics.successfulSessionSeconds == 0)
 
         await telemetry.emit(DashboardConnectionTelemetrySnapshot(
             sessionID: "session-one",
@@ -1795,11 +2236,9 @@ struct SmartConnectionSessionIntegrationTests {
             packetLossPercent: 4
         ))
         let secondCheckpoint = await eventually {
-            let value = await contextStatistics(
-                store: harness.learningStore,
-                profile: profile
-            )
-            return value.successfulSessionSeconds == 122
+            let value = await harness.learningStore.snapshot(for: [profile])
+            return value.pendingQualityRecords?.first?
+                .accumulatedSessionSeconds == 122
         }
         #expect(secondCheckpoint)
         statistics = await contextStatistics(store: harness.learningStore, profile: profile)
@@ -1812,6 +2251,7 @@ struct SmartConnectionSessionIntegrationTests {
         #expect(statistics.packetLossSampleCount == 1)
         #expect(statistics.ewmaLatencyMilliseconds == 100)
         #expect(statistics.ewmaPacketLossPercent == 3)
+        #expect(statistics.successfulSessionSeconds == 122)
         #expect(await telemetry.reconcileCallCount() >= 2)
     }
 
@@ -2289,6 +2729,115 @@ private func decodeLearningSnapshot(
         SmartConnectionLearningSnapshot.self,
         from: Data(contentsOf: fileURL)
     )
+}
+
+enum SmartLearningStoreKind: CaseIterable, Sendable {
+    case file
+    case memory
+}
+
+private struct SmartLearningStoreHarness {
+    let store: any SmartConnectionLearningStoring
+    let fileURL: URL?
+
+    func cleanup() {
+        guard let fileURL else { return }
+        try? FileManager.default.removeItem(at: fileURL)
+    }
+}
+
+private func makeLearningStoreHarness(
+    kind: SmartLearningStoreKind,
+    snapshot: SmartConnectionLearningSnapshot = .empty,
+    clock: any SmartConnectionClock
+) throws -> SmartLearningStoreHarness {
+    switch kind {
+    case .file:
+        let fileURL = temporaryLearningFileURL()
+        try writeLearningSnapshot(snapshot, to: fileURL)
+        return SmartLearningStoreHarness(
+            store: FileSmartConnectionLearningStore(
+                fileURL: fileURL,
+                clock: clock
+            ),
+            fileURL: fileURL
+        )
+    case .memory:
+        return SmartLearningStoreHarness(
+            store: InMemorySmartConnectionLearningStore(
+                snapshot: snapshot,
+                clock: clock
+            ),
+            fileURL: nil
+        )
+    }
+}
+
+private func qualitySummary(
+    sessionID: String,
+    latencyValues: [Double],
+    lossValues: [Double],
+    additionalSeconds: TimeInterval,
+    sessionEnded: Bool
+) -> SmartConnectionSessionSummary {
+    let aggregate = SmartConnectionSessionQualityAggregate(
+        latencySum: latencyValues.reduce(0, +),
+        latencyCount: latencyValues.count,
+        tailLatencyMilliseconds: tailMean(latencyValues),
+        packetLossSum: lossValues.reduce(0, +),
+        packetLossCount: lossValues.count,
+        tailPacketLossPercent: tailMean(lossValues)
+    )
+    return SmartConnectionSessionSummary(
+        additionalSuccessfulSessionSeconds: additionalSeconds,
+        latencyMilliseconds: aggregate.latencyMeanMilliseconds,
+        packetLossPercent: aggregate.packetLossMeanPercent,
+        sessionEnded: sessionEnded,
+        unexpectedDisconnect: false,
+        sessionID: sessionID,
+        tailLatencyMilliseconds: aggregate.tailLatencyMilliseconds,
+        tailPacketLossPercent: aggregate.tailPacketLossPercent,
+        qualityAggregate: aggregate,
+        qualityAggregateIsCumulative: true
+    )
+}
+
+private func pendingQualityRecord(
+    profile: VPNProfile,
+    sessionID: String,
+    updatedAt: Date,
+    latencyValues: [Double],
+    lossValues: [Double],
+    accumulatedSeconds: TimeInterval
+) -> SmartConnectionPendingQualityRecord {
+    guard let commitKey = SmartConnectionLearningTransform.commitKey(
+        profileID: profile.id,
+        protocolType: profile.protocolType,
+        context: smartWiFiContext,
+        sessionID: sessionID
+    ) else {
+        preconditionFailure("A non-empty test session ID must produce a commit key")
+    }
+    return SmartConnectionPendingQualityRecord(
+        commitKey: commitKey,
+        profileID: profile.id,
+        protocolType: profile.protocolType,
+        context: smartWiFiContext,
+        latencySum: latencyValues.reduce(0, +),
+        latencyCount: latencyValues.count,
+        tailLatencyMilliseconds: tailMean(latencyValues),
+        packetLossSum: lossValues.reduce(0, +),
+        packetLossCount: lossValues.count,
+        tailPacketLossPercent: tailMean(lossValues),
+        accumulatedSessionSeconds: accumulatedSeconds,
+        updatedAt: updatedAt
+    )
+}
+
+private func tailMean(_ values: [Double]) -> Double? {
+    let tail = values.suffix(20)
+    guard tail.isEmpty == false else { return nil }
+    return tail.reduce(0, +) / Double(tail.count)
 }
 
 private struct FixedSmartConnectionClock: SmartConnectionClock {

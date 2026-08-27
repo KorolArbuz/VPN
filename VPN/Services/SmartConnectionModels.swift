@@ -209,6 +209,34 @@ nonisolated struct SmartConnectionCandidatePlan: Equatable, Sendable {
     }
 }
 
+nonisolated struct SmartConnectionSessionQualityAggregate: Equatable, Sendable {
+    var latencySum: Double
+    var latencyCount: Int
+    var tailLatencyMilliseconds: Double?
+    var packetLossSum: Double
+    var packetLossCount: Int
+    var tailPacketLossPercent: Double?
+
+    static let empty = SmartConnectionSessionQualityAggregate(
+        latencySum: 0,
+        latencyCount: 0,
+        tailLatencyMilliseconds: nil,
+        packetLossSum: 0,
+        packetLossCount: 0,
+        tailPacketLossPercent: nil
+    )
+
+    var latencyMeanMilliseconds: Double? {
+        guard latencyCount > 0 else { return nil }
+        return latencySum / Double(latencyCount)
+    }
+
+    var packetLossMeanPercent: Double? {
+        guard packetLossCount > 0 else { return nil }
+        return packetLossSum / Double(packetLossCount)
+    }
+}
+
 nonisolated struct SmartConnectionSessionSummary: Equatable, Sendable {
     var additionalSuccessfulSessionSeconds: TimeInterval
     var latencyMilliseconds: Double?
@@ -216,6 +244,10 @@ nonisolated struct SmartConnectionSessionSummary: Equatable, Sendable {
     var sessionEnded: Bool
     var unexpectedDisconnect: Bool
     var sessionID: String?
+    var tailLatencyMilliseconds: Double?
+    var tailPacketLossPercent: Double?
+    var qualityAggregate: SmartConnectionSessionQualityAggregate?
+    var qualityAggregateIsCumulative: Bool
 
     init(
         additionalSuccessfulSessionSeconds: TimeInterval,
@@ -223,7 +255,11 @@ nonisolated struct SmartConnectionSessionSummary: Equatable, Sendable {
         packetLossPercent: Double?,
         sessionEnded: Bool,
         unexpectedDisconnect: Bool,
-        sessionID: String? = nil
+        sessionID: String? = nil,
+        tailLatencyMilliseconds: Double? = nil,
+        tailPacketLossPercent: Double? = nil,
+        qualityAggregate: SmartConnectionSessionQualityAggregate? = nil,
+        qualityAggregateIsCumulative: Bool = false
     ) {
         self.additionalSuccessfulSessionSeconds = additionalSuccessfulSessionSeconds
         self.latencyMilliseconds = latencyMilliseconds
@@ -231,6 +267,10 @@ nonisolated struct SmartConnectionSessionSummary: Equatable, Sendable {
         self.sessionEnded = sessionEnded
         self.unexpectedDisconnect = unexpectedDisconnect
         self.sessionID = sessionID
+        self.tailLatencyMilliseconds = tailLatencyMilliseconds
+        self.tailPacketLossPercent = tailPacketLossPercent
+        self.qualityAggregate = qualityAggregate
+        self.qualityAggregateIsCumulative = qualityAggregateIsCumulative
     }
 
     static let empty = SmartConnectionSessionSummary(

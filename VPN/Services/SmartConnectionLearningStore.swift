@@ -21,8 +21,10 @@ nonisolated struct SmartConnectionStatistics: Codable, Equatable, Sendable {
     var ewmaConnectDurationSeconds: Double?
     var connectDurationSampleCount = 0
     var ewmaLatencyMilliseconds: Double?
+    var ewmaTailLatencyMilliseconds: Double?
     var latencySampleCount = 0
     var ewmaPacketLossPercent: Double?
+    var ewmaTailPacketLossPercent: Double?
     var packetLossSampleCount = 0
 
     var successfulSessionSeconds: TimeInterval = 0
@@ -77,12 +79,24 @@ nonisolated struct SmartConnectionStatistics: Codable, Equatable, Sendable {
             )
             latencySampleCount += 1
         }
+        if summary.sessionEnded, let tailLatency = summary.tailLatencyMilliseconds {
+            ewmaTailLatencyMilliseconds = Self.ewma(
+                previous: ewmaTailLatencyMilliseconds,
+                observation: max(0, tailLatency)
+            )
+        }
         if summary.sessionEnded, let loss = summary.packetLossPercent {
             ewmaPacketLossPercent = Self.ewma(
                 previous: ewmaPacketLossPercent,
                 observation: min(100, max(0, loss))
             )
             packetLossSampleCount += 1
+        }
+        if summary.sessionEnded, let tailLoss = summary.tailPacketLossPercent {
+            ewmaTailPacketLossPercent = Self.ewma(
+                previous: ewmaTailPacketLossPercent,
+                observation: min(100, max(0, tailLoss))
+            )
         }
         if summary.sessionEnded {
             completedSessionCount += 1
@@ -93,6 +107,47 @@ nonisolated struct SmartConnectionStatistics: Codable, Equatable, Sendable {
             lastFailureAt = date
         }
         lastUpdatedAt = date
+    }
+
+    mutating func recordRecoveredPendingQuality(
+        _ record: SmartConnectionPendingQualityRecord
+    ) {
+        successfulSessionSeconds += max(0, record.accumulatedSessionSeconds)
+        if record.latencyCount > 0 {
+            ewmaLatencyMilliseconds = Self.ewma(
+                previous: ewmaLatencyMilliseconds,
+                observation: max(0, record.latencySum) / Double(record.latencyCount)
+            )
+            latencySampleCount += 1
+        }
+        if let tailLatency = record.tailLatencyMilliseconds {
+            ewmaTailLatencyMilliseconds = Self.ewma(
+                previous: ewmaTailLatencyMilliseconds,
+                observation: max(0, tailLatency)
+            )
+        }
+        if record.packetLossCount > 0 {
+            ewmaPacketLossPercent = Self.ewma(
+                previous: ewmaPacketLossPercent,
+                observation: min(
+                    100,
+                    max(0, record.packetLossSum) / Double(record.packetLossCount)
+                )
+            )
+            packetLossSampleCount += 1
+        }
+        if let tailLoss = record.tailPacketLossPercent {
+            ewmaTailPacketLossPercent = Self.ewma(
+                previous: ewmaTailPacketLossPercent,
+                observation: min(100, max(0, tailLoss))
+            )
+        }
+        completedSessionCount += 1
+        if let lastUpdatedAt {
+            self.lastUpdatedAt = max(lastUpdatedAt, record.updatedAt)
+        } else {
+            lastUpdatedAt = record.updatedAt
+        }
     }
 
     private static func ewma(
@@ -132,6 +187,32 @@ nonisolated struct SmartConnectionExplorationRecord: Codable, Equatable, Sendabl
     var attemptedAt: Date
 }
 
+nonisolated struct SmartConnectionPendingQualityRecord: Codable, Equatable, Sendable {
+    var commitKey: String
+    var profileID: UUID
+    var protocolType: VPNProtocol
+    var context: NetworkContext
+    var latencySum: Double
+    var latencyCount: Int
+    var tailLatencyMilliseconds: Double?
+    var packetLossSum: Double
+    var packetLossCount: Int
+    var tailPacketLossPercent: Double?
+    var accumulatedSessionSeconds: TimeInterval
+    var updatedAt: Date
+
+    var qualityAggregate: SmartConnectionSessionQualityAggregate {
+        SmartConnectionSessionQualityAggregate(
+            latencySum: latencySum,
+            latencyCount: latencyCount,
+            tailLatencyMilliseconds: tailLatencyMilliseconds,
+            packetLossSum: packetLossSum,
+            packetLossCount: packetLossCount,
+            tailPacketLossPercent: tailPacketLossPercent
+        )
+    }
+}
+
 nonisolated struct SmartConnectionLearningSnapshot: Codable, Equatable, Sendable {
     static let currentSchemaVersion = 1
 
@@ -139,10 +220,11 @@ nonisolated struct SmartConnectionLearningSnapshot: Codable, Equatable, Sendable
     var contextProfileRecords: [SmartConnectionContextProfileRecord]
     var profileRecords: [SmartConnectionProfileRecord]
     var protocolRecords: [SmartConnectionProtocolRecord]
-    // Optional fields preserve decoding compatibility with Build 7 schema-v1
+    // Optional fields preserve decoding compatibility with Build 7/8 schema-v1
     // files. Empty metadata is normalized back to nil.
     var explorationRecords: [SmartConnectionExplorationRecord]?
     var committedSessionIDs: [String]?
+    var pendingQualityRecords: [SmartConnectionPendingQualityRecord]?
 
     init(
         schemaVersion: Int = Self.currentSchemaVersion,
@@ -150,7 +232,8 @@ nonisolated struct SmartConnectionLearningSnapshot: Codable, Equatable, Sendable
         profileRecords: [SmartConnectionProfileRecord] = [],
         protocolRecords: [SmartConnectionProtocolRecord] = [],
         explorationRecords: [SmartConnectionExplorationRecord] = [],
-        committedSessionIDs: [String] = []
+        committedSessionIDs: [String] = [],
+        pendingQualityRecords: [SmartConnectionPendingQualityRecord] = []
     ) {
         self.schemaVersion = schemaVersion
         self.contextProfileRecords = contextProfileRecords
@@ -158,6 +241,9 @@ nonisolated struct SmartConnectionLearningSnapshot: Codable, Equatable, Sendable
         self.protocolRecords = protocolRecords
         self.explorationRecords = explorationRecords.isEmpty ? nil : explorationRecords
         self.committedSessionIDs = committedSessionIDs.isEmpty ? nil : committedSessionIDs
+        self.pendingQualityRecords = pendingQualityRecords.isEmpty
+            ? nil
+            : pendingQualityRecords
     }
 
     static let empty = SmartConnectionLearningSnapshot()
@@ -242,6 +328,68 @@ nonisolated enum SmartConnectionLearningTransform {
     static let maximumContextsPerProfile = 8
     static let maximumExplorationRecords = 32
     static let maximumCommittedSessionIDs = 128
+    static let maximumPendingQualityRecords = 8
+    static let pendingQualityOrphanAge: TimeInterval = 10 * 60
+
+    static func commitKey(
+        profileID: UUID,
+        protocolType: VPNProtocol,
+        context: NetworkContext,
+        sessionID: String?
+    ) -> String? {
+        guard let sessionID = sessionID?.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        ), sessionID.isEmpty == false else {
+            return nil
+        }
+        return "\(profileID.uuidString)|\(protocolType.rawValue)|\(context.stableKey)|\(sessionID)"
+    }
+
+    static func preparedSnapshot(
+        _ input: SmartConnectionLearningSnapshot,
+        profileInventory: [VPNProfile]?,
+        at date: Date
+    ) -> SmartConnectionLearningSnapshot {
+        var snapshot = sanitized(input, profileInventory: profileInventory)
+        let alreadyCommitted = Set(snapshot.committedSessionIDs ?? [])
+        snapshot.pendingQualityRecords?.removeAll {
+            alreadyCommitted.contains($0.commitKey)
+        }
+
+        let orphanedRecords = (snapshot.pendingQualityRecords ?? [])
+            .filter {
+                date.timeIntervalSince($0.updatedAt) > pendingQualityOrphanAge
+            }
+            .sorted { first, second in
+                if first.updatedAt != second.updatedAt {
+                    return first.updatedAt < second.updatedAt
+                }
+                return first.commitKey < second.commitKey
+            }
+
+        for record in orphanedRecords {
+            guard snapshot.committedSessionIDs?.contains(record.commitKey) != true else {
+                snapshot.pendingQualityRecords?.removeAll {
+                    $0.commitKey == record.commitKey
+                }
+                continue
+            }
+            snapshot = mutateStatistics(
+                snapshot,
+                profileID: record.profileID,
+                protocolType: record.protocolType,
+                context: record.context
+            ) { statistics in
+                statistics.recordRecoveredPendingQuality(record)
+            }
+            snapshot.pendingQualityRecords?.removeAll {
+                $0.commitKey == record.commitKey
+            }
+            appendCommittedSessionID(record.commitKey, to: &snapshot)
+        }
+        boundMetadata(&snapshot)
+        return snapshot
+    }
 
     static func sanitized(
         _ input: SmartConnectionLearningSnapshot,
@@ -269,6 +417,9 @@ nonisolated enum SmartConnectionLearningTransform {
             snapshot.explorationRecords?.removeAll { record in
                 protocolsByProfile[record.profileID] != record.protocolType
             }
+            snapshot.pendingQualityRecords?.removeAll { record in
+                protocolsByProfile[record.profileID] != record.protocolType
+            }
         }
 
         let profileIDs = Set(snapshot.contextProfileRecords.map(\.profileID))
@@ -294,6 +445,9 @@ nonisolated enum SmartConnectionLearningTransform {
             $0.profileID == profileID && $0.protocolType != protocolType
         }
         snapshot.explorationRecords?.removeAll {
+            $0.profileID == profileID && $0.protocolType != protocolType
+        }
+        snapshot.pendingQualityRecords?.removeAll {
             $0.profileID == profileID && $0.protocolType != protocolType
         }
 
@@ -360,23 +514,89 @@ nonisolated enum SmartConnectionLearningTransform {
         context: NetworkContext,
         at date: Date
     ) -> SmartConnectionLearningSnapshot {
-        let normalizedSessionID = summary.sessionID?.trimmingCharacters(
-            in: .whitespacesAndNewlines
-        )
         // Provider IDs are stable within a session. Scope them to the immutable
         // learning identity so two providers reusing the same opaque ID cannot
         // suppress one another. The bounded key list makes finalization
         // idempotent across app restoration without creating raw-sample history.
-        let commitKey = normalizedSessionID.map {
-            "\(profileID.uuidString)|\(protocolType.rawValue)|\(context.stableKey)|\($0)"
-        }
+        let commitKey = commitKey(
+            profileID: profileID,
+            protocolType: protocolType,
+            context: context,
+            sessionID: summary.sessionID
+        )
         if summary.sessionEnded,
-           let normalizedSessionID,
-           normalizedSessionID.isEmpty == false,
            let commitKey,
            input.committedSessionIDs?.contains(commitKey) == true {
             return input
         }
+
+        guard let commitKey else {
+            return mutateStatistics(
+                input,
+                profileID: profileID,
+                protocolType: protocolType,
+                context: context
+            ) { statistics in
+                statistics.recordSessionSummary(summary, at: date)
+            }
+        }
+
+        let currentQuality = normalizedQualityAggregate(from: summary)
+        if summary.sessionEnded == false {
+            var snapshot = sanitized(input, profileInventory: nil)
+            var records = snapshot.pendingQualityRecords ?? []
+            let existing = records.first { $0.commitKey == commitKey }
+            records.removeAll { $0.commitKey == commitKey }
+            let existingQuality = existing?.qualityAggregate ?? .empty
+            let quality = summary.qualityAggregateIsCumulative
+                ? overlayCumulativeQuality(currentQuality, on: existingQuality)
+                : mergeIncrementalQuality(existingQuality, currentQuality)
+            records.append(SmartConnectionPendingQualityRecord(
+                commitKey: commitKey,
+                profileID: profileID,
+                protocolType: protocolType,
+                context: context,
+                latencySum: quality.latencySum,
+                latencyCount: quality.latencyCount,
+                tailLatencyMilliseconds: quality.tailLatencyMilliseconds,
+                packetLossSum: quality.packetLossSum,
+                packetLossCount: quality.packetLossCount,
+                tailPacketLossPercent: quality.tailPacketLossPercent,
+                accumulatedSessionSeconds: max(
+                    0,
+                    (existing?.accumulatedSessionSeconds ?? 0)
+                        + summary.additionalSuccessfulSessionSeconds
+                ),
+                updatedAt: date
+            ))
+            snapshot.pendingQualityRecords = records
+            boundMetadata(&snapshot)
+            return snapshot
+        }
+
+        let pending = input.pendingQualityRecords?.first {
+            $0.commitKey == commitKey
+        }
+        let pendingQuality = pending?.qualityAggregate ?? .empty
+        let mergedQuality = summary.qualityAggregateIsCumulative
+            ? overlayCumulativeQuality(currentQuality, on: pendingQuality)
+            : mergeIncrementalQuality(pendingQuality, currentQuality)
+        let committedSummary = SmartConnectionSessionSummary(
+            additionalSuccessfulSessionSeconds: max(
+                0,
+                (pending?.accumulatedSessionSeconds ?? 0)
+                    + summary.additionalSuccessfulSessionSeconds
+            ),
+            latencyMilliseconds: mergedQuality.latencyMeanMilliseconds,
+            packetLossPercent: mergedQuality.packetLossMeanPercent,
+            sessionEnded: true,
+            unexpectedDisconnect: summary.unexpectedDisconnect,
+            sessionID: summary.sessionID,
+            tailLatencyMilliseconds: mergedQuality.tailLatencyMilliseconds,
+            tailPacketLossPercent: mergedQuality.tailPacketLossPercent,
+            qualityAggregate: mergedQuality,
+            qualityAggregateIsCumulative: true
+        )
 
         var snapshot = mutateStatistics(
             input,
@@ -384,20 +604,99 @@ nonisolated enum SmartConnectionLearningTransform {
             protocolType: protocolType,
             context: context
         ) { statistics in
-            statistics.recordSessionSummary(summary, at: date)
+            statistics.recordSessionSummary(committedSummary, at: date)
         }
-
-        if summary.sessionEnded,
-           let normalizedSessionID,
-           normalizedSessionID.isEmpty == false,
-           let commitKey {
-            var committed = snapshot.committedSessionIDs ?? []
-            committed.removeAll { $0 == commitKey }
-            committed.append(commitKey)
-            snapshot.committedSessionIDs = committed
-        }
+        snapshot.pendingQualityRecords?.removeAll { $0.commitKey == commitKey }
+        appendCommittedSessionID(commitKey, to: &snapshot)
         boundMetadata(&snapshot)
         return snapshot
+    }
+
+    private static func normalizedQualityAggregate(
+        from summary: SmartConnectionSessionSummary
+    ) -> SmartConnectionSessionQualityAggregate {
+        if let quality = summary.qualityAggregate {
+            let latencyCount = max(0, quality.latencyCount)
+            let lossCount = max(0, quality.packetLossCount)
+            return SmartConnectionSessionQualityAggregate(
+                latencySum: latencyCount == 0 ? 0 : max(0, quality.latencySum),
+                latencyCount: latencyCount,
+                tailLatencyMilliseconds: quality.tailLatencyMilliseconds.map {
+                    max(0, $0)
+                },
+                packetLossSum: lossCount == 0
+                    ? 0
+                    : min(Double(lossCount) * 100, max(0, quality.packetLossSum)),
+                packetLossCount: lossCount,
+                tailPacketLossPercent: quality.tailPacketLossPercent.map {
+                    min(100, max(0, $0))
+                }
+            )
+        }
+        return SmartConnectionSessionQualityAggregate(
+            latencySum: summary.latencyMilliseconds.map { max(0, $0) } ?? 0,
+            latencyCount: summary.latencyMilliseconds == nil ? 0 : 1,
+            tailLatencyMilliseconds: summary.tailLatencyMilliseconds.map {
+                max(0, $0)
+            },
+            packetLossSum: summary.packetLossPercent.map {
+                min(100, max(0, $0))
+            } ?? 0,
+            packetLossCount: summary.packetLossPercent == nil ? 0 : 1,
+            tailPacketLossPercent: summary.tailPacketLossPercent.map {
+                min(100, max(0, $0))
+            }
+        )
+    }
+
+    private static func overlayCumulativeQuality(
+        _ current: SmartConnectionSessionQualityAggregate,
+        on pending: SmartConnectionSessionQualityAggregate
+    ) -> SmartConnectionSessionQualityAggregate {
+        SmartConnectionSessionQualityAggregate(
+            latencySum: current.latencyCount > 0
+                ? current.latencySum
+                : pending.latencySum,
+            latencyCount: current.latencyCount > 0
+                ? current.latencyCount
+                : pending.latencyCount,
+            tailLatencyMilliseconds: current.tailLatencyMilliseconds
+                ?? pending.tailLatencyMilliseconds,
+            packetLossSum: current.packetLossCount > 0
+                ? current.packetLossSum
+                : pending.packetLossSum,
+            packetLossCount: current.packetLossCount > 0
+                ? current.packetLossCount
+                : pending.packetLossCount,
+            tailPacketLossPercent: current.tailPacketLossPercent
+                ?? pending.tailPacketLossPercent
+        )
+    }
+
+    private static func mergeIncrementalQuality(
+        _ pending: SmartConnectionSessionQualityAggregate,
+        _ current: SmartConnectionSessionQualityAggregate
+    ) -> SmartConnectionSessionQualityAggregate {
+        SmartConnectionSessionQualityAggregate(
+            latencySum: pending.latencySum + current.latencySum,
+            latencyCount: pending.latencyCount + current.latencyCount,
+            tailLatencyMilliseconds: current.tailLatencyMilliseconds
+                ?? pending.tailLatencyMilliseconds,
+            packetLossSum: pending.packetLossSum + current.packetLossSum,
+            packetLossCount: pending.packetLossCount + current.packetLossCount,
+            tailPacketLossPercent: current.tailPacketLossPercent
+                ?? pending.tailPacketLossPercent
+        )
+    }
+
+    private static func appendCommittedSessionID(
+        _ commitKey: String,
+        to snapshot: inout SmartConnectionLearningSnapshot
+    ) {
+        var committed = snapshot.committedSessionIDs ?? []
+        committed.removeAll { $0 == commitKey }
+        committed.append(commitKey)
+        snapshot.committedSessionIDs = committed
     }
 
     static func recordExploration(
@@ -457,6 +756,16 @@ nonisolated enum SmartConnectionLearningTransform {
             sessionIDs = Array(sessionIDs.suffix(maximumCommittedSessionIDs))
             snapshot.committedSessionIDs = sessionIDs.isEmpty ? nil : sessionIDs
         }
+        if var pending = snapshot.pendingQualityRecords {
+            pending.sort { first, second in
+                if first.updatedAt != second.updatedAt {
+                    return first.updatedAt > second.updatedAt
+                }
+                return first.commitKey < second.commitKey
+            }
+            pending = Array(pending.prefix(maximumPendingQualityRecords))
+            snapshot.pendingQualityRecords = pending.isEmpty ? nil : pending
+        }
     }
 }
 
@@ -491,6 +800,7 @@ actor FileSmartConnectionLearningStore: SmartConnectionLearningStoring {
     private let primaryFileURL: URL
     private let legacyFileURL: URL?
     private let fileManager: FileManager
+    private let clock: any SmartConnectionClock
     private let decoder: JSONDecoder
     private let encoder: JSONEncoder
     private var cachedSnapshot: SmartConnectionLearningSnapshot?
@@ -499,9 +809,11 @@ actor FileSmartConnectionLearningStore: SmartConnectionLearningStoring {
     init(
         fileURL: URL? = nil,
         legacyFileURL: URL? = nil,
-        fileManager: FileManager = .default
+        fileManager: FileManager = .default,
+        clock: any SmartConnectionClock = SystemSmartConnectionClock()
     ) {
         self.fileManager = fileManager
+        self.clock = clock
         if let fileURL {
             primaryFileURL = fileURL
             self.legacyFileURL = legacyFileURL
@@ -537,9 +849,10 @@ actor FileSmartConnectionLearningStore: SmartConnectionLearningStoring {
 
     func snapshot(for profiles: [VPNProfile]?) async -> SmartConnectionLearningSnapshot {
         let original = loadSnapshot()
-        let snapshot = SmartConnectionLearningTransform.sanitized(
+        let snapshot = SmartConnectionLearningTransform.preparedSnapshot(
             original,
-            profileInventory: profiles
+            profileInventory: profiles,
+            at: clock.now()
         )
         cachedSnapshot = snapshot
         if snapshot != original {
@@ -739,8 +1052,13 @@ actor FileSmartConnectionLearningStore: SmartConnectionLearningStoring {
 
 actor InMemorySmartConnectionLearningStore: SmartConnectionLearningStoring {
     private var value: SmartConnectionLearningSnapshot
+    private let clock: any SmartConnectionClock
 
-    init(snapshot: SmartConnectionLearningSnapshot = .empty) {
+    init(
+        snapshot: SmartConnectionLearningSnapshot = .empty,
+        clock: any SmartConnectionClock = SystemSmartConnectionClock()
+    ) {
+        self.clock = clock
         value = SmartConnectionLearningTransform.sanitized(
             snapshot,
             profileInventory: nil
@@ -748,9 +1066,10 @@ actor InMemorySmartConnectionLearningStore: SmartConnectionLearningStoring {
     }
 
     func snapshot(for profiles: [VPNProfile]?) async -> SmartConnectionLearningSnapshot {
-        value = SmartConnectionLearningTransform.sanitized(
+        value = SmartConnectionLearningTransform.preparedSnapshot(
             value,
-            profileInventory: profiles
+            profileInventory: profiles,
+            at: clock.now()
         )
         return value
     }
