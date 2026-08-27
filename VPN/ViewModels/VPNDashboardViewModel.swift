@@ -42,6 +42,44 @@ private enum SmartConnectionAttemptError: LocalizedError {
     }
 }
 
+private struct SmartConnectionSessionQualityAccumulator {
+    private(set) var latencyMeanMilliseconds: Double?
+    private(set) var latencyValidSampleCount = 0
+    private(set) var packetLossMeanPercent: Double?
+    private(set) var packetLossValidSampleCount = 0
+
+    mutating func record(
+        latencyMilliseconds: Double?,
+        packetLossPercent: Double?
+    ) {
+        if let latencyMilliseconds {
+            latencyValidSampleCount += 1
+            latencyMeanMilliseconds = Self.incrementalMean(
+                previous: latencyMeanMilliseconds,
+                observation: max(0, latencyMilliseconds),
+                count: latencyValidSampleCount
+            )
+        }
+        if let packetLossPercent {
+            packetLossValidSampleCount += 1
+            packetLossMeanPercent = Self.incrementalMean(
+                previous: packetLossMeanPercent,
+                observation: min(100, max(0, packetLossPercent)),
+                count: packetLossValidSampleCount
+            )
+        }
+    }
+
+    private static func incrementalMean(
+        previous: Double?,
+        observation: Double,
+        count: Int
+    ) -> Double {
+        guard let previous, count > 1 else { return observation }
+        return previous + (observation - previous) / Double(count)
+    }
+}
+
 private struct SmartConnectionLearningSession {
     var profileID: UUID
     var protocolType: VPNProtocol
@@ -50,6 +88,8 @@ private struct SmartConnectionLearningSession {
     var telemetrySessionID: String?
     var checkpointRuntimeSeconds: TimeInterval?
     var countsInitialRuntimeFromZero: Bool
+    var qualityAccumulator = SmartConnectionSessionQualityAccumulator()
+    var anomalyDetector = SmartConnectionAnomalyDetector()
 }
 
 @MainActor
@@ -72,18 +112,22 @@ final class VPNDashboardViewModel {
     private let networkContextSource: any SmartConnectionNetworkContextProviding
     private let candidatePlanner: SmartConnectionCandidatePlanner
     private let smartConnectionClock: any SmartConnectionClock
+    private let networkContextDebounceSleeper: any SmartConnectionDebounceSleeping
+    private let networkContextDebounceDuration: Duration
     private let connectionActionHapticFeedback: any ConnectionActionHapticFeedbackProviding
 
     private var activeOperationID: UUID?
     private var stateObservationTask: Task<Void, Never>?
     private var telemetryObservationTask: Task<Void, Never>?
     private var networkContextObservationTask: Task<Void, Never>?
+    private var networkContextPromotionTask: Task<Void, Never>?
     private var saveOperationID: UUID?
     private var inFlightImportedCredentialReferences = Set<String>()
     private var subscriptionOperationID: UUID?
     private var refreshingSubscriptionID: UUID?
     private var discardedRefreshSubscriptionID: UUID?
     private var isInitialLoadInFlight = false
+    private var hasLoadedProfiles = false
     private var learningSession: SmartConnectionLearningSession?
     private var isIntentionalDisconnectInFlight = false
 
@@ -102,6 +146,7 @@ final class VPNDashboardViewModel {
     )
     private(set) var currentNetworkContext: NetworkContext = .unknown
     private(set) var smartConnectionLearning: SmartConnectionLearningSnapshot = .empty
+    private(set) var smartConnectionQualityState: SmartConnectionQualityState = .normal
     var effectiveProtocol: VPNProtocol?
     var servers: [VPNServer] = []
     var profiles: [VPNProfile] = []
@@ -142,6 +187,9 @@ final class VPNDashboardViewModel {
             SmartConnectionCandidatePlanner(),
         smartConnectionClock: any SmartConnectionClock =
             SystemSmartConnectionClock(),
+        networkContextDebounceSleeper: any SmartConnectionDebounceSleeping =
+            TaskSmartConnectionDebounceSleeper(),
+        networkContextDebounceDuration: Duration = .milliseconds(2_500),
         connectionActionHapticFeedback: any ConnectionActionHapticFeedbackProviding =
             SystemConnectionActionHapticFeedback()
     ) {
@@ -164,10 +212,11 @@ final class VPNDashboardViewModel {
         self.networkContextSource = networkContextSource
         self.candidatePlanner = candidatePlanner
         self.smartConnectionClock = smartConnectionClock
+        self.networkContextDebounceSleeper = networkContextDebounceSleeper
+        self.networkContextDebounceDuration = networkContextDebounceDuration
         self.connectionActionHapticFeedback = connectionActionHapticFeedback
         observeConnectionState()
         observeConnectionTelemetry()
-        observeNetworkContext()
     }
 
     var selectedProfile: VPNProfile? {
@@ -274,6 +323,7 @@ final class VPNDashboardViewModel {
             // remain usable even if that optional source is unavailable.
             servers = (try? await serverProvider.fetchServers()) ?? []
             profiles = try await profileRepository.profiles()
+            hasLoadedProfiles = true
             activeProfileID = await activeProfileStore.activeProfileID()
             clearMissingOrInvalidActiveProfileIfNeeded()
             manualSelectedProfileID =
@@ -287,9 +337,10 @@ final class VPNDashboardViewModel {
                 )
             }
             clearMissingOrInvalidManualProfileIfNeeded()
-            subscriptions = try await subscriptionRepository.subscriptions()
             currentNetworkContext = await networkContextSource.currentNetworkContext()
-            await refreshSmartConnectionRecommendation()
+            await refreshSmartConnectionRecommendation(context: currentNetworkContext)
+            observeNetworkContext()
+            subscriptions = try await subscriptionRepository.subscriptions()
             refreshEffectiveProtocol()
             let authoritativeConnection =
                 await connectionManager.refreshAuthoritativeConnection()
@@ -1434,7 +1485,6 @@ final class VPNDashboardViewModel {
             throw SmartConnectionAttemptError.profileUnavailable
         }
 
-        currentNetworkContext = await networkContextSource.currentNetworkContext()
         try await attemptConnection(
             profile: profile,
             context: currentNetworkContext,
@@ -1467,6 +1517,15 @@ final class VPNDashboardViewModel {
             }
 
             currentAutomaticAttemptProfileID = profileID
+            if plan.explorationCandidateID == profileID {
+                await learningStore.recordExploration(
+                    profileID: profile.id,
+                    protocolType: profile.protocolType,
+                    context: plan.context,
+                    at: smartConnectionClock.now()
+                )
+                smartConnectionLearning = await learningStore.snapshot(for: profiles)
+            }
             do {
                 try await attemptConnection(
                     profile: profile,
@@ -1585,12 +1644,10 @@ final class VPNDashboardViewModel {
     private func refreshSmartConnectionRecommendation(
         context suppliedContext: NetworkContext? = nil
     ) async {
-        let context: NetworkContext
-        if let suppliedContext {
-            context = suppliedContext
-        } else {
-            context = await networkContextSource.currentNetworkContext()
-        }
+        // Lifecycle defense: an unknown inventory is not an authoritative
+        // empty inventory and cannot trigger persistent deletion pruning.
+        guard hasLoadedProfiles else { return }
+        let context = suppliedContext ?? currentNetworkContext
         currentNetworkContext = context
         let learning = await learningStore.snapshot(for: profiles)
         smartConnectionLearning = learning
@@ -1677,19 +1734,45 @@ final class VPNDashboardViewModel {
     }
 
     private func observeNetworkContext() {
+        guard hasLoadedProfiles, networkContextObservationTask == nil else {
+            return
+        }
         networkContextObservationTask = Task {
             @MainActor [weak self, networkContextSource] in
             for await context in networkContextSource.networkContextUpdates() {
                 guard let self else { return }
-                guard self.currentNetworkContext != context else { continue }
-                self.currentNetworkContext = context
-                guard self.activeOperationID == nil,
-                      self.connectionState == .disconnected
-                        || self.connectionState == .failed else {
-                    continue
-                }
-                await self.refreshSmartConnectionRecommendation(context: context)
+                self.scheduleNetworkContextPromotion(context)
             }
+        }
+    }
+
+    private func scheduleNetworkContextPromotion(_ context: NetworkContext) {
+        networkContextPromotionTask?.cancel()
+        networkContextPromotionTask = nil
+        guard currentNetworkContext != context else {
+            // Returning to the authoritative context is still a newer event.
+            // It cancels a pending transient promotion without starting a timer.
+            return
+        }
+        networkContextPromotionTask = Task {
+            @MainActor [weak self, networkContextDebounceSleeper] in
+            guard let self else { return }
+            do {
+                try await networkContextDebounceSleeper.sleep(
+                    for: self.networkContextDebounceDuration
+                )
+                try Task.checkCancellation()
+            } catch {
+                return
+            }
+            guard self.currentNetworkContext != context else { return }
+            self.currentNetworkContext = context
+            guard self.activeOperationID == nil,
+                  self.connectionState == .disconnected
+                    || self.connectionState == .failed else {
+                return
+            }
+            await self.refreshSmartConnectionRecommendation(context: context)
         }
     }
 
@@ -1707,11 +1790,35 @@ final class VPNDashboardViewModel {
             session.checkpointRuntimeSeconds =
                 session.countsInitialRuntimeFromZero ? 0 : runtimeSeconds
             session.countsInitialRuntimeFromZero = false
-            learningSession = session
+            session.qualityAccumulator = SmartConnectionSessionQualityAccumulator()
+            session.anomalyDetector = SmartConnectionAnomalyDetector()
+            smartConnectionQualityState = .normal
         }
 
-        guard session.telemetrySessionID == snapshot.sessionID,
-              let checkpointRuntimeSeconds = session.checkpointRuntimeSeconds,
+        guard session.telemetrySessionID != nil,
+              session.telemetrySessionID == snapshot.sessionID else {
+            return
+        }
+
+        let latency = snapshot.latencyMilliseconds.map(Double.init)
+        session.qualityAccumulator.record(
+            latencyMilliseconds: latency,
+            packetLossPercent: snapshot.packetLossPercent
+        )
+        let baseline = smartConnectionLearning.contextStatistics(
+            profileID: session.profileID,
+            protocolType: session.protocolType,
+            context: session.context
+        )
+        smartConnectionQualityState = session.anomalyDetector.observe(
+            latencyMilliseconds: latency,
+            packetLossPercent: snapshot.packetLossPercent,
+            baselineLatencyMilliseconds: baseline.ewmaLatencyMilliseconds,
+            baselinePacketLossPercent: baseline.ewmaPacketLossPercent
+        )
+        learningSession = session
+
+        guard let checkpointRuntimeSeconds = session.checkpointRuntimeSeconds,
               runtimeSeconds - checkpointRuntimeSeconds >= 60 else {
             return
         }
@@ -1721,10 +1828,11 @@ final class VPNDashboardViewModel {
                 0,
                 runtimeSeconds - checkpointRuntimeSeconds
             ),
-            latencyMilliseconds: snapshot.latencyMilliseconds.map(Double.init),
-            packetLossPercent: snapshot.packetLossPercent,
+            latencyMilliseconds: nil,
+            packetLossPercent: nil,
             sessionEnded: false,
-            unexpectedDisconnect: false
+            unexpectedDisconnect: false,
+            sessionID: session.telemetrySessionID
         )
         session.checkpointRuntimeSeconds = runtimeSeconds
         learningSession = session
@@ -1739,11 +1847,21 @@ final class VPNDashboardViewModel {
     }
 
     private func finishLearningSession(unexpectedDisconnect: Bool) async {
-        guard let session = learningSession else { return }
+        guard var session = learningSession else { return }
         learningSession = nil
 
         let telemetryMatches = session.telemetrySessionID != nil
             && session.telemetrySessionID == connectionTelemetry.sessionID
+        if telemetryMatches {
+            session.qualityAccumulator.record(
+                latencyMilliseconds: session.qualityAccumulator.latencyValidSampleCount == 0
+                    ? connectionTelemetry.latencyMilliseconds.map(Double.init)
+                    : nil,
+                packetLossPercent: session.qualityAccumulator.packetLossValidSampleCount == 0
+                    ? connectionTelemetry.packetLossPercent
+                    : nil
+            )
+        }
         let runtimeSeconds = telemetryMatches
             ? connectionTelemetry.runtimeSeconds
             : nil
@@ -1753,14 +1871,11 @@ final class VPNDashboardViewModel {
                 0,
                 (runtimeSeconds ?? checkpoint) - checkpoint
             ),
-            latencyMilliseconds: telemetryMatches
-                ? connectionTelemetry.latencyMilliseconds.map(Double.init)
-                : nil,
-            packetLossPercent: telemetryMatches
-                ? connectionTelemetry.packetLossPercent
-                : nil,
+            latencyMilliseconds: session.qualityAccumulator.latencyMeanMilliseconds,
+            packetLossPercent: session.qualityAccumulator.packetLossMeanPercent,
             sessionEnded: true,
-            unexpectedDisconnect: unexpectedDisconnect
+            unexpectedDisconnect: unexpectedDisconnect,
+            sessionID: session.telemetrySessionID
         )
         await learningStore.recordSessionSummary(
             summary,
@@ -1770,6 +1885,7 @@ final class VPNDashboardViewModel {
             at: smartConnectionClock.now()
         )
         smartConnectionLearning = await learningStore.snapshot(for: profiles)
+        smartConnectionQualityState = .normal
     }
 
     private func applyAuthoritativeConnection(
@@ -1814,12 +1930,10 @@ final class VPNDashboardViewModel {
            learningSession == nil,
            let restoredProfileID = authoritativeConnection.profileID,
            let profile = profiles.first(where: { $0.id == restoredProfileID }) {
-            let context = await networkContextSource.currentNetworkContext()
-            currentNetworkContext = context
             learningSession = SmartConnectionLearningSession(
                 profileID: profile.id,
                 protocolType: profile.protocolType,
-                context: context,
+                context: currentNetworkContext,
                 connectedAt: smartConnectionClock.now(),
                 telemetrySessionID: nil,
                 checkpointRuntimeSeconds: nil,

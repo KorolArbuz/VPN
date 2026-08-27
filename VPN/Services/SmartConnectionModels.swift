@@ -29,6 +29,17 @@ nonisolated enum ConnectionSelectionMode: String, CaseIterable, Codable, Identif
     }
 }
 
+/// Build 8 has one production Automatic-selection authority. The Rust
+/// ConnectionScorer/SelectionPolicy stack remains diagnostic-only.
+///
+/// TODO: A future authority migration must choose exactly one end state:
+/// A. delete the unused Rust selection stack, or
+/// B. prove Swift/Rust parity, move production authority to kvn-core, and then
+///    remove the Swift scorer. A permanent dual-authority design is forbidden.
+nonisolated enum SmartConnectionSelectionAuthorityContract {
+    static let production = "swift-smart-connection-planner"
+}
+
 nonisolated struct ConnectionSelectionPresentation: Equatable, Sendable {
     var mode: ConnectionSelectionMode
     var selectableProfileIDs: [UUID]
@@ -180,6 +191,7 @@ nonisolated struct SmartConnectionCandidatePlan: Equatable, Sendable {
     var context: NetworkContext
     var maximumAttempts: Int
     var rankedCandidates: [SmartConnectionRankedCandidate]
+    var explorationCandidateID: UUID? = nil
 
     var candidateIDs: [UUID] {
         rankedCandidates.prefix(maximumAttempts).map(\.profileID)
@@ -191,7 +203,8 @@ nonisolated struct SmartConnectionCandidatePlan: Equatable, Sendable {
             createdAt: now,
             context: context,
             maximumAttempts: 0,
-            rankedCandidates: []
+            rankedCandidates: [],
+            explorationCandidateID: nil
         )
     }
 }
@@ -202,14 +215,94 @@ nonisolated struct SmartConnectionSessionSummary: Equatable, Sendable {
     var packetLossPercent: Double?
     var sessionEnded: Bool
     var unexpectedDisconnect: Bool
+    var sessionID: String?
+
+    init(
+        additionalSuccessfulSessionSeconds: TimeInterval,
+        latencyMilliseconds: Double?,
+        packetLossPercent: Double?,
+        sessionEnded: Bool,
+        unexpectedDisconnect: Bool,
+        sessionID: String? = nil
+    ) {
+        self.additionalSuccessfulSessionSeconds = additionalSuccessfulSessionSeconds
+        self.latencyMilliseconds = latencyMilliseconds
+        self.packetLossPercent = packetLossPercent
+        self.sessionEnded = sessionEnded
+        self.unexpectedDisconnect = unexpectedDisconnect
+        self.sessionID = sessionID
+    }
 
     static let empty = SmartConnectionSessionSummary(
         additionalSuccessfulSessionSeconds: 0,
         latencyMilliseconds: nil,
         packetLossPercent: nil,
         sessionEnded: false,
-        unexpectedDisconnect: false
+        unexpectedDisconnect: false,
+        sessionID: nil
     )
+}
+
+nonisolated protocol SmartConnectionDebounceSleeping: Sendable {
+    func sleep(for duration: Duration) async throws
+}
+
+nonisolated struct TaskSmartConnectionDebounceSleeper: SmartConnectionDebounceSleeping {
+    func sleep(for duration: Duration) async throws {
+        try await Task.sleep(for: duration)
+    }
+}
+
+nonisolated enum SmartConnectionQualityState: String, Equatable, Sendable {
+    case normal
+    case degraded
+}
+
+/// Passive diagnostics only. A measurement is anomalous when latency is both
+/// at least 2x and 100 ms above its learned EWMA, or loss is both at least 2x
+/// and 5 percentage points above its learned EWMA. Two consecutive anomalous
+/// measurements are required; this type has no connection-control capability.
+nonisolated struct SmartConnectionAnomalyDetector: Equatable, Sendable {
+    private(set) var consecutiveAnomalies = 0
+    private(set) var state: SmartConnectionQualityState = .normal
+
+    mutating func observe(
+        latencyMilliseconds: Double?,
+        packetLossPercent: Double?,
+        baselineLatencyMilliseconds: Double?,
+        baselinePacketLossPercent: Double?
+    ) -> SmartConnectionQualityState {
+        let latencyIsAnomalous = Self.exceedsBaseline(
+            observation: latencyMilliseconds,
+            baseline: baselineLatencyMilliseconds,
+            minimumAbsoluteIncrease: 100
+        )
+        let lossIsAnomalous = Self.exceedsBaseline(
+            observation: packetLossPercent,
+            baseline: baselinePacketLossPercent,
+            minimumAbsoluteIncrease: 5
+        )
+
+        if latencyIsAnomalous || lossIsAnomalous {
+            consecutiveAnomalies += 1
+        } else {
+            consecutiveAnomalies = 0
+        }
+        state = consecutiveAnomalies >= 2 ? .degraded : .normal
+        return state
+    }
+
+    private static func exceedsBaseline(
+        observation: Double?,
+        baseline: Double?,
+        minimumAbsoluteIncrease: Double
+    ) -> Bool {
+        guard let observation, let baseline, baseline >= 0 else {
+            return false
+        }
+        return observation >= baseline * 2
+            && observation >= baseline + minimumAbsoluteIncrease
+    }
 }
 
 nonisolated protocol SmartConnectionClock: Sendable {

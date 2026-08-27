@@ -146,16 +146,22 @@ nonisolated struct SmartConnectionScoreCalculator: Sendable {
         learning: SmartConnectionLearningSnapshot,
         now: Date
     ) -> Bool {
-        let statistics = learning.contextStatistics(
+        let contextStatistics = learning.contextStatistics(
             profileID: profile.id,
             protocolType: profile.protocolType,
             context: context
         )
-        guard statistics.consecutiveFailures > 0,
-              let lastFailureAt = statistics.lastFailureAt else {
-            return false
+        let profileStatistics = learning.profileStatistics(
+            profileID: profile.id,
+            protocolType: profile.protocolType
+        )
+        return [contextStatistics, profileStatistics].contains { statistics in
+            guard statistics.consecutiveFailures > 0,
+                  let lastFailureAt = statistics.lastFailureAt else {
+                return false
+            }
+            return now.timeIntervalSince(lastFailureAt) < 6 * 60 * 60
         }
-        return now.timeIntervalSince(lastFailureAt) < 6 * 60 * 60
     }
 
     /// 100 at <= 50 ms, linearly saturating to 0 at >= 1,000 ms.
@@ -362,11 +368,14 @@ nonisolated struct SmartConnectionScoreCalculator: Sendable {
 }
 
 nonisolated struct SmartConnectionCandidatePlanner: Sendable {
+    static let explorationCooldown: TimeInterval = 24 * 60 * 60
+
     private let scoreCalculator: SmartConnectionScoreCalculator
     private let maximumAttempts: Int
-    private let explorationEligibilityDistance = 8.0
-    private let maximumExplorationBonus = 5.0
-    private let fullContextConfidenceSamples = 8.0
+    private let explorationContextSampleTarget = 2.0
+    private let explorationProfileSampleTarget = 2.0
+    private let explorationProtocolSampleTarget = 4.0
+    private let establishedWinnerMinimumSamples = 4
 
     init(
         scoreCalculator: SmartConnectionScoreCalculator =
@@ -396,50 +405,10 @@ nonisolated struct SmartConnectionCandidatePlanner: Sendable {
                 now: now
             )
         }
-        let bestExploitationScore = exploitationCandidates
-            .map(\.breakdown.effectiveScore)
-            .max() ?? 0
         let profilesByID = Dictionary(
             uniqueKeysWithValues: eligibleProfiles.map { ($0.id, $0) }
         )
-
-        let exploredCandidates = exploitationCandidates.map { candidate in
-            guard let profile = profilesByID[candidate.profileID],
-                  candidate.breakdown.effectiveScore
-                    >= bestExploitationScore - explorationEligibilityDistance,
-                  scoreCalculator.isUnderFailureCooldown(
-                    profile: profile,
-                    context: context,
-                    learning: learning,
-                    now: now
-                  ) == false else {
-                return candidate
-            }
-
-            let effectiveSamples = scoreCalculator.effectiveContextAttemptCount(
-                profile: profile,
-                context: context,
-                learning: learning,
-                now: now
-            )
-            let uncertainty = max(
-                0,
-                1 - min(1, effectiveSamples / fullContextConfidenceSamples)
-            )
-            let bonus = min(
-                maximumExplorationBonus,
-                maximumExplorationBonus * uncertainty
-            )
-            return scoreCalculator.score(
-                profile: profile,
-                context: context,
-                learning: learning,
-                now: now,
-                explorationBonus: bonus
-            )
-        }
-
-        let ranked = exploredCandidates.sorted { first, second in
+        var ranked = exploitationCandidates.sorted { first, second in
             if first.breakdown.effectiveScore != second.breakdown.effectiveScore {
                 return first.breakdown.effectiveScore
                     > second.breakdown.effectiveScore
@@ -450,13 +419,111 @@ nonisolated struct SmartConnectionCandidatePlanner: Sendable {
             return first.profileID.uuidString < second.profileID.uuidString
         }
 
+        // Exploration is an explicit, deterministic slot rather than a score
+        // bonus gated by proximity to the winner. It is available only when a
+        // winner has real evidence, at most once per coarse context per 24h,
+        // and only for candidates with fewer than two context/profile samples.
+        let explorationCandidateID = explorationCandidateID(
+            exploitationRanking: ranked,
+            profilesByID: profilesByID,
+            context: context,
+            learning: learning,
+            now: now
+        )
+        if let explorationCandidateID,
+           let index = ranked.firstIndex(where: {
+               $0.profileID == explorationCandidateID
+           }) {
+            let candidate = ranked.remove(at: index)
+            ranked.insert(candidate, at: 0)
+        }
+
         return SmartConnectionCandidatePlan(
             id: UUID(),
             createdAt: now,
             context: context,
             maximumAttempts: min(maximumAttempts, ranked.count),
-            rankedCandidates: ranked
+            rankedCandidates: ranked,
+            explorationCandidateID: explorationCandidateID
         )
+    }
+
+    private func explorationCandidateID(
+        exploitationRanking: [SmartConnectionRankedCandidate],
+        profilesByID: [UUID: VPNProfile],
+        context: NetworkContext,
+        learning: SmartConnectionLearningSnapshot,
+        now: Date
+    ) -> UUID? {
+        guard exploitationRanking.count > 1,
+              let winner = exploitationRanking.first,
+              max(
+                winner.contextAttemptCount,
+                learning.profileStatistics(
+                    profileID: winner.profileID,
+                    protocolType: winner.protocolType
+                ).attemptCount
+              ) >= establishedWinnerMinimumSamples else {
+            return nil
+        }
+        if let lastExplorationAt = learning.lastExplorationAt(context: context),
+           now.timeIntervalSince(lastExplorationAt) < Self.explorationCooldown {
+            return nil
+        }
+
+        let candidates: [(profileID: UUID, priority: Double)] =
+            exploitationRanking.compactMap { candidate in
+                guard candidate.profileID != winner.profileID,
+                      let profile = profilesByID[candidate.profileID],
+                      scoreCalculator.isUnderFailureCooldown(
+                        profile: profile,
+                        context: context,
+                        learning: learning,
+                        now: now
+                      ) == false else {
+                    return nil
+                }
+
+                let contextSamples = scoreCalculator.effectiveContextAttemptCount(
+                    profile: profile,
+                    context: context,
+                    learning: learning,
+                    now: now
+                )
+                let profileSamples = Double(learning.profileStatistics(
+                    profileID: profile.id,
+                    protocolType: profile.protocolType
+                ).attemptCount)
+                guard contextSamples < explorationContextSampleTarget,
+                      profileSamples < explorationProfileSampleTarget else {
+                    return nil
+                }
+                let protocolSamples = Double(learning.protocolStatistics(
+                    profile.protocolType
+                ).attemptCount)
+                let priority = uncertainty(
+                    samples: contextSamples,
+                    target: explorationContextSampleTarget
+                ) * 0.6 + uncertainty(
+                    samples: profileSamples,
+                    target: explorationProfileSampleTarget
+                ) * 0.3 + uncertainty(
+                    samples: protocolSamples,
+                    target: explorationProtocolSampleTarget
+                ) * 0.1
+                return (profile.id, priority)
+            }
+
+        return candidates.sorted { first, second in
+            if first.priority != second.priority {
+                return first.priority > second.priority
+            }
+            return first.profileID.uuidString < second.profileID.uuidString
+        }.first?.profileID
+    }
+
+    private func uncertainty(samples: Double, target: Double) -> Double {
+        max(0, 1 - min(1, samples / target))
     }
 
     static func isEligible(_ profile: VPNProfile) -> Bool {

@@ -1,0 +1,52 @@
+BUILD 8 — Smart correctness
+──────────────────────────
+startup race
+test-store parity
+session-scaled metrics
+exploration correction
+App Group learning store
+NetworkContext debounce
+authority contract Swift/Rust
+HY2 regression audit
+
+BUILD 9 — Network intelligence
+──────────────────────────────
+NetworkContext v2
+ASN / safe network identity
+V1 → V2 hierarchical prior
+Wi-Fi ↔ cellular handoff hardening
+
+BUILD 10 — Protocol viability
+─────────────────────────────
+protocol-aware Xray probe
+HY2/WG semantics
+direct reachability ≠ protocol health
+anomaly detector (detect only)
+
+BUILD 11 — Optimization
+───────────────────────
+startup latency profiling
+battery
+manager churn
+memory/leaks
+50× reconnect
+long sessions
+
+→ TESTFLIGHT WIDER ROLLOUT
+
+параллельно:
+AWG Management API
+config versioning
+remote update/rollback
+remote feature flags
+support tooling
+
+потом:
+kvn-core authority migration
+On-Demand
+history/favorites
+UI polish
+
+самый конец:
+Widget
+Dynamic Island / Live Activity

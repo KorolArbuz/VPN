@@ -208,6 +208,104 @@ struct SmartConnectionNetworkContextTests {
         #expect(await manager.disconnectCallCount() == 0)
         #expect(await manager.attemptedProfileIDs() == [profile.id])
     }
+
+    @Test
+    @MainActor
+    func initialContextIsAvailableWithoutDebounceDelay() async throws {
+        let sleeper = ControlledSmartConnectionDebounceSleeper()
+        let harness = try await makeSmartHarness(
+            profiles: [makeSmartProfile(index: 1)],
+            debounceSleeper: sleeper,
+            debounceDuration: .seconds(3)
+        )
+
+        #expect(harness.viewModel.currentNetworkContext == smartWiFiContext)
+        #expect(await sleeper.pendingCount() == 0)
+    }
+
+    @Test
+    @MainActor
+    func changedContextPromotesOnlyAfterDebounce() async throws {
+        let sleeper = ControlledSmartConnectionDebounceSleeper()
+        let source = MutableSmartNetworkContextSource(context: smartWiFiContext)
+        let haptic = RecordingSmartConnectionHaptic()
+        let harness = try await makeSmartHarness(
+            profiles: [makeSmartProfile(index: 1)],
+            networkSource: source,
+            haptic: haptic,
+            debounceSleeper: sleeper,
+            debounceDuration: .seconds(3)
+        )
+
+        await source.set(smartCellularContext)
+        let waiting = await eventually { await sleeper.pendingCount() == 1 }
+        #expect(waiting)
+        #expect(harness.viewModel.currentNetworkContext == smartWiFiContext)
+
+        await sleeper.releaseAll()
+        let promoted = await eventually {
+            harness.viewModel.currentNetworkContext == smartCellularContext
+        }
+        #expect(promoted)
+        #expect(haptic.callCount == 0)
+    }
+
+    @Test
+    @MainActor
+    func newerContextCancelsPendingPromotion() async throws {
+        let sleeper = ControlledSmartConnectionDebounceSleeper()
+        let source = MutableSmartNetworkContextSource(context: smartWiFiContext)
+        let harness = try await makeSmartHarness(
+            profiles: [makeSmartProfile(index: 1)],
+            networkSource: source,
+            debounceSleeper: sleeper,
+            debounceDuration: .seconds(3)
+        )
+
+        await source.set(smartCellularContext)
+        #expect(await eventually { await sleeper.pendingCount() == 1 })
+        await source.set(smartWiredContext)
+        #expect(await eventually {
+            let calls = await sleeper.sleepCallCount()
+            let pending = await sleeper.pendingCount()
+            return calls == 2 && pending == 1
+        })
+        #expect(harness.viewModel.currentNetworkContext == smartWiFiContext)
+
+        await sleeper.releaseAll()
+        let promoted = await eventually {
+            harness.viewModel.currentNetworkContext == smartWiredContext
+        }
+        #expect(promoted)
+        #expect(harness.viewModel.currentNetworkContext != smartCellularContext)
+    }
+
+    @Test
+    @MainActor
+    func returnToAuthoritativeContextCancelsPendingPromotion() async throws {
+        let sleeper = ControlledSmartConnectionDebounceSleeper()
+        let source = MutableSmartNetworkContextSource(context: smartWiFiContext)
+        let harness = try await makeSmartHarness(
+            profiles: [makeSmartProfile(index: 1)],
+            networkSource: source,
+            debounceSleeper: sleeper,
+            debounceDuration: .seconds(3)
+        )
+
+        await source.set(smartCellularContext)
+        #expect(await eventually { await sleeper.pendingCount() == 1 })
+
+        await source.set(smartWiFiContext)
+        #expect(await eventually {
+            let calls = await sleeper.sleepCallCount()
+            let pending = await sleeper.pendingCount()
+            return calls == 1 && pending == 0
+        })
+
+        await sleeper.releaseAll()
+        await Task.yield()
+        #expect(harness.viewModel.currentNetworkContext == smartWiFiContext)
+    }
 }
 
 @Suite(.serialized)
@@ -484,6 +582,344 @@ struct SmartConnectionLearningStoreTests {
         #expect(persisted.contains("providerConfiguration") == false)
         #expect(persisted.contains("subscriptionURI") == false)
     }
+
+    @Test
+    func notLoadedInventoryRetainsLearningButLoadedEmptyPrunesIt() async throws {
+        let profile = makeSmartProfile(index: 1)
+        let seed = snapshot(entries: [
+            (profile, smartStatistics(attempts: 4, successes: 4))
+        ])
+        let fileURL = temporaryLearningFileURL()
+        defer { try? FileManager.default.removeItem(at: fileURL) }
+        try writeLearningSnapshot(seed, to: fileURL)
+        let store = FileSmartConnectionLearningStore(fileURL: fileURL)
+
+        let notLoaded = await store.snapshot(for: nil)
+        #expect(notLoaded.contextProfileRecords.count == 1)
+
+        let loadedEmpty = await store.snapshot(for: [])
+        #expect(loadedEmpty.contextProfileRecords.isEmpty)
+        #expect(loadedEmpty.profileRecords.isEmpty)
+    }
+
+    @Test
+    @MainActor
+    func realFileColdStartImmediateContextCannotPruneBeforeProfileLoad() async throws {
+        let first = makeSmartProfile(index: 1)
+        let second = makeSmartProfile(index: 2)
+        let fileURL = temporaryLearningFileURL()
+        defer { try? FileManager.default.removeItem(at: fileURL) }
+        let seedingStore = FileSmartConnectionLearningStore(fileURL: fileURL)
+        for profile in [first, second] {
+            await seedingStore.recordConnectionSuccess(
+                profileID: profile.id,
+                protocolType: profile.protocolType,
+                context: smartWiFiContext,
+                connectDuration: 1,
+                at: smartTestNow
+            )
+        }
+        let bytesBeforeColdStart = try Data(contentsOf: fileURL)
+        #expect(bytesBeforeColdStart.isEmpty == false)
+
+        let repository = InMemoryVPNProfileRepository()
+        try await repository.save(first)
+        try await repository.save(second)
+        let source = MutableSmartNetworkContextSource(context: smartWiFiContext)
+        let coldStartStore = FileSmartConnectionLearningStore(fileURL: fileURL)
+        let viewModel = VPNDashboardViewModel(
+            serverProvider: EmptySmartServerProvider(),
+            connectionManager: ScriptedSmartConnectionManager(),
+            profileRepository: repository,
+            subscriptionRepository: InMemorySubscriptionRepository(),
+            activeProfileStore: TestSmartActiveProfileStore(profileID: nil),
+            manualProfileSelectionStore: TestSmartManualProfileSelectionStore(profileID: nil),
+            connectionTelemetryManager: TestSmartConnectionTelemetryManager(),
+            learningStore: coldStartStore,
+            networkContextSource: source,
+            smartConnectionClock: FixedSmartConnectionClock(now: smartTestNow),
+            networkContextDebounceSleeper: ImmediateSmartConnectionDebounceSleeper(),
+            networkContextDebounceDuration: .zero,
+            connectionActionHapticFeedback: RecordingSmartConnectionHaptic()
+        )
+
+        for _ in 0..<20 { await Task.yield() }
+        #expect(await source.observerCount() == 0)
+        #expect(try Data(contentsOf: fileURL) == bytesBeforeColdStart)
+        let beforeLoad = try decodeLearningSnapshot(at: fileURL)
+        #expect(beforeLoad.profileRecords.count == 2)
+
+        await viewModel.loadInitialData()
+        let observed = await eventually { await source.observerCount() == 1 }
+        #expect(observed)
+        let afterLoad = await coldStartStore.snapshot(for: [first, second])
+        #expect(afterLoad.profileRecords.count == 2)
+        #expect(afterLoad.contextProfileRecords.count == 2)
+    }
+
+    @Test
+    func fileAndMemoryParityForNormalInventory() async throws {
+        let first = makeSmartProfile(index: 1)
+        let second = makeSmartProfile(index: 2)
+        try await expectStoreParity(
+            seed: paritySeedSnapshot(first: first, second: second),
+            profiles: [first, second]
+        )
+    }
+
+    @Test
+    func fileAndMemoryParityForDeletedProfile() async throws {
+        let first = makeSmartProfile(index: 1)
+        let second = makeSmartProfile(index: 2)
+        try await expectStoreParity(
+            seed: paritySeedSnapshot(first: first, second: second),
+            profiles: [first]
+        )
+    }
+
+    @Test
+    func fileAndMemoryParityForLoadedEmptyInventory() async throws {
+        let first = makeSmartProfile(index: 1)
+        let second = makeSmartProfile(index: 2)
+        try await expectStoreParity(
+            seed: paritySeedSnapshot(first: first, second: second),
+            profiles: []
+        )
+    }
+
+    @Test
+    func fileAndMemoryParityForNotLoadedInventory() async throws {
+        let first = makeSmartProfile(index: 1)
+        let second = makeSmartProfile(index: 2)
+        try await expectStoreParity(
+            seed: paritySeedSnapshot(first: first, second: second),
+            profiles: nil
+        )
+    }
+
+    @Test
+    func fileAndMemoryProtocolMutationParity() async throws {
+        let first = makeSmartProfile(index: 1)
+        let second = makeSmartProfile(index: 2)
+        let seed = paritySeedSnapshot(first: first, second: second)
+        var changed = makeSmartProfile(index: 1, protocolType: .hysteria2)
+        changed.id = first.id
+        let fileURL = temporaryLearningFileURL()
+        defer { try? FileManager.default.removeItem(at: fileURL) }
+        try writeLearningSnapshot(seed, to: fileURL)
+        let fileStore = FileSmartConnectionLearningStore(fileURL: fileURL)
+        let memoryStore = InMemorySmartConnectionLearningStore(snapshot: seed)
+
+        await fileStore.recordConnectionSuccess(
+            profileID: changed.id,
+            protocolType: changed.protocolType,
+            context: smartWiFiContext,
+            connectDuration: 2,
+            at: smartTestNow
+        )
+        await memoryStore.recordConnectionSuccess(
+            profileID: changed.id,
+            protocolType: changed.protocolType,
+            context: smartWiFiContext,
+            connectDuration: 2,
+            at: smartTestNow
+        )
+
+        let fileValue = await fileStore.snapshot(for: [changed, second])
+        let memoryValue = await memoryStore.snapshot(for: [changed, second])
+        #expect(fileValue == memoryValue)
+        #expect(fileValue.profileStatistics(
+            profileID: changed.id,
+            protocolType: first.protocolType
+        ).attemptCount == 0)
+        #expect(fileValue.profileStatistics(
+            profileID: changed.id,
+            protocolType: changed.protocolType
+        ).attemptCount == 1)
+    }
+
+    @Test
+    func fileAndMemorySchemaMismatchBothFailToEmpty() async throws {
+        let invalid = SmartConnectionLearningSnapshot(
+            schemaVersion: SmartConnectionLearningSnapshot.currentSchemaVersion + 1,
+            contextProfileRecords: paritySeedSnapshot(
+                first: makeSmartProfile(index: 1),
+                second: makeSmartProfile(index: 2)
+            ).contextProfileRecords
+        )
+        let fileURL = temporaryLearningFileURL()
+        defer { try? FileManager.default.removeItem(at: fileURL) }
+        try writeLearningSnapshot(invalid, to: fileURL)
+        let fileStore = FileSmartConnectionLearningStore(fileURL: fileURL)
+        let memoryStore = InMemorySmartConnectionLearningStore(snapshot: invalid)
+
+        #expect(await fileStore.snapshot(for: nil) == .empty)
+        #expect(await memoryStore.snapshot(for: nil) == .empty)
+    }
+
+    @Test
+    func completedSessionQualityIsIdempotentAcrossStoreRestoration() async throws {
+        let profile = makeSmartProfile(index: 1)
+        let fileURL = temporaryLearningFileURL()
+        defer { try? FileManager.default.removeItem(at: fileURL) }
+        let summary = SmartConnectionSessionSummary(
+            additionalSuccessfulSessionSeconds: 10,
+            latencyMilliseconds: 90,
+            packetLossPercent: 1,
+            sessionEnded: true,
+            unexpectedDisconnect: false,
+            sessionID: "stable-provider-session"
+        )
+        let firstStore = FileSmartConnectionLearningStore(fileURL: fileURL)
+        await firstStore.recordSessionSummary(
+            summary,
+            profileID: profile.id,
+            protocolType: profile.protocolType,
+            context: smartWiFiContext,
+            at: smartTestNow
+        )
+
+        let restoredStore = FileSmartConnectionLearningStore(fileURL: fileURL)
+        await restoredStore.recordSessionSummary(
+            summary,
+            profileID: profile.id,
+            protocolType: profile.protocolType,
+            context: smartWiFiContext,
+            at: smartTestNow
+        )
+        let statistics = (await restoredStore.snapshot(for: [profile])).contextStatistics(
+            profileID: profile.id,
+            protocolType: profile.protocolType,
+            context: smartWiFiContext
+        )
+        #expect(statistics.latencySampleCount == 1)
+        #expect(statistics.packetLossSampleCount == 1)
+        #expect(statistics.completedSessionCount == 1)
+        #expect(statistics.successfulSessionSeconds == 10)
+    }
+
+    @Test
+    func legacyLearningMigratesOnlyAfterVerifiedAppGroupWrite() async throws {
+        let profile = makeSmartProfile(index: 1)
+        let seed = snapshot(entries: [
+            (profile, smartStatistics(attempts: 4, successes: 4))
+        ])
+        let directory = temporaryLearningDirectoryURL()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let legacyURL = directory.appendingPathComponent("Legacy/learning.json")
+        let groupContainer = directory.appendingPathComponent("AppGroup", isDirectory: true)
+        let primaryURL = SmartConnectionLearningLocation.appGroupFileURL(
+            containerURL: groupContainer
+        )
+        try writeLearningSnapshot(seed, to: legacyURL)
+        let store = FileSmartConnectionLearningStore(
+            fileURL: primaryURL,
+            legacyFileURL: legacyURL
+        )
+
+        let migrated = await store.snapshot(for: [profile])
+
+        #expect(migrated == seed)
+        #expect(FileManager.default.fileExists(atPath: primaryURL.path))
+        #expect(try decodeLearningSnapshot(at: primaryURL) == seed)
+        #expect(FileManager.default.fileExists(atPath: legacyURL.path) == false)
+    }
+
+    @Test
+    func existingAppGroupLearningWinsOverLegacyLearning() async throws {
+        let primaryProfile = makeSmartProfile(index: 1)
+        let legacyProfile = makeSmartProfile(index: 2)
+        let primarySeed = snapshot(entries: [
+            (primaryProfile, smartStatistics(attempts: 5, successes: 5))
+        ])
+        let legacySeed = snapshot(entries: [
+            (legacyProfile, smartStatistics(attempts: 9, successes: 0))
+        ])
+        let directory = temporaryLearningDirectoryURL()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let primaryURL = directory.appendingPathComponent("AppGroup/learning.json")
+        let legacyURL = directory.appendingPathComponent("Legacy/learning.json")
+        try writeLearningSnapshot(primarySeed, to: primaryURL)
+        try writeLearningSnapshot(legacySeed, to: legacyURL)
+        let store = FileSmartConnectionLearningStore(
+            fileURL: primaryURL,
+            legacyFileURL: legacyURL
+        )
+
+        let value = await store.snapshot(for: nil)
+
+        #expect(value == primarySeed)
+        #expect(FileManager.default.fileExists(atPath: legacyURL.path))
+    }
+
+    @Test
+    func failedMigrationPreservesLegacyAndLearningRemainsUsable() async throws {
+        let profile = makeSmartProfile(index: 1)
+        let seed = snapshot(entries: [
+            (profile, smartStatistics(attempts: 4, successes: 4))
+        ])
+        let directory = temporaryLearningDirectoryURL()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        let blocker = directory.appendingPathComponent("not-a-directory")
+        try Data("blocker".utf8).write(to: blocker)
+        let primaryURL = blocker.appendingPathComponent("learning.json")
+        let legacyURL = directory.appendingPathComponent("Legacy/learning.json")
+        try writeLearningSnapshot(seed, to: legacyURL)
+        let store = FileSmartConnectionLearningStore(
+            fileURL: primaryURL,
+            legacyFileURL: legacyURL
+        )
+
+        #expect(await store.snapshot(for: [profile]) == seed)
+        #expect(FileManager.default.fileExists(atPath: legacyURL.path))
+        #expect(FileManager.default.fileExists(atPath: primaryURL.path) == false)
+
+        await store.recordConnectionFailure(
+            profileID: profile.id,
+            protocolType: profile.protocolType,
+            context: smartWiFiContext,
+            at: smartTestNow
+        )
+        let persistedFallback = try decodeLearningSnapshot(at: legacyURL)
+        #expect(persistedFallback.contextStatistics(
+            profileID: profile.id,
+            protocolType: profile.protocolType,
+            context: smartWiFiContext
+        ).failedConnectionCount == 1)
+    }
+
+    @Test
+    func appGroupPathAndAtomicPersistenceRemainValidAfterEveryWrite() async throws {
+        let profile = makeSmartProfile(index: 1)
+        let container = temporaryLearningDirectoryURL()
+        defer { try? FileManager.default.removeItem(at: container) }
+        let fileURL = SmartConnectionLearningLocation.appGroupFileURL(
+            containerURL: container
+        )
+        #expect(SmartConnectionLearningLocation.appGroupIdentifier == "group.su.24kvn.kvn-app")
+        #expect(fileURL.path.contains("Library/Application Support/VPN/SmartConnection"))
+        let store = FileSmartConnectionLearningStore(fileURL: fileURL)
+
+        for attempt in 1...8 {
+            await store.recordConnectionSuccess(
+                profileID: profile.id,
+                protocolType: profile.protocolType,
+                context: smartWiFiContext,
+                connectDuration: Double(attempt),
+                at: smartTestNow.addingTimeInterval(Double(attempt))
+            )
+            let decoded = try decodeLearningSnapshot(at: fileURL)
+            #expect(decoded.contextStatistics(
+                profileID: profile.id,
+                protocolType: profile.protocolType,
+                context: smartWiFiContext
+            ).attemptCount == attempt)
+        }
+    }
 }
 
 @Suite(.serialized)
@@ -677,7 +1113,143 @@ struct SmartConnectionScoringTests {
     }
 
     @Test
-    func poorUnknownCandidateCannotDisplaceProvenExcellentCandidate() {
+    func establishedWinnerAllowsDeterministicFirstExploration() {
+        let excellent = makeSmartProfile(index: 1)
+        let newCandidate = makeSmartProfile(index: 2, protocolType: .hysteria2)
+        let learning = SmartConnectionLearningSnapshot(
+            contextProfileRecords: [SmartConnectionContextProfileRecord(
+                context: smartWiFiContext,
+                profileID: excellent.id,
+                protocolType: excellent.protocolType,
+                statistics: smartStatistics(
+                    attempts: 100,
+                    successes: 100,
+                    latency: 40,
+                    loss: 0,
+                    connectDuration: 1,
+                    completedSessions: 50,
+                    successfulSessionSeconds: 90_000
+                )
+            )]
+        )
+
+        let plan = SmartConnectionCandidatePlanner().plan(
+            profiles: [excellent, newCandidate],
+            context: smartWiFiContext,
+            learning: learning,
+            now: now
+        )
+
+        #expect(score(excellent, learning: learning).breakdown.effectiveScore > 80)
+        #expect(plan.explorationCandidateID == newCandidate.id)
+        #expect(plan.candidateIDs.first == newCandidate.id)
+    }
+
+    @Test
+    func recentFailureCooldownBlocksExploration() {
+        let excellent = makeSmartProfile(index: 1)
+        let newCandidate = makeSmartProfile(index: 2, protocolType: .hysteria2)
+        var recentFailure = smartStatistics(attempts: 1, successes: 0)
+        recentFailure.consecutiveFailures = 1
+        recentFailure.lastFailureAt = now
+        let learning = SmartConnectionLearningSnapshot(contextProfileRecords: [
+            SmartConnectionContextProfileRecord(
+                context: smartWiFiContext,
+                profileID: excellent.id,
+                protocolType: excellent.protocolType,
+                statistics: smartStatistics(attempts: 20, successes: 20)
+            ),
+            SmartConnectionContextProfileRecord(
+                context: smartWiFiContext,
+                profileID: newCandidate.id,
+                protocolType: newCandidate.protocolType,
+                statistics: recentFailure
+            )
+        ])
+
+        let plan = SmartConnectionCandidatePlanner().plan(
+            profiles: [excellent, newCandidate],
+            context: smartWiFiContext,
+            learning: learning,
+            now: now
+        )
+
+        #expect(plan.explorationCandidateID == nil)
+        #expect(plan.candidateIDs.first == excellent.id)
+    }
+
+    @Test
+    func explorationPriorityDecaysAwayAfterTwoCandidateSamples() {
+        let excellent = makeSmartProfile(index: 1)
+        let sampled = makeSmartProfile(index: 2, protocolType: .hysteria2)
+        let learning = SmartConnectionLearningSnapshot(contextProfileRecords: [
+            SmartConnectionContextProfileRecord(
+                context: smartWiFiContext,
+                profileID: excellent.id,
+                protocolType: excellent.protocolType,
+                statistics: smartStatistics(attempts: 20, successes: 20)
+            ),
+            SmartConnectionContextProfileRecord(
+                context: smartWiFiContext,
+                profileID: sampled.id,
+                protocolType: sampled.protocolType,
+                statistics: smartStatistics(attempts: 2, successes: 1)
+            )
+        ])
+
+        let plan = SmartConnectionCandidatePlanner().plan(
+            profiles: [excellent, sampled],
+            context: smartWiFiContext,
+            learning: learning,
+            now: now
+        )
+
+        #expect(plan.explorationCandidateID == nil)
+        #expect(plan.candidateIDs.first == excellent.id)
+    }
+
+    @Test
+    func explorationIsRateLimitedToOneOpportunityPerContextPerDay() {
+        let excellent = makeSmartProfile(index: 1)
+        let newCandidate = makeSmartProfile(index: 2, protocolType: .hysteria2)
+        let learning = SmartConnectionLearningSnapshot(
+            contextProfileRecords: [SmartConnectionContextProfileRecord(
+                context: smartWiFiContext,
+                profileID: excellent.id,
+                protocolType: excellent.protocolType,
+                statistics: smartStatistics(attempts: 20, successes: 20)
+            )],
+            explorationRecords: [SmartConnectionExplorationRecord(
+                profileID: newCandidate.id,
+                protocolType: newCandidate.protocolType,
+                context: smartWiFiContext,
+                attemptedAt: now
+            )]
+        )
+        let planner = SmartConnectionCandidatePlanner()
+
+        let blocked = planner.plan(
+            profiles: [excellent, newCandidate],
+            context: smartWiFiContext,
+            learning: learning,
+            now: now.addingTimeInterval(23 * 3_600)
+        )
+        let availableAgain = planner.plan(
+            profiles: [excellent, newCandidate],
+            context: smartWiFiContext,
+            learning: learning,
+            now: now.addingTimeInterval(
+                SmartConnectionCandidatePlanner.explorationCooldown + 1
+            )
+        )
+
+        #expect(blocked.explorationCandidateID == nil)
+        #expect(blocked.candidateIDs.first == excellent.id)
+        #expect(availableAgain.explorationCandidateID == newCandidate.id)
+    }
+
+    @Test
+    func poorKnownCandidateCannotDisplaceProvenExcellentCandidate() {
         let excellent = makeSmartProfile(index: 1, protocolType: .vless)
         let poor = makeSmartProfile(index: 2, protocolType: .hysteria2)
         let learning = SmartConnectionLearningSnapshot(
@@ -730,6 +1302,14 @@ struct SmartConnectionScoringTests {
 
 @Suite(.serialized)
 struct SmartConnectionSelectionTests {
+    @Test
+    func productionSelectionAuthorityIsSwiftPlannerOnly() {
+        #expect(
+            SmartConnectionSelectionAuthorityContract.production
+                == "swift-smart-connection-planner"
+        )
+    }
+
     @Test
     func automaticPlannerRanksAllEligibleProfiles() {
         let profiles = [
@@ -828,6 +1408,25 @@ struct SmartConnectionSelectionTests {
         await harness.viewModel.connect()
 
         #expect(await manager.attemptedProfileIDs() == [first.id])
+        #expect(harness.viewModel.connectionState == .connected)
+    }
+
+    @Test
+    @MainActor
+    func manualHysteria2SelectionRemainsAttemptable() async throws {
+        let profile = makeSmartProfile(index: 1, protocolType: .hysteria2)
+        let manager = ScriptedSmartConnectionManager()
+        let harness = try await makeSmartHarness(
+            profiles: [profile],
+            manager: manager
+        )
+        #expect(profile.runtimeCapability.isReady)
+        harness.viewModel.selectConnectionMode(.manual)
+        harness.viewModel.selectProfile(profile)
+
+        await harness.viewModel.connect()
+
+        #expect(await manager.attemptedProfileIDs() == [profile.id])
         #expect(harness.viewModel.connectionState == .connected)
     }
 }
@@ -1018,6 +1617,110 @@ struct SmartConnectionFallbackTests {
 struct SmartConnectionSessionIntegrationTests {
     @Test
     @MainActor
+    func attemptAndSessionKeepPlanContextDuringPathChanges() async throws {
+        let profile = makeSmartProfile(index: 1)
+        let manager = ScriptedSmartConnectionManager(scripts: [
+            profile.id: [.waitForReleaseThenSuccess]
+        ])
+        let source = MutableSmartNetworkContextSource(context: smartWiFiContext)
+        let telemetry = TestSmartConnectionTelemetryManager()
+        let harness = try await makeSmartHarness(
+            profiles: [profile],
+            manager: manager,
+            networkSource: source,
+            telemetry: telemetry
+        )
+        let connectTask = Task { @MainActor in
+            await harness.viewModel.connect()
+        }
+        #expect(await eventually { await manager.pendingAttemptCount() == 1 })
+
+        await source.set(smartCellularContext)
+        #expect(await eventually {
+            harness.viewModel.currentNetworkContext == smartCellularContext
+        })
+        await manager.releasePendingAttempts()
+        await connectTask.value
+        #expect(harness.viewModel.connectionState == .connected)
+
+        await telemetry.emit(DashboardConnectionTelemetrySnapshot(
+            sessionID: "immutable-context-session",
+            connectedStartedAt: smartTestNow,
+            runtimeSeconds: 10,
+            latencyMilliseconds: 80,
+            packetLossPercent: 2
+        ))
+        #expect(await eventually {
+            harness.viewModel.connectionTelemetry.sessionID
+                == "immutable-context-session"
+        })
+        await harness.viewModel.disconnect()
+
+        let learning = await harness.learningStore.snapshot(for: [profile])
+        let plannedContext = learning.contextStatistics(
+            profileID: profile.id,
+            protocolType: profile.protocolType,
+            context: smartWiFiContext
+        )
+        let transientContext = learning.contextStatistics(
+            profileID: profile.id,
+            protocolType: profile.protocolType,
+            context: smartCellularContext
+        )
+        #expect(plannedContext.attemptCount == 1)
+        #expect(plannedContext.latencySampleCount == 1)
+        #expect(plannedContext.packetLossSampleCount == 1)
+        #expect(plannedContext.completedSessionCount == 1)
+        #expect(transientContext == SmartConnectionStatistics())
+    }
+
+    @Test
+    @MainActor
+    func passiveAnomalyDetectionNeverReconnectsOrFiresHaptic() async throws {
+        let profile = makeSmartProfile(index: 1)
+        let baseline = snapshot(entries: [
+            (profile, smartStatistics(
+                attempts: 20,
+                successes: 20,
+                latency: 50,
+                loss: 1,
+                connectDuration: 1
+            ))
+        ])
+        let manager = ScriptedSmartConnectionManager()
+        let telemetry = TestSmartConnectionTelemetryManager()
+        let haptic = RecordingSmartConnectionHaptic()
+        let harness = try await makeSmartHarness(
+            profiles: [profile],
+            manager: manager,
+            learningSnapshot: baseline,
+            telemetry: telemetry,
+            haptic: haptic
+        )
+        await harness.viewModel.connect()
+
+        for runtime in [1.0, 2.0] {
+            await telemetry.emit(DashboardConnectionTelemetrySnapshot(
+                sessionID: "anomaly-session",
+                connectedStartedAt: smartTestNow,
+                runtimeSeconds: runtime,
+                latencyMilliseconds: 200,
+                packetLossPercent: 6
+            ))
+            _ = await eventually {
+                harness.viewModel.connectionTelemetry.runtimeSeconds == runtime
+            }
+        }
+
+        #expect(harness.viewModel.smartConnectionQualityState == .degraded)
+        #expect(harness.viewModel.connectionState == .connected)
+        #expect(await manager.attemptedProfileIDs() == [profile.id])
+        #expect(await manager.disconnectCallCount() == 0)
+        #expect(haptic.callCount == 0)
+    }
+
+    @Test
+    @MainActor
     func healthyConnectedTunnelIsNotSwitchedForHigherAlternativeScore() async throws {
         let first = makeSmartProfile(index: 1)
         let second = makeSmartProfile(index: 2)
@@ -1052,7 +1755,7 @@ struct SmartConnectionSessionIntegrationTests {
 
     @Test
     @MainActor
-    func existingTelemetryStreamFeedsLearningAtCheckpoint() async throws {
+    func checkpointDoesNotInflateIndependentQualitySamples() async throws {
         let profile = makeSmartProfile(index: 1)
         let telemetry = TestSmartConnectionTelemetryManager()
         let harness = try await makeSmartHarness(
@@ -1068,16 +1771,47 @@ struct SmartConnectionSessionIntegrationTests {
             latencyMilliseconds: 80,
             packetLossPercent: 2
         ))
-        let learned = await eventually {
+        let checkpointed = await eventually {
             let statistics = await contextStatistics(
                 store: harness.learningStore,
                 profile: profile
             )
-            return statistics.latencySampleCount == 1
-                && statistics.packetLossSampleCount == 1
+            return statistics.successfulSessionSeconds == 61
         }
 
-        #expect(learned)
+        #expect(checkpointed)
+        var statistics = await contextStatistics(
+            store: harness.learningStore,
+            profile: profile
+        )
+        #expect(statistics.latencySampleCount == 0)
+        #expect(statistics.packetLossSampleCount == 0)
+
+        await telemetry.emit(DashboardConnectionTelemetrySnapshot(
+            sessionID: "session-one",
+            connectedStartedAt: smartTestNow,
+            runtimeSeconds: 122,
+            latencyMilliseconds: 120,
+            packetLossPercent: 4
+        ))
+        let secondCheckpoint = await eventually {
+            let value = await contextStatistics(
+                store: harness.learningStore,
+                profile: profile
+            )
+            return value.successfulSessionSeconds == 122
+        }
+        #expect(secondCheckpoint)
+        statistics = await contextStatistics(store: harness.learningStore, profile: profile)
+        #expect(statistics.latencySampleCount == 0)
+        #expect(statistics.packetLossSampleCount == 0)
+
+        await harness.viewModel.disconnect()
+        statistics = await contextStatistics(store: harness.learningStore, profile: profile)
+        #expect(statistics.latencySampleCount == 1)
+        #expect(statistics.packetLossSampleCount == 1)
+        #expect(statistics.ewmaLatencyMilliseconds == 100)
+        #expect(statistics.ewmaPacketLossPercent == 3)
         #expect(await telemetry.reconcileCallCount() >= 2)
     }
 
@@ -1124,6 +1858,51 @@ struct SmartConnectionSessionIntegrationTests {
     }
 }
 
+@Suite(.serialized)
+struct SmartConnectionAnomalyDetectorTests {
+    @Test
+    func requiresTwoConsecutiveSourceSupportedAnomalies() {
+        var detector = SmartConnectionAnomalyDetector()
+
+        #expect(detector.observe(
+            latencyMilliseconds: 199,
+            packetLossPercent: nil,
+            baselineLatencyMilliseconds: 100,
+            baselinePacketLossPercent: nil
+        ) == .normal)
+        #expect(detector.observe(
+            latencyMilliseconds: 200,
+            packetLossPercent: nil,
+            baselineLatencyMilliseconds: 100,
+            baselinePacketLossPercent: nil
+        ) == .normal)
+        #expect(detector.observe(
+            latencyMilliseconds: 200,
+            packetLossPercent: nil,
+            baselineLatencyMilliseconds: 100,
+            baselinePacketLossPercent: nil
+        ) == .degraded)
+        #expect(detector.observe(
+            latencyMilliseconds: 100,
+            packetLossPercent: 1,
+            baselineLatencyMilliseconds: 100,
+            baselinePacketLossPercent: 1
+        ) == .normal)
+        #expect(detector.observe(
+            latencyMilliseconds: nil,
+            packetLossPercent: 6,
+            baselineLatencyMilliseconds: nil,
+            baselinePacketLossPercent: 1
+        ) == .normal)
+        #expect(detector.observe(
+            latencyMilliseconds: nil,
+            packetLossPercent: 6,
+            baselineLatencyMilliseconds: nil,
+            baselinePacketLossPercent: 1
+        ) == .degraded)
+    }
+}
+
 private struct SmartConnectionHarness {
     let viewModel: VPNDashboardViewModel
     let manager: ScriptedSmartConnectionManager
@@ -1142,7 +1921,10 @@ private func makeSmartHarness(
         MutableSmartNetworkContextSource(context: smartWiFiContext),
     telemetry: TestSmartConnectionTelemetryManager =
         TestSmartConnectionTelemetryManager(),
-    haptic: RecordingSmartConnectionHaptic? = nil
+    haptic: RecordingSmartConnectionHaptic? = nil,
+    debounceSleeper: any SmartConnectionDebounceSleeping =
+        ImmediateSmartConnectionDebounceSleeper(),
+    debounceDuration: Duration = .zero
 ) async throws -> SmartConnectionHarness {
     let hapticFeedback = haptic ?? RecordingSmartConnectionHaptic()
     let repository = InMemoryVPNProfileRepository()
@@ -1165,6 +1947,8 @@ private func makeSmartHarness(
         learningStore: learningStore,
         networkContextSource: networkSource,
         smartConnectionClock: FixedSmartConnectionClock(now: smartTestNow),
+        networkContextDebounceSleeper: debounceSleeper,
+        networkContextDebounceDuration: debounceDuration,
         connectionActionHapticFeedback: hapticFeedback
     )
     await viewModel.loadInitialData()
@@ -1209,6 +1993,14 @@ private let smartCellularContext = NetworkContext(
     supportsIPv6: true
 )
 
+private let smartWiredContext = NetworkContext(
+    interfaceClass: .wiredEthernet,
+    isExpensive: false,
+    isConstrained: false,
+    supportsIPv4: true,
+    supportsIPv6: true
+)
+
 private func makeSmartProfile(
     index: Int,
     protocolType: VPNProtocol = .vless
@@ -1230,7 +2022,10 @@ private func makeSmartProfile(
         serverAddress: "profile-\(index).example.invalid",
         port: 443,
         credentialReference: "keychain://smart-test/\(index)",
-        transportSettings: VPNTransportSettings(network: "tcp", security: "tls"),
+        transportSettings: VPNTransportSettings(
+            network: protocolType == .hysteria2 ? "hysteria" : "tcp",
+            security: "tls"
+        ),
         tlsSettings: VPNTLSSettings(
             isEnabled: true,
             serverName: "profile-\(index).example.invalid"
@@ -1299,6 +2094,86 @@ private func snapshot(
     )
 }
 
+private func paritySeedSnapshot(
+    first: VPNProfile,
+    second: VPNProfile
+) -> SmartConnectionLearningSnapshot {
+    let firstStatistics = smartStatistics(
+        attempts: 6,
+        successes: 5,
+        latency: 70,
+        loss: 1,
+        connectDuration: 2,
+        completedSessions: 4,
+        unexpectedDisconnects: 1,
+        successfulSessionSeconds: 1_200
+    )
+    let secondStatistics = smartStatistics(
+        attempts: 3,
+        successes: 2,
+        latency: 180,
+        loss: 3,
+        connectDuration: 5,
+        completedSessions: 2,
+        successfulSessionSeconds: 300
+    )
+    return SmartConnectionLearningSnapshot(
+        contextProfileRecords: [
+            SmartConnectionContextProfileRecord(
+                context: smartWiFiContext,
+                profileID: first.id,
+                protocolType: first.protocolType,
+                statistics: firstStatistics
+            ),
+            SmartConnectionContextProfileRecord(
+                context: smartCellularContext,
+                profileID: second.id,
+                protocolType: second.protocolType,
+                statistics: secondStatistics
+            )
+        ],
+        profileRecords: [
+            SmartConnectionProfileRecord(
+                profileID: first.id,
+                protocolType: first.protocolType,
+                statistics: firstStatistics
+            ),
+            SmartConnectionProfileRecord(
+                profileID: second.id,
+                protocolType: second.protocolType,
+                statistics: secondStatistics
+            )
+        ],
+        protocolRecords: [SmartConnectionProtocolRecord(
+            protocolType: first.protocolType,
+            statistics: firstStatistics
+        )],
+        explorationRecords: [SmartConnectionExplorationRecord(
+            profileID: second.id,
+            protocolType: second.protocolType,
+            context: smartCellularContext,
+            attemptedAt: smartTestNow
+        )],
+        committedSessionIDs: ["already-committed-session"]
+    )
+}
+
+private func expectStoreParity(
+    seed: SmartConnectionLearningSnapshot,
+    profiles: [VPNProfile]?
+) async throws {
+    let fileURL = temporaryLearningFileURL()
+    defer { try? FileManager.default.removeItem(at: fileURL) }
+    try writeLearningSnapshot(seed, to: fileURL)
+    let fileStore = FileSmartConnectionLearningStore(fileURL: fileURL)
+    let memoryStore = InMemorySmartConnectionLearningStore(snapshot: seed)
+
+    let fileValue = await fileStore.snapshot(for: profiles)
+    let memoryValue = await memoryStore.snapshot(for: profiles)
+
+    #expect(fileValue == memoryValue)
+}
+
 private func contextPreferenceSnapshot(
     first: VPNProfile,
     second: VPNProfile,
@@ -1358,8 +2233,9 @@ private func recordSessionMetric(
             additionalSuccessfulSessionSeconds: 0,
             latencyMilliseconds: latency,
             packetLossPercent: loss,
-            sessionEnded: false,
-            unexpectedDisconnect: false
+            sessionEnded: true,
+            unexpectedDisconnect: false,
+            sessionID: UUID().uuidString
         ),
         profileID: profile.id,
         protocolType: profile.protocolType,
@@ -1385,6 +2261,36 @@ private func temporaryLearningFileURL() -> URL {
         .appendingPathComponent("smart-learning-\(UUID().uuidString).json")
 }
 
+private func temporaryLearningDirectoryURL() -> URL {
+    FileManager.default.temporaryDirectory
+        .appendingPathComponent("smart-learning-\(UUID().uuidString)", isDirectory: true)
+}
+
+private func writeLearningSnapshot(
+    _ snapshot: SmartConnectionLearningSnapshot,
+    to fileURL: URL
+) throws {
+    try FileManager.default.createDirectory(
+        at: fileURL.deletingLastPathComponent(),
+        withIntermediateDirectories: true
+    )
+    let encoder = JSONEncoder()
+    encoder.dateEncodingStrategy = .iso8601
+    encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+    try encoder.encode(snapshot).write(to: fileURL, options: [.atomic])
+}
+
+private func decodeLearningSnapshot(
+    at fileURL: URL
+) throws -> SmartConnectionLearningSnapshot {
+    let decoder = JSONDecoder()
+    decoder.dateDecodingStrategy = .iso8601
+    return try decoder.decode(
+        SmartConnectionLearningSnapshot.self,
+        from: Data(contentsOf: fileURL)
+    )
+}
+
 private struct FixedSmartConnectionClock: SmartConnectionClock {
     let nowValue: Date
 
@@ -1394,6 +2300,51 @@ private struct FixedSmartConnectionClock: SmartConnectionClock {
 
     func now() -> Date {
         nowValue
+    }
+}
+
+private struct ImmediateSmartConnectionDebounceSleeper:
+    SmartConnectionDebounceSleeping {
+    func sleep(for duration: Duration) async throws {
+        try Task.checkCancellation()
+    }
+}
+
+private actor ControlledSmartConnectionDebounceSleeper:
+    SmartConnectionDebounceSleeping {
+    private var waiters: [UUID: CheckedContinuation<Void, Never>] = [:]
+    private var calls = 0
+
+    func sleep(for duration: Duration) async throws {
+        calls += 1
+        let id = UUID()
+        try Task.checkCancellation()
+        try await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                waiters[id] = continuation
+            }
+            try Task.checkCancellation()
+        } onCancel: {
+            Task { await self.release(id: id) }
+        }
+    }
+
+    func pendingCount() -> Int {
+        waiters.count
+    }
+
+    func sleepCallCount() -> Int {
+        calls
+    }
+
+    func releaseAll() {
+        let continuations = Array(waiters.values)
+        waiters.removeAll()
+        continuations.forEach { $0.resume() }
+    }
+
+    private func release(id: UUID) {
+        waiters.removeValue(forKey: id)?.resume()
     }
 }
 
@@ -1467,6 +2418,10 @@ nonisolated private final class MutableSmartNetworkContextSource:
     func set(_ context: NetworkContext) async {
         await storage.set(context)
     }
+
+    func observerCount() async -> Int {
+        await storage.observerCount()
+    }
 }
 
 private actor MutableSmartNetworkContextStorage {
@@ -1498,12 +2453,17 @@ private actor MutableSmartNetworkContextStorage {
     func removeContinuation(id: UUID) {
         continuations[id] = nil
     }
+
+    func observerCount() -> Int {
+        continuations.count
+    }
 }
 
 private enum ScriptedSmartOutcome: Sendable {
     case success
     case failure
     case waitForCancellation
+    case waitForReleaseThenSuccess
 }
 
 private enum ScriptedSmartConnectionError: LocalizedError {
@@ -1561,6 +2521,9 @@ nonisolated private final class ScriptedSmartConnectionManager:
         case .waitForCancellation:
             try await Task.sleep(for: .seconds(60))
             throw ScriptedSmartConnectionError.failed(profile.id)
+        case .waitForReleaseThenSuccess:
+            await storage.waitForAttemptRelease(profileID: profile.id)
+            await storage.completeSuccess(profileID: profile.id)
         }
     }
 
@@ -1579,6 +2542,14 @@ nonisolated private final class ScriptedSmartConnectionManager:
     func disconnectCallCount() async -> Int {
         await storage.disconnectCallCount()
     }
+
+    func pendingAttemptCount() async -> Int {
+        await storage.pendingAttemptCount()
+    }
+
+    func releasePendingAttempts() async {
+        await storage.releasePendingAttempts()
+    }
 }
 
 private actor ScriptedSmartConnectionStorage {
@@ -1587,6 +2558,8 @@ private actor ScriptedSmartConnectionStorage {
     private var disconnectCalls = 0
     private var state: VPNConnectionState = .disconnected
     private var connectedProfileID: UUID?
+    private var pendingAttemptContinuations:
+        [UUID: CheckedContinuation<Void, Never>] = [:]
     private var continuations:
         [UUID: AsyncStream<VPNConnectionState>.Continuation] = [:]
 
@@ -1633,6 +2606,22 @@ private actor ScriptedSmartConnectionStorage {
     func completeFailure() {
         connectedProfileID = nil
         publish(.failed)
+    }
+
+    func waitForAttemptRelease(profileID: UUID) async {
+        await withCheckedContinuation { continuation in
+            pendingAttemptContinuations[profileID] = continuation
+        }
+    }
+
+    func pendingAttemptCount() -> Int {
+        pendingAttemptContinuations.count
+    }
+
+    func releasePendingAttempts() {
+        let continuations = Array(pendingAttemptContinuations.values)
+        pendingAttemptContinuations.removeAll()
+        continuations.forEach { $0.resume() }
     }
 
     func disconnect() async {

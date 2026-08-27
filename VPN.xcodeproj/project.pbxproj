@@ -14,6 +14,8 @@
 		5CA4BA643038A2D200260748 /* WireGuardKit in Frameworks */ = {isa = PBXBuildFile; productRef = 5CA4BA633038A2D200260748 /* WireGuardKit */; };
 		5CA4BA98303CA07500260748 /* NetworkExtension.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 5C54520D30253BAF00EE5EA6 /* NetworkExtension.framework */; };
 		5CA4BAA0303CA07500260748 /* PacketTunnelXrayExtension.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = 5CA4BA97303CA07500260748 /* PacketTunnelXrayExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		5CA4BE9E303F66E300260748 /* roadmap.txt in Resources */ = {isa = PBXBuildFile; fileRef = 5CA4BE9D303F66D900260748 /* roadmap.txt */; };
+		5CA4BE9F303F66E300260748 /* roadmap.txt in Resources */ = {isa = PBXBuildFile; fileRef = 5CA4BE9D303F66D900260748 /* roadmap.txt */; };
 		5CC8D99030304B7500796938 /* libresolv.tbd in Frameworks */ = {isa = PBXBuildFile; fileRef = 5CC8D98F30304B7500796938 /* libresolv.tbd */; };
 		63A34F3733012C1646736115 /* libresolv.tbd in Frameworks */ = {isa = PBXBuildFile; fileRef = 5CC8D98F30304B7500796938 /* libresolv.tbd */; };
 /* End PBXBuildFile section */
@@ -79,6 +81,7 @@
 		5C54520D30253BAF00EE5EA6 /* NetworkExtension.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = NetworkExtension.framework; path = System/Library/Frameworks/NetworkExtension.framework; sourceTree = SDKROOT; };
 		5C590004302BBF3C00A1448C /* KVNCore.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = KVNCore.xcframework; path = Generated/KVNCore.xcframework; sourceTree = "<group>"; };
 		5CA4BA97303CA07500260748 /* PacketTunnelXrayExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = PacketTunnelXrayExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		5CA4BE9D303F66D900260748 /* roadmap.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = roadmap.txt; sourceTree = "<group>"; };
 		5CC8D98F30304B7500796938 /* libresolv.tbd */ = {isa = PBXFileReference; lastKnownFileType = "sourcecode.text-based-dylib-definition"; name = libresolv.tbd; path = usr/lib/libresolv.tbd; sourceTree = SDKROOT; };
 /* End PBXFileReference section */
 
@@ -206,6 +209,7 @@
 				5C5451713025211D00EE5EA6 /* Products */,
 				2E18EC58DE679E1C20931D9C /* PacketTunnelShared */,
 				5CA4BAB9303E2F6400260748 /* Recovered References */,
+				5CA4BE9D303F66D900260748 /* roadmap.txt */,
 			);
 			sourceTree = "<group>";
 		};
@@ -459,6 +463,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				5CA4BE9F303F66E300260748 /* roadmap.txt in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -466,6 +471,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				5CA4BE9E303F66E300260748 /* roadmap.txt in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -667,7 +673,7 @@
 				CODE_SIGN_ENTITLEMENTS = VPN/VPN.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 7;
+				CURRENT_PROJECT_VERSION = 8;
 				DEVELOPMENT_TEAM = 4Q3236JB9E;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -704,7 +710,7 @@
 				CODE_SIGN_ENTITLEMENTS = VPN/VPN.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 7;
+				CURRENT_PROJECT_VERSION = 8;
 				DEVELOPMENT_TEAM = 4Q3236JB9E;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -823,7 +829,7 @@
 				CODE_SIGN_ENTITLEMENTS = PacketTunnelExtension/PacketTunnelExtension.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 7;
+				CURRENT_PROJECT_VERSION = 8;
 				DEVELOPMENT_TEAM = 4Q3236JB9E;
 				ENABLE_DEBUG_DYLIB = NO;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -857,7 +863,7 @@
 				CODE_SIGN_ENTITLEMENTS = PacketTunnelExtension/PacketTunnelExtension.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 7;
+				CURRENT_PROJECT_VERSION = 8;
 				DEVELOPMENT_TEAM = 4Q3236JB9E;
 				ENABLE_DEBUG_DYLIB = NO;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -916,7 +922,7 @@
 				CODE_SIGN_ENTITLEMENTS = PacketTunnelXrayExtension/PacketTunnelXrayExtension.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 7;
+				CURRENT_PROJECT_VERSION = 8;
 				DEVELOPMENT_TEAM = 4Q3236JB9E;
 				ENABLE_DEBUG_DYLIB = NO;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -950,7 +956,7 @@
 				CODE_SIGN_ENTITLEMENTS = PacketTunnelXrayExtension/PacketTunnelXrayExtension.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 7;
+				CURRENT_PROJECT_VERSION = 8;
 				DEVELOPMENT_TEAM = 4Q3236JB9E;
 				ENABLE_DEBUG_DYLIB = NO;
 				GENERATE_INFOPLIST_FILE = YES;

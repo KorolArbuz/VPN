@@ -210,6 +210,8 @@ private func validate() throws {
     let dashboardViewModelPath = "VPN/ViewModels/VPNDashboardViewModel.swift"
     let smartModelsPath = "VPN/Services/SmartConnectionModels.swift"
     let smartLearningStorePath = "VPN/Services/SmartConnectionLearningStore.swift"
+    let smartScoringPath = "VPN/Services/SmartConnectionScoring.swift"
+    let portableCoreServicePath = "VPN/Core/Portable/PortableCoreService.swift"
     let actionHapticPath = "VPN/Services/StartHapticFeedback.swift"
     let settingsPath = "VPN/Views/SettingsView.swift"
     let diagnosticsPath = "VPN/Core/Portable/TunnelIPC/TunnelTelemetryDiagnosticsViewModel.swift"
@@ -233,6 +235,8 @@ private func validate() throws {
     let dashboardViewModel = try requireFile(repositoryRoot, dashboardViewModelPath)
     let smartModels = try requireFile(repositoryRoot, smartModelsPath)
     let smartLearningStore = try requireFile(repositoryRoot, smartLearningStorePath)
+    let smartScoring = try requireFile(repositoryRoot, smartScoringPath)
+    let portableCoreService = try requireFile(repositoryRoot, portableCoreServicePath)
     let actionHaptic = try requireFile(repositoryRoot, actionHapticPath)
     let settings = try requireFile(repositoryRoot, settingsPath)
     let diagnostics = try requireFile(repositoryRoot, diagnosticsPath)
@@ -1158,6 +1162,68 @@ private func validate() throws {
         markers: ["VPNProfile.bundledMock("]
     )
 
+    // Build 8 keeps one production Automatic-selection authority. The app must
+    // execute the immutable Swift plan and must not independently request a
+    // second kvn-core winner during the same Automatic Start.
+    let automaticStart = try sourceFunction(
+        dashboardViewModel,
+        file: dashboardViewModelPath,
+        from: "private func connectAutomatically(operationID: UUID) async throws"
+    )
+    try requireContains(
+        automaticStart,
+        file: "\(dashboardViewModelPath):connectAutomatically",
+        markers: [
+            "await refreshSmartConnectionRecommendation()",
+            "let plan = automaticCandidatePlan",
+            "for profileID in plan.candidateIDs",
+            "context: plan.context"
+        ]
+    )
+    try requireExcludes(
+        automaticStart,
+        file: "\(dashboardViewModelPath):connectAutomatically",
+        markers: [
+            "PortableCoreService",
+            "selectBest(",
+            "KVNSelectionDecisionDTO",
+            "ConnectionScorer",
+            "SelectionPolicy"
+        ]
+    )
+    try requireContains(
+        smartModels + portableCoreService,
+        file: "\(smartModelsPath) + \(portableCoreServicePath)",
+        markers: [
+            "SmartConnectionSelectionAuthorityContract",
+            "swift-smart-connection-planner",
+            "Flag-independent recommendation, for diagnostics/tests only.",
+            "A permanent dual-authority design is forbidden."
+        ]
+    )
+    try requireContains(
+        smartScoring,
+        file: smartScoringPath,
+        markers: [
+            "SmartConnectionCandidatePlanner",
+            "static let explorationCooldown: TimeInterval = 24 * 60 * 60",
+            "explorationCandidateID: explorationCandidateID"
+        ]
+    )
+
+    // Provider extensions may publish their existing telemetry, but remain
+    // isolated from app-owned Smart Connection selection and persistence.
+    try requireExcludes(
+        provider + wireGuardProvider,
+        file: "\(providerPath) + \(wireGuardProviderPath)",
+        markers: [
+            "SmartConnectionLearningStore",
+            "SmartConnectionCandidatePlanner",
+            "SmartConnectionScoreCalculator",
+            "SmartConnectionSelectionAuthorityContract"
+        ]
+    )
+
     // The local learning file persists aggregate identifiers/statistics only.
     try requireContains(
         smartLearningStore,
@@ -1166,7 +1232,11 @@ private func validate() throws {
             "SmartConnectionLearningSnapshot.currentSchemaVersion",
             "maximumContextsPerProfile = 8",
             "profileID: UUID",
-            "protocolType: VPNProtocol"
+            "protocolType: VPNProtocol",
+            "snapshot(for profiles: [VPNProfile]?)",
+            "group.su.24kvn.kvn-app",
+            "legacyFileURL",
+            "options: [.atomic]"
         ]
     )
     try requireExcludes(
