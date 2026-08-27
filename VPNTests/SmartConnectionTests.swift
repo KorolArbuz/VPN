@@ -1542,7 +1542,66 @@ struct SmartConnectionScoringTests {
 
         #expect(score(excellent, learning: learning).breakdown.effectiveScore > 80)
         #expect(plan.explorationCandidateID == newCandidate.id)
+        #expect(plan.rankedCandidates.first?.profileID == newCandidate.id)
         #expect(plan.candidateIDs.first == newCandidate.id)
+        #expect(plan.maximumAttempts <= 3)
+        #expect(plan.candidateIDs.count <= plan.maximumAttempts)
+    }
+
+    @Test
+    func globallySampledProfileRemainsExplorableInFreshContext() {
+        let excellent = makeSmartProfile(index: 1)
+        let freshContextCandidate = makeSmartProfile(
+            index: 2,
+            protocolType: .hysteria2
+        )
+        let winnerStatistics = smartStatistics(
+            attempts: 6,
+            successes: 6,
+            latency: 40,
+            loss: 0,
+            connectDuration: 1
+        )
+        let candidateProfileStatistics = smartStatistics(
+            attempts: 3,
+            successes: 0
+        )
+        let learning = SmartConnectionLearningSnapshot(
+            contextProfileRecords: [SmartConnectionContextProfileRecord(
+                context: smartWiFiContext,
+                profileID: excellent.id,
+                protocolType: excellent.protocolType,
+                statistics: winnerStatistics
+            )],
+            profileRecords: [
+                SmartConnectionProfileRecord(
+                    profileID: excellent.id,
+                    protocolType: excellent.protocolType,
+                    statistics: winnerStatistics
+                ),
+                SmartConnectionProfileRecord(
+                    profileID: freshContextCandidate.id,
+                    protocolType: freshContextCandidate.protocolType,
+                    statistics: candidateProfileStatistics
+                )
+            ]
+        )
+
+        let plan = SmartConnectionCandidatePlanner().plan(
+            profiles: [excellent, freshContextCandidate],
+            context: smartWiFiContext,
+            learning: learning,
+            now: now
+        )
+
+        #expect(candidateProfileStatistics.attemptCount == 3)
+        #expect(learning.contextStatistics(
+            profileID: freshContextCandidate.id,
+            protocolType: freshContextCandidate.protocolType,
+            context: smartWiFiContext
+        ).attemptCount == 0)
+        #expect(plan.explorationCandidateID == freshContextCandidate.id)
+        #expect(plan.candidateIDs.first == freshContextCandidate.id)
     }
 
     @Test
@@ -1576,10 +1635,18 @@ struct SmartConnectionScoringTests {
 
         #expect(plan.explorationCandidateID == nil)
         #expect(plan.candidateIDs.first == excellent.id)
+
+        let afterCooldown = SmartConnectionCandidatePlanner().plan(
+            profiles: [excellent, newCandidate],
+            context: smartWiFiContext,
+            learning: learning,
+            now: now.addingTimeInterval(6 * 60 * 60)
+        )
+        #expect(afterCooldown.explorationCandidateID == newCandidate.id)
     }
 
     @Test
-    func explorationPriorityDecaysAwayAfterTwoCandidateSamples() {
+    func twoContextAttemptsExcludeKnownBadCandidateFromExploration() {
         let excellent = makeSmartProfile(index: 1)
         let sampled = makeSmartProfile(index: 2, protocolType: .hysteria2)
         let learning = SmartConnectionLearningSnapshot(contextProfileRecords: [
@@ -1608,44 +1675,161 @@ struct SmartConnectionScoringTests {
         #expect(plan.candidateIDs.first == excellent.id)
     }
 
-    @Test
-    func explorationIsRateLimitedToOneOpportunityPerContextPerDay() {
+    @Test(arguments: ExplorationCooldownCase.cases)
+    func adaptiveExplorationCooldownUsesUnexploredCandidateTable(
+        testCase: ExplorationCooldownCase
+    ) {
         let excellent = makeSmartProfile(index: 1)
-        let newCandidate = makeSmartProfile(index: 2, protocolType: .hysteria2)
+        let candidates = (0..<testCase.unexploredCount).map {
+            makeSmartProfile(index: $0 + 2, protocolType: .hysteria2)
+        }
+        let learning = explorationCooldownSnapshot(
+            winner: excellent,
+            explorationProfile: candidates[0],
+            attemptedAt: now
+        )
+        let planner = SmartConnectionCandidatePlanner()
+        let profiles = [excellent] + candidates
+
+        let blocked = planner.plan(
+            profiles: profiles,
+            context: smartWiFiContext,
+            learning: learning,
+            now: now.addingTimeInterval(testCase.cooldown - 1)
+        )
+        let available = planner.plan(
+            profiles: profiles,
+            context: smartWiFiContext,
+            learning: learning,
+            now: now.addingTimeInterval(testCase.cooldown)
+        )
+
+        #expect(
+            SmartConnectionCandidatePlanner.explorationCooldown(
+                unexploredCount: testCase.unexploredCount
+            ) == testCase.cooldown
+        )
+        #expect(blocked.explorationCandidateID == nil)
+        #expect(available.explorationCandidateID != nil)
+    }
+
+    @Test
+    func unexploredCountExcludesIneligibleAndFailureCooldownProfiles() {
+        let excellent = makeSmartProfile(index: 1)
+        let firstCandidate = makeSmartProfile(index: 2, protocolType: .hysteria2)
+        let secondCandidate = makeSmartProfile(index: 3, protocolType: .hysteria2)
+        let coolingCandidate = makeSmartProfile(index: 4, protocolType: .hysteria2)
+        var disabledCandidate = makeSmartProfile(index: 5, protocolType: .hysteria2)
+        disabledCandidate.isEnabled = false
+        var recentFailure = smartStatistics(attempts: 1, successes: 0)
+        recentFailure.consecutiveFailures = 1
+        recentFailure.lastFailureAt = now.addingTimeInterval(4 * 60 * 60)
+        let base = explorationCooldownSnapshot(
+            winner: excellent,
+            explorationProfile: firstCandidate,
+            attemptedAt: now
+        )
+        let learning = SmartConnectionLearningSnapshot(
+            contextProfileRecords: base.contextProfileRecords + [
+                SmartConnectionContextProfileRecord(
+                    context: smartWiFiContext,
+                    profileID: coolingCandidate.id,
+                    protocolType: coolingCandidate.protocolType,
+                    statistics: recentFailure
+                )
+            ],
+            explorationRecords: base.explorationRecords ?? []
+        )
+        let profiles = [
+            excellent,
+            firstCandidate,
+            secondCandidate,
+            coolingCandidate,
+            disabledCandidate
+        ]
+        let planner = SmartConnectionCandidatePlanner()
+
+        let nineHoursLater = planner.plan(
+            profiles: profiles,
+            context: smartWiFiContext,
+            learning: learning,
+            now: now.addingTimeInterval(9 * 60 * 60)
+        )
+        let thirteenHoursLater = planner.plan(
+            profiles: profiles,
+            context: smartWiFiContext,
+            learning: learning,
+            now: now.addingTimeInterval(13 * 60 * 60)
+        )
+
+        // Two candidates count at nine hours, so the 12-hour bucket applies.
+        #expect(nineHoursLater.explorationCandidateID == nil)
+        #expect(thirteenHoursLater.explorationCandidateID != nil)
+    }
+
+    @Test
+    func explorationRequiresEstablishedWinnerWithFourAttempts() {
+        let winner = makeSmartProfile(index: 1)
+        let candidate = makeSmartProfile(index: 2, protocolType: .hysteria2)
         let learning = SmartConnectionLearningSnapshot(
             contextProfileRecords: [SmartConnectionContextProfileRecord(
                 context: smartWiFiContext,
-                profileID: excellent.id,
-                protocolType: excellent.protocolType,
-                statistics: smartStatistics(attempts: 20, successes: 20)
-            )],
-            explorationRecords: [SmartConnectionExplorationRecord(
-                profileID: newCandidate.id,
-                protocolType: newCandidate.protocolType,
-                context: smartWiFiContext,
-                attemptedAt: now
+                profileID: winner.id,
+                protocolType: winner.protocolType,
+                statistics: smartStatistics(attempts: 3, successes: 3)
             )]
         )
-        let planner = SmartConnectionCandidatePlanner()
 
-        let blocked = planner.plan(
-            profiles: [excellent, newCandidate],
+        let plan = SmartConnectionCandidatePlanner().plan(
+            profiles: [winner, candidate],
             context: smartWiFiContext,
             learning: learning,
-            now: now.addingTimeInterval(23 * 3_600)
-        )
-        let availableAgain = planner.plan(
-            profiles: [excellent, newCandidate],
-            context: smartWiFiContext,
-            learning: learning,
-            now: now.addingTimeInterval(
-                SmartConnectionCandidatePlanner.explorationCooldown + 1
-            )
+            now: now
         )
 
-        #expect(blocked.explorationCandidateID == nil)
-        #expect(blocked.candidateIDs.first == excellent.id)
-        #expect(availableAgain.explorationCandidateID == newCandidate.id)
+        #expect(plan.explorationCandidateID == nil)
+        #expect(plan.candidateIDs.first == winner.id)
+    }
+
+    @Test
+    func explorationPriorityKeepsSixtyThirtyTenWeightsAndUUIDTieBreak() {
+        let winner = makeSmartProfile(index: 1)
+        let first = makeSmartProfile(index: 2, protocolType: .hysteria2)
+        let second = makeSmartProfile(index: 3, protocolType: .hysteria2)
+        let learning = SmartConnectionLearningSnapshot(
+            contextProfileRecords: [
+                SmartConnectionContextProfileRecord(
+                    context: smartWiFiContext,
+                    profileID: winner.id,
+                    protocolType: winner.protocolType,
+                    statistics: smartStatistics(attempts: 20, successes: 20)
+                ),
+                SmartConnectionContextProfileRecord(
+                    context: smartWiFiContext,
+                    profileID: first.id,
+                    protocolType: first.protocolType,
+                    statistics: smartStatistics(attempts: 1, successes: 1)
+                )
+            ],
+            profileRecords: [SmartConnectionProfileRecord(
+                profileID: second.id,
+                protocolType: second.protocolType,
+                statistics: smartStatistics(attempts: 2, successes: 2)
+            )]
+        )
+
+        // first: 0.5*60% + 1*30% + 1*10% = 0.7
+        // second: 1*60% + 0*30% + 1*10% = 0.7
+        let plan = SmartConnectionCandidatePlanner().plan(
+            profiles: [winner, second, first],
+            context: smartWiFiContext,
+            learning: learning,
+            now: now
+        )
+
+        #expect(first.id.uuidString < second.id.uuidString)
+        #expect(plan.explorationCandidateID == first.id)
+        #expect(plan.candidateIDs.first == first.id)
     }
 
     @Test
@@ -1653,21 +1837,29 @@ struct SmartConnectionScoringTests {
         let excellent = makeSmartProfile(index: 1, protocolType: .vless)
         let poor = makeSmartProfile(index: 2, protocolType: .hysteria2)
         let learning = SmartConnectionLearningSnapshot(
-            contextProfileRecords: [SmartConnectionContextProfileRecord(
-                context: smartWiFiContext,
-                profileID: excellent.id,
-                protocolType: excellent.protocolType,
-                statistics: smartStatistics(
-                    attempts: 100,
-                    successes: 100,
-                    latency: 40,
-                    loss: 0,
-                    connectDuration: 1,
-                    completedSessions: 50,
-                    unexpectedDisconnects: 0,
-                    successfulSessionSeconds: 90_000
+            contextProfileRecords: [
+                SmartConnectionContextProfileRecord(
+                    context: smartWiFiContext,
+                    profileID: excellent.id,
+                    protocolType: excellent.protocolType,
+                    statistics: smartStatistics(
+                        attempts: 100,
+                        successes: 100,
+                        latency: 40,
+                        loss: 0,
+                        connectDuration: 1,
+                        completedSessions: 50,
+                        unexpectedDisconnects: 0,
+                        successfulSessionSeconds: 90_000
+                    )
+                ),
+                SmartConnectionContextProfileRecord(
+                    context: smartWiFiContext,
+                    profileID: poor.id,
+                    protocolType: poor.protocolType,
+                    statistics: smartStatistics(attempts: 50, successes: 0)
                 )
-            )],
+            ],
             profileRecords: [SmartConnectionProfileRecord(
                 profileID: poor.id,
                 protocolType: poor.protocolType,
@@ -2734,6 +2926,49 @@ private func decodeLearningSnapshot(
 enum SmartLearningStoreKind: CaseIterable, Sendable {
     case file
     case memory
+}
+
+nonisolated struct ExplorationCooldownCase: Sendable, CustomTestStringConvertible {
+    let unexploredCount: Int
+    let cooldown: TimeInterval
+
+    var testDescription: String {
+        "\(unexploredCount) unexplored, \(Int(cooldown / 3_600))h"
+    }
+
+    static let cases = [
+        ExplorationCooldownCase(unexploredCount: 4, cooldown: 4 * 60 * 60),
+        ExplorationCooldownCase(unexploredCount: 3, cooldown: 8 * 60 * 60),
+        ExplorationCooldownCase(unexploredCount: 2, cooldown: 12 * 60 * 60),
+        ExplorationCooldownCase(unexploredCount: 1, cooldown: 24 * 60 * 60)
+    ]
+}
+
+private func explorationCooldownSnapshot(
+    winner: VPNProfile,
+    explorationProfile: VPNProfile,
+    attemptedAt: Date
+) -> SmartConnectionLearningSnapshot {
+    SmartConnectionLearningSnapshot(
+        contextProfileRecords: [SmartConnectionContextProfileRecord(
+            context: smartWiFiContext,
+            profileID: winner.id,
+            protocolType: winner.protocolType,
+            statistics: smartStatistics(
+                attempts: 20,
+                successes: 20,
+                latency: 40,
+                loss: 0,
+                connectDuration: 1
+            )
+        )],
+        explorationRecords: [SmartConnectionExplorationRecord(
+            profileID: explorationProfile.id,
+            protocolType: explorationProfile.protocolType,
+            context: smartWiFiContext,
+            attemptedAt: attemptedAt
+        )]
+    )
 }
 
 private struct SmartLearningStoreHarness {

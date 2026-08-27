@@ -382,8 +382,6 @@ nonisolated struct SmartConnectionScoreCalculator: Sendable {
 }
 
 nonisolated struct SmartConnectionCandidatePlanner: Sendable {
-    static let explorationCooldown: TimeInterval = 24 * 60 * 60
-
     private let scoreCalculator: SmartConnectionScoreCalculator
     private let maximumAttempts: Int
     private let explorationContextSampleTarget = 2.0
@@ -435,8 +433,8 @@ nonisolated struct SmartConnectionCandidatePlanner: Sendable {
 
         // Exploration is an explicit, deterministic slot rather than a score
         // bonus gated by proximity to the winner. It is available only when a
-        // winner has real evidence, at most once per coarse context per 24h,
-        // and only for candidates with fewer than two context/profile samples.
+        // winner has real evidence, at an adaptive rate for this coarse context,
+        // and only for candidates with fewer than two context samples.
         let explorationCandidateID = explorationCandidateID(
             exploitationRanking: ranked,
             profilesByID: profilesByID,
@@ -480,8 +478,31 @@ nonisolated struct SmartConnectionCandidatePlanner: Sendable {
               ) >= establishedWinnerMinimumSamples else {
             return nil
         }
+        let unexploredCount = exploitationRanking.reduce(into: 0) {
+            count,
+            candidate in
+            guard let profile = profilesByID[candidate.profileID],
+                  scoreCalculator.isUnderFailureCooldown(
+                      profile: profile,
+                      context: context,
+                      learning: learning,
+                      now: now
+                  ) == false,
+                  scoreCalculator.effectiveContextAttemptCount(
+                      profile: profile,
+                      context: context,
+                      learning: learning,
+                      now: now
+                  ) < explorationContextSampleTarget else {
+                return
+            }
+            count += 1
+        }
+        let cooldown = Self.explorationCooldown(
+            unexploredCount: unexploredCount
+        )
         if let lastExplorationAt = learning.lastExplorationAt(context: context),
-           now.timeIntervalSince(lastExplorationAt) < Self.explorationCooldown {
+           now.timeIntervalSince(lastExplorationAt) < cooldown {
             return nil
         }
 
@@ -508,8 +529,7 @@ nonisolated struct SmartConnectionCandidatePlanner: Sendable {
                     profileID: profile.id,
                     protocolType: profile.protocolType
                 ).attemptCount)
-                guard contextSamples < explorationContextSampleTarget,
-                      profileSamples < explorationProfileSampleTarget else {
+                guard contextSamples < explorationContextSampleTarget else {
                     return nil
                 }
                 let protocolSamples = Double(learning.protocolStatistics(
@@ -538,6 +558,19 @@ nonisolated struct SmartConnectionCandidatePlanner: Sendable {
 
     private func uncertainty(samples: Double, target: Double) -> Double {
         max(0, 1 - min(1, samples / target))
+    }
+
+    static func explorationCooldown(unexploredCount: Int) -> TimeInterval {
+        switch unexploredCount {
+        case 4...:
+            4 * 60 * 60
+        case 3:
+            8 * 60 * 60
+        case 2:
+            12 * 60 * 60
+        default:
+            24 * 60 * 60
+        }
     }
 
     static func isEligible(_ profile: VPNProfile) -> Bool {
