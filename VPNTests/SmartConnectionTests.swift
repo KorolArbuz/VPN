@@ -2268,24 +2268,15 @@ struct SmartConnectionSessionIntegrationTests {
 
     @Test
     @MainActor
-    func passiveAnomalyDetectionNeverReconnectsOrFiresHaptic() async throws {
+    func twoAnomaliesShowPassiveIndicatorWithoutConnectionControlOrHaptic() async throws {
         let profile = makeSmartProfile(index: 1)
-        let baseline = snapshot(entries: [
-            (profile, smartStatistics(
-                attempts: 20,
-                successes: 20,
-                latency: 50,
-                loss: 1,
-                connectDuration: 1
-            ))
-        ])
         let manager = ScriptedSmartConnectionManager()
         let telemetry = TestSmartConnectionTelemetryManager()
         let haptic = RecordingSmartConnectionHaptic()
         let harness = try await makeSmartHarness(
             profiles: [profile],
             manager: manager,
-            learningSnapshot: baseline,
+            learningSnapshot: smartAnomalyBaseline(for: profile),
             telemetry: telemetry,
             haptic: haptic
         )
@@ -2305,10 +2296,112 @@ struct SmartConnectionSessionIntegrationTests {
         }
 
         #expect(harness.viewModel.smartConnectionQualityState == .degraded)
+        #expect(harness.viewModel.showsConnectionQualityDegradedIndicator)
         #expect(harness.viewModel.connectionState == .connected)
         #expect(await manager.attemptedProfileIDs() == [profile.id])
         #expect(await manager.disconnectCallCount() == 0)
         #expect(haptic.callCount == 0)
+    }
+
+    @Test
+    @MainActor
+    func oneAnomalyKeepsPassiveIndicatorHidden() async throws {
+        let profile = makeSmartProfile(index: 1)
+        let telemetry = TestSmartConnectionTelemetryManager()
+        let harness = try await makeSmartHarness(
+            profiles: [profile],
+            learningSnapshot: smartAnomalyBaseline(for: profile),
+            telemetry: telemetry
+        )
+        await harness.viewModel.connect()
+
+        await telemetry.emit(DashboardConnectionTelemetrySnapshot(
+            sessionID: "single-anomaly-session",
+            connectedStartedAt: smartTestNow,
+            runtimeSeconds: 1,
+            latencyMilliseconds: 200,
+            packetLossPercent: 6
+        ))
+        #expect(await eventually {
+            harness.viewModel.connectionTelemetry.runtimeSeconds == 1
+        })
+
+        #expect(harness.viewModel.smartConnectionQualityState == .normal)
+        #expect(harness.viewModel.showsConnectionQualityDegradedIndicator == false)
+    }
+
+    @Test
+    @MainActor
+    func healthyMeasurementHidesPassiveIndicator() async throws {
+        let profile = makeSmartProfile(index: 1)
+        let telemetry = TestSmartConnectionTelemetryManager()
+        let harness = try await makeSmartHarness(
+            profiles: [profile],
+            learningSnapshot: smartAnomalyBaseline(for: profile),
+            telemetry: telemetry
+        )
+        await harness.viewModel.connect()
+
+        for runtime in [1.0, 2.0] {
+            await telemetry.emit(DashboardConnectionTelemetrySnapshot(
+                sessionID: "recovering-anomaly-session",
+                connectedStartedAt: smartTestNow,
+                runtimeSeconds: runtime,
+                latencyMilliseconds: 200,
+                packetLossPercent: 6
+            ))
+            #expect(await eventually {
+                harness.viewModel.connectionTelemetry.runtimeSeconds == runtime
+            })
+        }
+        #expect(harness.viewModel.showsConnectionQualityDegradedIndicator)
+
+        await telemetry.emit(DashboardConnectionTelemetrySnapshot(
+            sessionID: "recovering-anomaly-session",
+            connectedStartedAt: smartTestNow,
+            runtimeSeconds: 3,
+            latencyMilliseconds: 50,
+            packetLossPercent: 1
+        ))
+        #expect(await eventually {
+            harness.viewModel.connectionTelemetry.runtimeSeconds == 3
+        })
+
+        #expect(harness.viewModel.smartConnectionQualityState == .normal)
+        #expect(harness.viewModel.showsConnectionQualityDegradedIndicator == false)
+    }
+
+    @Test
+    @MainActor
+    func finishingSessionResetsQualityAndHidesPassiveIndicator() async throws {
+        let profile = makeSmartProfile(index: 1)
+        let telemetry = TestSmartConnectionTelemetryManager()
+        let harness = try await makeSmartHarness(
+            profiles: [profile],
+            learningSnapshot: smartAnomalyBaseline(for: profile),
+            telemetry: telemetry
+        )
+        await harness.viewModel.connect()
+
+        for runtime in [1.0, 2.0] {
+            await telemetry.emit(DashboardConnectionTelemetrySnapshot(
+                sessionID: "finished-anomaly-session",
+                connectedStartedAt: smartTestNow,
+                runtimeSeconds: runtime,
+                latencyMilliseconds: 200,
+                packetLossPercent: 6
+            ))
+            #expect(await eventually {
+                harness.viewModel.connectionTelemetry.runtimeSeconds == runtime
+            })
+        }
+        #expect(harness.viewModel.showsConnectionQualityDegradedIndicator)
+
+        await harness.viewModel.disconnect()
+
+        #expect(harness.viewModel.smartConnectionQualityState == .normal)
+        #expect(harness.viewModel.showsConnectionQualityDegradedIndicator == false)
+        #expect(harness.viewModel.connectionState == .disconnected)
     }
 
     @Test
@@ -2709,6 +2802,20 @@ private func smartStatistics(
         ? smartTestNow
         : nil
     return statistics
+}
+
+private func smartAnomalyBaseline(
+    for profile: VPNProfile
+) -> SmartConnectionLearningSnapshot {
+    snapshot(entries: [
+        (profile, smartStatistics(
+            attempts: 20,
+            successes: 20,
+            latency: 50,
+            loss: 1,
+            connectDuration: 1
+        ))
+    ])
 }
 
 private func snapshot(

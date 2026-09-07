@@ -40,6 +40,13 @@ nonisolated enum SmartConnectionSelectionAuthorityContract {
     static let production = "swift-smart-connection-planner"
 }
 
+/// Network-environment observations may refine the next recommendation, but
+/// they never authorize a live tunnel replacement.
+nonisolated enum SmartConnectionLiveSwitchingContract {
+    static let isEnabled = false
+    static let automaticRecommendationsApplyOnlyWhileDisconnected = true
+}
+
 nonisolated struct ConnectionSelectionPresentation: Equatable, Sendable {
     var mode: ConnectionSelectionMode
     var selectableProfileIDs: [UUID]
@@ -62,25 +69,146 @@ nonisolated enum SmartConnectionInterfaceClass: String, Codable, CaseIterable, S
     case other
 }
 
-/// A deliberately coarse network key. It contains no SSID, BSSID, carrier,
-/// address, account, or other persistent network/device identifier.
-nonisolated struct NetworkContext: Codable, Hashable, Sendable {
-    static let currentSchemaVersion = 1
+/// The source that made an environment-specific V2 context possible.
+///
+/// Build-8 coarse contexts decode as ``coarseOnly`` and remain V1 records.
+/// A V2 record is created only by ``NetworkContext/observedV2(coarseContext:environmentIdentity:)``
+/// after a non-empty environment identity was actually observed.
+nonisolated enum SmartConnectionNetworkIdentitySource: String, Codable, Sendable {
+    case localNetwork
+    case asn
+    case coarseOnly
+}
 
-    var schemaVersion: Int
+/// A future SSID-derived tag is a 128-bit truncation of HMAC-SHA256, represented
+/// as 32 lowercase hexadecimal characters. This type stores only the opaque
+/// output; this build intentionally has no SSID reader or HMAC-key implementation.
+nonisolated struct SmartConnectionLocalNetworkTag:
+    RawRepresentable,
+    Codable,
+    Hashable,
+    Sendable {
+    static let byteCount = 16
+
+    let rawValue: String
+
+    init?(rawValue: String) {
+        let normalized = rawValue.lowercased()
+        guard normalized.utf8.count == Self.byteCount * 2,
+              normalized.utf8.allSatisfy({
+                  ($0 >= 48 && $0 <= 57) || ($0 >= 97 && $0 <= 102)
+              }) else {
+            return nil
+        }
+        self.rawValue = normalized
+    }
+
+    init(from decoder: any Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        let value = try container.decode(String.self)
+        guard let tag = Self(rawValue: value) else {
+            throw DecodingError.dataCorruptedError(
+                in: container,
+                debugDescription: "Local network tag must be 128-bit lowercase hex."
+            )
+        }
+        self = tag
+    }
+
+    func encode(to encoder: any Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
+    }
+}
+
+/// The only network-environment identity fields permitted in Smart Connection
+/// persistence. Raw network names, addresses, location, and key material have
+/// no representation in this model.
+nonisolated struct SmartConnectionEnvironmentIdentity:
+    Codable,
+    Hashable,
+    Sendable {
+    var localNetworkTag: SmartConnectionLocalNetworkTag?
+    var underlyingASN: UInt32?
+
+    init(
+        localNetworkTag: SmartConnectionLocalNetworkTag? = nil,
+        underlyingASN: UInt32? = nil
+    ) {
+        self.localNetworkTag = localNetworkTag
+        self.underlyingASN = underlyingASN == 0 ? nil : underlyingASN
+    }
+
+    static let empty = SmartConnectionEnvironmentIdentity()
+
+    var isEmpty: Bool {
+        localNetworkTag == nil && underlyingASN == nil
+    }
+
+    var preferredSource: SmartConnectionNetworkIdentitySource {
+        if localNetworkTag != nil {
+            return .localNetwork
+        }
+        if underlyingASN != nil {
+            return .asn
+        }
+        return .coarseOnly
+    }
+
+    var stableKey: String {
+        [
+            "local:\(localNetworkTag?.rawValue ?? "none")",
+            "asn:\(underlyingASN.map(String.init) ?? "none")"
+        ].joined(separator: "|")
+    }
+}
+
+/// Versioned network context used by the existing local learning hierarchy.
+///
+/// V1 is the exact Build-8 coarse shape. V2 adds an observed physical
+/// environment identity while retaining interface and route-capability
+/// metadata. IPv4/IPv6 support remains useful metadata, never the sole
+/// physical-network identity.
+nonisolated struct NetworkContext: Codable, Hashable, Sendable {
+    static let coarseSchemaVersion = 1
+    static let currentSchemaVersion = 2
+
+    private(set) var schemaVersion: Int
     var interfaceClass: SmartConnectionInterfaceClass
     var isExpensive: Bool
     var isConstrained: Bool
     var supportsIPv4: Bool
     var supportsIPv6: Bool
+    private(set) var environmentIdentity: SmartConnectionEnvironmentIdentity
+    private(set) var identitySource: SmartConnectionNetworkIdentitySource
 
+    /// Creates the Build-8-compatible coarse context produced by NWPath.
     init(
-        schemaVersion: Int = Self.currentSchemaVersion,
         interfaceClass: SmartConnectionInterfaceClass = .other,
         isExpensive: Bool = false,
         isConstrained: Bool = false,
         supportsIPv4: Bool = false,
         supportsIPv6: Bool = false
+    ) {
+        schemaVersion = Self.coarseSchemaVersion
+        self.interfaceClass = interfaceClass
+        self.isExpensive = isExpensive
+        self.isConstrained = isConstrained
+        self.supportsIPv4 = supportsIPv4
+        self.supportsIPv6 = supportsIPv6
+        environmentIdentity = .empty
+        identitySource = .coarseOnly
+    }
+
+    private init(
+        schemaVersion: Int,
+        interfaceClass: SmartConnectionInterfaceClass,
+        isExpensive: Bool,
+        isConstrained: Bool,
+        supportsIPv4: Bool,
+        supportsIPv6: Bool,
+        environmentIdentity: SmartConnectionEnvironmentIdentity,
+        identitySource: SmartConnectionNetworkIdentitySource
     ) {
         self.schemaVersion = schemaVersion
         self.interfaceClass = interfaceClass
@@ -88,12 +216,66 @@ nonisolated struct NetworkContext: Codable, Hashable, Sendable {
         self.isConstrained = isConstrained
         self.supportsIPv4 = supportsIPv4
         self.supportsIPv6 = supportsIPv6
+        self.environmentIdentity = environmentIdentity
+        self.identitySource = identitySource
     }
 
-    /// Stable, inspectable identity used only inside the local learning file.
-    var stableKey: String {
+    /// Promotes an actually observed environment to an exact V2 context.
+    /// Empty/unavailable enrichment deliberately remains the original V1 prior.
+    static func observedV2(
+        coarseContext: NetworkContext,
+        environmentIdentity: SmartConnectionEnvironmentIdentity
+    ) -> NetworkContext? {
+        guard environmentIdentity.isEmpty == false else {
+            return nil
+        }
+        return NetworkContext(
+            schemaVersion: Self.currentSchemaVersion,
+            interfaceClass: coarseContext.interfaceClass,
+            isExpensive: coarseContext.isExpensive,
+            isConstrained: coarseContext.isConstrained,
+            supportsIPv4: coarseContext.supportsIPv4,
+            supportsIPv6: coarseContext.supportsIPv6,
+            environmentIdentity: environmentIdentity,
+            identitySource: environmentIdentity.preferredSource
+        )
+    }
+
+    var hasExactEnvironmentIdentity: Bool {
+        schemaVersion == Self.currentSchemaVersion
+            && environmentIdentity.isEmpty == false
+            && identitySource == environmentIdentity.preferredSource
+    }
+
+    /// The matching Build-8 coarse prior. No V2 record is fabricated by this
+    /// projection; it returns the pre-existing V1 key shape.
+    var matchingCoarseContext: NetworkContext {
+        if schemaVersion == Self.coarseSchemaVersion {
+            return self
+        }
+        return NetworkContext(
+            interfaceClass: interfaceClass,
+            isExpensive: isExpensive,
+            isConstrained: isConstrained,
+            supportsIPv4: supportsIPv4,
+            supportsIPv6: supportsIPv6
+        )
+    }
+
+    /// Physical identity is kept distinct from route capabilities so callers
+    /// cannot mistake IPv4/IPv6 support for a network identifier.
+    var physicalEnvironmentKey: String? {
+        guard hasExactEnvironmentIdentity else {
+            return nil
+        }
+        return [
+            identitySource.rawValue,
+            environmentIdentity.stableKey
+        ].joined(separator: "|")
+    }
+
+    var routeCapabilitiesKey: String {
         [
-            "v\(schemaVersion)",
             interfaceClass.rawValue,
             isExpensive ? "expensive" : "not-expensive",
             isConstrained ? "constrained" : "not-constrained",
@@ -102,7 +284,155 @@ nonisolated struct NetworkContext: Codable, Hashable, Sendable {
         ].joined(separator: "|")
     }
 
+    /// Stable, inspectable identity used only inside the local learning file.
+    /// V1 remains byte-for-byte compatible with the Build-8 key format.
+    var stableKey: String {
+        if schemaVersion == Self.coarseSchemaVersion {
+            return ["v1", routeCapabilitiesKey].joined(separator: "|")
+        }
+        return [
+            "v2",
+            physicalEnvironmentKey ?? "invalid-environment",
+            routeCapabilitiesKey
+        ].joined(separator: "|")
+    }
+
+    var isSupportedForLearning: Bool {
+        switch schemaVersion {
+        case Self.coarseSchemaVersion:
+            environmentIdentity.isEmpty && identitySource == .coarseOnly
+        case Self.currentSchemaVersion:
+            hasExactEnvironmentIdentity
+        default:
+            false
+        }
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion
+        case interfaceClass
+        case isExpensive
+        case isConstrained
+        case supportsIPv4
+        case supportsIPv6
+        case environmentIdentity
+        case identitySource
+    }
+
+    init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let decodedVersion = try container.decodeIfPresent(
+            Int.self,
+            forKey: .schemaVersion
+        ) ?? Self.coarseSchemaVersion
+        let interfaceClass = try container.decode(
+            SmartConnectionInterfaceClass.self,
+            forKey: .interfaceClass
+        )
+        let isExpensive = try container.decode(Bool.self, forKey: .isExpensive)
+        let isConstrained = try container.decode(Bool.self, forKey: .isConstrained)
+        let supportsIPv4 = try container.decode(Bool.self, forKey: .supportsIPv4)
+        let supportsIPv6 = try container.decode(Bool.self, forKey: .supportsIPv6)
+
+        switch decodedVersion {
+        case Self.coarseSchemaVersion:
+            self.init(
+                interfaceClass: interfaceClass,
+                isExpensive: isExpensive,
+                isConstrained: isConstrained,
+                supportsIPv4: supportsIPv4,
+                supportsIPv6: supportsIPv6
+            )
+        case Self.currentSchemaVersion:
+            let identity = try container.decode(
+                SmartConnectionEnvironmentIdentity.self,
+                forKey: .environmentIdentity
+            )
+            let source = try container.decode(
+                SmartConnectionNetworkIdentitySource.self,
+                forKey: .identitySource
+            )
+            guard identity.isEmpty == false,
+                  source == identity.preferredSource else {
+                throw DecodingError.dataCorruptedError(
+                    forKey: .environmentIdentity,
+                    in: container,
+                    debugDescription: "V2 requires an observed, source-consistent identity."
+                )
+            }
+            self.init(
+                schemaVersion: decodedVersion,
+                interfaceClass: interfaceClass,
+                isExpensive: isExpensive,
+                isConstrained: isConstrained,
+                supportsIPv4: supportsIPv4,
+                supportsIPv6: supportsIPv6,
+                environmentIdentity: identity,
+                identitySource: source
+            )
+        default:
+            throw DecodingError.dataCorruptedError(
+                forKey: .schemaVersion,
+                in: container,
+                debugDescription: "Unsupported network-context schema version."
+            )
+        }
+    }
+
+    func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(schemaVersion, forKey: .schemaVersion)
+        try container.encode(interfaceClass, forKey: .interfaceClass)
+        try container.encode(isExpensive, forKey: .isExpensive)
+        try container.encode(isConstrained, forKey: .isConstrained)
+        try container.encode(supportsIPv4, forKey: .supportsIPv4)
+        try container.encode(supportsIPv6, forKey: .supportsIPv6)
+        if schemaVersion == Self.currentSchemaVersion {
+            try container.encode(environmentIdentity, forKey: .environmentIdentity)
+            try container.encode(identitySource, forKey: .identitySource)
+        }
+    }
+
     static let unknown = NetworkContext()
+}
+
+/// An inspectable Build-9 privacy/capability contract. The current target has
+/// neither Access Wi-Fi Information nor Location permission, and the repository
+/// contains no owned ASN service, so production identity remains coarse-only.
+nonisolated enum SmartConnectionNetworkEnvironmentCapabilityContract {
+    static let currentSSIDAvailable = false
+    static let currentBSSIDAvailable = false
+    static let localNetworkTaggingEnabled = false
+    static let ownedUnderlyingASNEndpointAvailable = false
+    static let permitsPublicThirdPartyASNService = false
+}
+
+nonisolated enum SmartConnectionLearningPrivacyContract {
+    static let allowedPersistedIdentityFieldNames: Set<String> = [
+        "localNetworkTag",
+        "underlyingASN"
+    ]
+
+    static let forbiddenPersistedFieldNames: Set<String> = [
+        "ssid",
+        "bssid",
+        "rawPublicIP",
+        "publicIP",
+        "privateIP",
+        "localIP",
+        "gatewayIP",
+        "mac",
+        "macAddress",
+        "location",
+        "deviceIdentifier",
+        "credential",
+        "credentials",
+        "subscriptionURI",
+        "providerConfiguration",
+        "hmacSecret",
+        "hmacKey",
+        "localNetworkTagKey"
+    ]
 }
 
 nonisolated protocol SmartConnectionNetworkContextProviding: Sendable {
@@ -296,6 +626,12 @@ nonisolated struct TaskSmartConnectionDebounceSleeper: SmartConnectionDebounceSl
 nonisolated enum SmartConnectionQualityState: String, Equatable, Sendable {
     case normal
     case degraded
+
+    static let degradedStatusTitle = LocalizedStringResource(
+        "connection.smart.quality.degraded",
+        defaultValue: "Connection quality is degraded",
+        comment: "Passive dashboard status shown when Smart Connection detects sustained tunnel degradation."
+    )
 }
 
 /// Passive diagnostics only. A measurement is anomalous when latency is both

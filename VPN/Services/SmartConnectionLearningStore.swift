@@ -225,6 +225,8 @@ nonisolated struct SmartConnectionLearningSnapshot: Codable, Equatable, Sendable
     var explorationRecords: [SmartConnectionExplorationRecord]?
     var committedSessionIDs: [String]?
     var pendingQualityRecords: [SmartConnectionPendingQualityRecord]?
+    var lastSafelyKnownEnvironmentObservation:
+        SmartConnectionSafeEnvironmentObservation?
 
     init(
         schemaVersion: Int = Self.currentSchemaVersion,
@@ -233,7 +235,9 @@ nonisolated struct SmartConnectionLearningSnapshot: Codable, Equatable, Sendable
         protocolRecords: [SmartConnectionProtocolRecord] = [],
         explorationRecords: [SmartConnectionExplorationRecord] = [],
         committedSessionIDs: [String] = [],
-        pendingQualityRecords: [SmartConnectionPendingQualityRecord] = []
+        pendingQualityRecords: [SmartConnectionPendingQualityRecord] = [],
+        lastSafelyKnownEnvironmentObservation:
+            SmartConnectionSafeEnvironmentObservation? = nil
     ) {
         self.schemaVersion = schemaVersion
         self.contextProfileRecords = contextProfileRecords
@@ -244,6 +248,8 @@ nonisolated struct SmartConnectionLearningSnapshot: Codable, Equatable, Sendable
         self.pendingQualityRecords = pendingQualityRecords.isEmpty
             ? nil
             : pendingQualityRecords
+        self.lastSafelyKnownEnvironmentObservation =
+            lastSafelyKnownEnvironmentObservation
     }
 
     static let empty = SmartConnectionLearningSnapshot()
@@ -318,6 +324,10 @@ nonisolated protocol SmartConnectionLearningStoring: Sendable {
         protocolType: VPNProtocol,
         context: NetworkContext,
         at date: Date
+    ) async
+
+    func recordSafeEnvironmentObservation(
+        _ observation: SmartConnectionSafeEnvironmentObservation
     ) async
 
     func prune(profiles: [VPNProfile]) async
@@ -400,6 +410,18 @@ nonisolated enum SmartConnectionLearningTransform {
         }
 
         var snapshot = input
+        snapshot.contextProfileRecords.removeAll {
+            $0.context.isSupportedForLearning == false
+        }
+        snapshot.explorationRecords?.removeAll {
+            $0.context.isSupportedForLearning == false
+        }
+        snapshot.pendingQualityRecords?.removeAll {
+            $0.context.isSupportedForLearning == false
+        }
+        if snapshot.lastSafelyKnownEnvironmentObservation?.isValid != true {
+            snapshot.lastSafelyKnownEnvironmentObservation = nil
+        }
         snapshot.protocolRecords.removeAll {
             VPNProtocol.allCases.contains($0.protocolType) == false
         }
@@ -430,6 +452,18 @@ nonisolated enum SmartConnectionLearningTransform {
         return snapshot
     }
 
+    static func recordSafeEnvironmentObservation(
+        _ observation: SmartConnectionSafeEnvironmentObservation,
+        in input: SmartConnectionLearningSnapshot
+    ) -> SmartConnectionLearningSnapshot {
+        var snapshot = sanitized(input, profileInventory: nil)
+        guard observation.isValid else {
+            return snapshot
+        }
+        snapshot.lastSafelyKnownEnvironmentObservation = observation
+        return snapshot
+    }
+
     static func mutateStatistics(
         _ input: SmartConnectionLearningSnapshot,
         profileID: UUID,
@@ -451,22 +485,22 @@ nonisolated enum SmartConnectionLearningTransform {
             $0.profileID == profileID && $0.protocolType != protocolType
         }
 
-        if let index = snapshot.contextProfileRecords.firstIndex(where: {
-            $0.profileID == profileID
-                && $0.protocolType == protocolType
-                && $0.context == context
-        }) {
-            mutation(&snapshot.contextProfileRecords[index].statistics)
-        } else {
-            var statistics = SmartConnectionStatistics()
-            mutation(&statistics)
-            snapshot.contextProfileRecords.append(
-                SmartConnectionContextProfileRecord(
-                    context: context,
-                    profileID: profileID,
-                    protocolType: protocolType,
-                    statistics: statistics
-                )
+        mutateContextStatistics(
+            in: &snapshot,
+            profileID: profileID,
+            protocolType: protocolType,
+            context: context,
+            mutation: mutation
+        )
+        if context.hasExactEnvironmentIdentity {
+            // Every V2 observation also strengthens its real Build-8 coarse
+            // prior. Profile/protocol aggregates below are still mutated once.
+            mutateContextStatistics(
+                in: &snapshot,
+                profileID: profileID,
+                protocolType: protocolType,
+                context: context.matchingCoarseContext,
+                mutation: mutation
             )
         }
 
@@ -504,6 +538,34 @@ nonisolated enum SmartConnectionLearningTransform {
         boundContexts(&snapshot, profileID: profileID)
         boundMetadata(&snapshot)
         return snapshot
+    }
+
+    private static func mutateContextStatistics(
+        in snapshot: inout SmartConnectionLearningSnapshot,
+        profileID: UUID,
+        protocolType: VPNProtocol,
+        context: NetworkContext,
+        mutation: (inout SmartConnectionStatistics) -> Void
+    ) {
+        if let index = snapshot.contextProfileRecords.firstIndex(where: {
+            $0.profileID == profileID
+                && $0.protocolType == protocolType
+                && $0.context == context
+        }) {
+            mutation(&snapshot.contextProfileRecords[index].statistics)
+            return
+        }
+
+        var statistics = SmartConnectionStatistics()
+        mutation(&statistics)
+        snapshot.contextProfileRecords.append(
+            SmartConnectionContextProfileRecord(
+                context: context,
+                profileID: profileID,
+                protocolType: protocolType,
+                statistics: statistics
+            )
+        )
     }
 
     static func recordSessionSummary(
@@ -730,9 +792,18 @@ nonisolated enum SmartConnectionLearningTransform {
     ) {
         let matching = snapshot.contextProfileRecords
             .filter { $0.profileID == profileID }
-            .sorted {
-                ($0.statistics.lastUpdatedAt ?? .distantPast)
-                    > ($1.statistics.lastUpdatedAt ?? .distantPast)
+            .sorted { first, second in
+                let firstDate = first.statistics.lastUpdatedAt ?? .distantPast
+                let secondDate = second.statistics.lastUpdatedAt ?? .distantPast
+                if firstDate != secondDate {
+                    return firstDate > secondDate
+                }
+                // A matching V1 prior must survive ties with the exact V2
+                // records that simultaneously strengthen it.
+                if first.context.schemaVersion != second.context.schemaVersion {
+                    return first.context.schemaVersion < second.context.schemaVersion
+                }
+                return first.context.stableKey < second.context.stableKey
             }
         guard matching.count > maximumContextsPerProfile else {
             return
@@ -934,6 +1005,18 @@ actor FileSmartConnectionLearningStore: SmartConnectionLearningStoring {
         persist(snapshot)
     }
 
+    func recordSafeEnvironmentObservation(
+        _ observation: SmartConnectionSafeEnvironmentObservation
+    ) async {
+        let original = loadSnapshot()
+        let snapshot = SmartConnectionLearningTransform
+            .recordSafeEnvironmentObservation(observation, in: original)
+        cachedSnapshot = snapshot
+        if snapshot != original {
+            persist(snapshot)
+        }
+    }
+
     func prune(profiles: [VPNProfile]) async {
         let original = loadSnapshot()
         let snapshot = SmartConnectionLearningTransform.sanitized(
@@ -1127,6 +1210,13 @@ actor InMemorySmartConnectionLearningStore: SmartConnectionLearningStoring {
             context: context,
             at: date
         )
+    }
+
+    func recordSafeEnvironmentObservation(
+        _ observation: SmartConnectionSafeEnvironmentObservation
+    ) async {
+        value = SmartConnectionLearningTransform
+            .recordSafeEnvironmentObservation(observation, in: value)
     }
 
     func prune(profiles: [VPNProfile]) async {

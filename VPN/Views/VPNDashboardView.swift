@@ -16,6 +16,9 @@ struct VPNDashboardView: View {
             ScrollView {
                 VStack(spacing: 16) {
                     connectionStatus
+                    if viewModel.showsConnectionQualityDegradedIndicator {
+                        connectionQualityDegradedStatus
+                    }
                     if viewModel.showsDemoModeNotice {
                         demoModeNotice
                     }
@@ -157,6 +160,26 @@ struct VPNDashboardView: View {
             .padding(.vertical, 10)
             .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
             .accessibilityLabel(Text("vpn.demo_mode"))
+    }
+
+    private var connectionQualityDegradedStatus: some View {
+        Label {
+            Text(SmartConnectionQualityState.degradedStatusTitle)
+                .foregroundStyle(.primary)
+        } icon: {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+        }
+        .font(.footnote)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(
+            Color(.secondarySystemBackground),
+            in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+        )
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("connection-quality-degraded")
     }
 
     @ViewBuilder

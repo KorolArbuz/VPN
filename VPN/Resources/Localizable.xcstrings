@@ -561,6 +561,24 @@
         }
       }
     },
+    "connection.smart.quality.degraded" : {
+      "comment" : "Passive dashboard status shown when Smart Connection detects sustained tunnel degradation.",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Connection quality is degraded"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "machine_translated",
+            "value" : "Качество соединения ухудшилось"
+          }
+        }
+      }
+    },
     "connection.smart.reason.available_data" : {
       "comment" : "A reason why a VPN connection is recommended based on available data.",
       "extractionState" : "extracted_with_value",

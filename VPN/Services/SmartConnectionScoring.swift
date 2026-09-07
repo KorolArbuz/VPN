@@ -16,8 +16,9 @@ nonisolated struct SmartConnectionScoreCalculator: Sendable {
         case stability
     }
 
-    /// Neutral quality is 70. Each evidence level is shrunk toward the next
-    /// broader prior: protocol (12 samples), profile (10), then context (8).
+    /// Neutral quality is 70. Build-8 V1 scoring remains protocol (12),
+    /// profile (10), context (8). A V2 exact context adds one more 8-sample
+    /// blend after its matching V1 context, preserving the validated weights.
     private let neutralQuality = 70.0
     private let historyHalfLifeDays = 90.0
 
@@ -33,6 +34,13 @@ nonisolated struct SmartConnectionScoreCalculator: Sendable {
             protocolType: profile.protocolType,
             context: context
         )
+        let coarseContextStatistics = context.hasExactEnvironmentIdentity
+            ? learning.contextStatistics(
+                profileID: profile.id,
+                protocolType: profile.protocolType,
+                context: context.matchingCoarseContext
+            )
+            : nil
         let profileStatistics = learning.profileStatistics(
             profileID: profile.id,
             protocolType: profile.protocolType
@@ -42,6 +50,7 @@ nonisolated struct SmartConnectionScoreCalculator: Sendable {
         let reliability = hierarchicalQuality(
             component: .reliability,
             context: contextStatistics,
+            coarseContext: coarseContextStatistics,
             profile: profileStatistics,
             protocolStatistics: protocolStatistics,
             now: now
@@ -49,6 +58,7 @@ nonisolated struct SmartConnectionScoreCalculator: Sendable {
         let latency = hierarchicalQuality(
             component: .latency,
             context: contextStatistics,
+            coarseContext: coarseContextStatistics,
             profile: profileStatistics,
             protocolStatistics: protocolStatistics,
             now: now
@@ -56,6 +66,7 @@ nonisolated struct SmartConnectionScoreCalculator: Sendable {
         let packetLoss = hierarchicalQuality(
             component: .packetLoss,
             context: contextStatistics,
+            coarseContext: coarseContextStatistics,
             profile: profileStatistics,
             protocolStatistics: protocolStatistics,
             now: now
@@ -63,6 +74,7 @@ nonisolated struct SmartConnectionScoreCalculator: Sendable {
         let connectSpeed = hierarchicalQuality(
             component: .connectSpeed,
             context: contextStatistics,
+            coarseContext: coarseContextStatistics,
             profile: profileStatistics,
             protocolStatistics: protocolStatistics,
             now: now
@@ -70,6 +82,7 @@ nonisolated struct SmartConnectionScoreCalculator: Sendable {
         let stability = hierarchicalQuality(
             component: .stability,
             context: contextStatistics,
+            coarseContext: coarseContextStatistics,
             profile: profileStatistics,
             protocolStatistics: protocolStatistics,
             now: now
@@ -84,14 +97,20 @@ nonisolated struct SmartConnectionScoreCalculator: Sendable {
                 + connectSpeed * 0.15
                 + stability * 0.10
         )
-        let recentFailurePenalty = max(
+        let recentFailurePenalty = [
             failurePenalty(statistics: contextStatistics, now: now),
+            coarseContextStatistics.map {
+                failurePenalty(statistics: $0, now: now)
+            } ?? 0,
             failurePenalty(statistics: profileStatistics, now: now) * 0.35
-        )
-        let recentSuccessBonus = max(
+        ].max() ?? 0
+        let recentSuccessBonus = [
             successRecencyBonus(statistics: contextStatistics, now: now),
+            coarseContextStatistics.map {
+                successRecencyBonus(statistics: $0, now: now)
+            } ?? 0,
             successRecencyBonus(statistics: profileStatistics, now: now) * 0.5
-        )
+        ].max() ?? 0
         let exploitationScore = clamp(
             baseScore - recentFailurePenalty + recentSuccessBonus
         )
@@ -114,8 +133,10 @@ nonisolated struct SmartConnectionScoreCalculator: Sendable {
             protocolType: profile.protocolType,
             contextAttemptCount: contextStatistics.attemptCount,
             latencyMilliseconds: contextStatistics.ewmaLatencyMilliseconds
+                ?? coarseContextStatistics?.ewmaLatencyMilliseconds
                 ?? profileStatistics.ewmaLatencyMilliseconds,
             packetLossPercent: contextStatistics.ewmaPacketLossPercent
+                ?? coarseContextStatistics?.ewmaPacketLossPercent
                 ?? profileStatistics.ewmaPacketLossPercent,
             reasons: reasons(for: breakdown, contextAttempts: contextStatistics.attemptCount),
             breakdown: breakdown
@@ -155,7 +176,17 @@ nonisolated struct SmartConnectionScoreCalculator: Sendable {
             profileID: profile.id,
             protocolType: profile.protocolType
         )
-        return [contextStatistics, profileStatistics].contains { statistics in
+        var relevantStatistics = [contextStatistics, profileStatistics]
+        if context.hasExactEnvironmentIdentity {
+            relevantStatistics.append(
+                learning.contextStatistics(
+                    profileID: profile.id,
+                    protocolType: profile.protocolType,
+                    context: context.matchingCoarseContext
+                )
+            )
+        }
+        return relevantStatistics.contains { statistics in
             guard statistics.consecutiveFailures > 0,
                   let lastFailureAt = statistics.lastFailureAt else {
                 return false
@@ -197,6 +228,7 @@ nonisolated struct SmartConnectionScoreCalculator: Sendable {
     private func hierarchicalQuality(
         component: Component,
         context: SmartConnectionStatistics,
+        coarseContext: SmartConnectionStatistics?,
         profile: SmartConnectionStatistics,
         protocolStatistics: SmartConnectionStatistics,
         now: Date
@@ -212,6 +244,13 @@ nonisolated struct SmartConnectionScoreCalculator: Sendable {
             toward: quality,
             priorStrength: 10
         )
+        if let coarseContext {
+            quality = blend(
+                evidence(for: component, statistics: coarseContext, now: now),
+                toward: quality,
+                priorStrength: 8
+            )
+        }
         quality = blend(
             evidence(for: component, statistics: context, now: now),
             toward: quality,

@@ -178,6 +178,7 @@ final class VPNDashboardViewModel {
     private let connectionTelemetryManager: any DashboardConnectionTelemetryManaging
     private let learningStore: any SmartConnectionLearningStoring
     private let networkContextSource: any SmartConnectionNetworkContextProviding
+    private let networkContextEnricher: SmartConnectionNetworkContextEnricher
     private let candidatePlanner: SmartConnectionCandidatePlanner
     private let smartConnectionClock: any SmartConnectionClock
     private let networkContextDebounceSleeper: any SmartConnectionDebounceSleeping
@@ -189,6 +190,8 @@ final class VPNDashboardViewModel {
     private var telemetryObservationTask: Task<Void, Never>?
     private var networkContextObservationTask: Task<Void, Never>?
     private var networkContextPromotionTask: Task<Void, Never>?
+    private var networkEnvironmentEnrichmentTask: Task<Void, Never>?
+    private var latestAuthoritativeConnection: VPNAuthoritativeConnection?
     private var saveOperationID: UUID?
     private var inFlightImportedCredentialReferences = Set<String>()
     private var subscriptionOperationID: UUID?
@@ -215,6 +218,9 @@ final class VPNDashboardViewModel {
     private(set) var currentNetworkContext: NetworkContext = .unknown
     private(set) var smartConnectionLearning: SmartConnectionLearningSnapshot = .empty
     private(set) var smartConnectionQualityState: SmartConnectionQualityState = .normal
+    var showsConnectionQualityDegradedIndicator: Bool {
+        connectionState == .connected && smartConnectionQualityState == .degraded
+    }
     var effectiveProtocol: VPNProtocol?
     var servers: [VPNServer] = []
     var profiles: [VPNProfile] = []
@@ -251,6 +257,8 @@ final class VPNDashboardViewModel {
             FileSmartConnectionLearningStore(),
         networkContextSource: any SmartConnectionNetworkContextProviding =
             FixedSmartConnectionNetworkContextSource(context: .unknown),
+        networkEnvironmentResolver: any SmartConnectionNetworkEnvironmentResolving =
+            DisabledSmartConnectionNetworkEnvironmentResolver(),
         candidatePlanner: SmartConnectionCandidatePlanner =
             SmartConnectionCandidatePlanner(),
         smartConnectionClock: any SmartConnectionClock =
@@ -278,6 +286,9 @@ final class VPNDashboardViewModel {
         self.connectionTelemetryManager = connectionTelemetryManager
         self.learningStore = learningStore
         self.networkContextSource = networkContextSource
+        networkContextEnricher = SmartConnectionNetworkContextEnricher(
+            resolver: networkEnvironmentResolver
+        )
         self.candidatePlanner = candidatePlanner
         self.smartConnectionClock = smartConnectionClock
         self.networkContextDebounceSleeper = networkContextDebounceSleeper
@@ -407,6 +418,9 @@ final class VPNDashboardViewModel {
             clearMissingOrInvalidManualProfileIfNeeded()
             currentNetworkContext = await networkContextSource.currentNetworkContext()
             await refreshSmartConnectionRecommendation(context: currentNetworkContext)
+            await networkContextEnricher.restoreLastSafelyKnownObservation(
+                smartConnectionLearning.lastSafelyKnownEnvironmentObservation
+            )
             observeNetworkContext()
             subscriptions = try await subscriptionRepository.subscriptions()
             refreshEffectiveProtocol()
@@ -562,6 +576,7 @@ final class VPNDashboardViewModel {
             return
         }
 
+        await cancelNetworkEnvironmentEnrichment()
         currentMetrics = nil
         errorMessage = nil
         do {
@@ -594,6 +609,7 @@ final class VPNDashboardViewModel {
             return
         }
 
+        await cancelNetworkEnvironmentEnrichment()
         isIntentionalDisconnectInFlight = true
         defer {
             isIntentionalDisconnectInFlight = false
@@ -1835,6 +1851,7 @@ final class VPNDashboardViewModel {
             }
             guard self.currentNetworkContext != context else { return }
             self.currentNetworkContext = context
+            self.scheduleNetworkEnvironmentEnrichment(for: context)
             guard self.activeOperationID == nil,
                   self.connectionState == .disconnected
                     || self.connectionState == .failed else {
@@ -1842,6 +1859,60 @@ final class VPNDashboardViewModel {
             }
             await self.refreshSmartConnectionRecommendation(context: context)
         }
+    }
+
+    private func scheduleNetworkEnvironmentEnrichment(
+        for coarseContext: NetworkContext
+    ) {
+        guard let authoritativeConnection = latestAuthoritativeConnection else {
+            return
+        }
+
+        networkEnvironmentEnrichmentTask?.cancel()
+        let coarseContext = coarseContext.matchingCoarseContext
+        let observedAt = smartConnectionClock.now()
+        networkEnvironmentEnrichmentTask = Task {
+            @MainActor [
+                weak self,
+                networkContextEnricher,
+                learningStore
+            ] in
+            let result = await networkContextEnricher.resolve(
+                coarseContext: coarseContext,
+                authoritativeConnection: authoritativeConnection,
+                observedAt: observedAt
+            )
+            guard let self,
+                  Task.isCancelled == false,
+                  self.latestAuthoritativeConnection == authoritativeConnection,
+                  self.currentNetworkContext.matchingCoarseContext == coarseContext,
+                  result.disposition == .accepted,
+                  let observation = result.safeObservation else {
+                return
+            }
+
+            await learningStore.recordSafeEnvironmentObservation(observation)
+            self.currentNetworkContext = result.context
+            self.smartConnectionLearning = await learningStore.snapshot(
+                for: self.profiles
+            )
+
+            // V2 changes only the recommendation for a future Start action.
+            guard self.activeOperationID == nil,
+                  self.connectionState == .disconnected
+                    || self.connectionState == .failed else {
+                return
+            }
+            await self.refreshSmartConnectionRecommendation(
+                context: result.context
+            )
+        }
+    }
+
+    private func cancelNetworkEnvironmentEnrichment() async {
+        networkEnvironmentEnrichmentTask?.cancel()
+        networkEnvironmentEnrichmentTask = nil
+        await networkContextEnricher.invalidate()
     }
 
     private func consumeTelemetryForLearning(
@@ -1981,6 +2052,13 @@ final class VPNDashboardViewModel {
     private func applyAuthoritativeConnection(
         _ authoritativeConnection: VPNAuthoritativeConnection
     ) async {
+        latestAuthoritativeConnection = authoritativeConnection
+        if authoritativeConnection.isSystemActive
+            || (authoritativeConnection.state != .disconnected
+                && authoritativeConnection.state != .failed) {
+            await cancelNetworkEnvironmentEnrichment()
+        }
+
         if let learningSession,
            authoritativeConnection.isSystemActive,
            let authoritativeProfileID = authoritativeConnection.profileID,
@@ -2035,6 +2113,14 @@ final class VPNDashboardViewModel {
            authoritativeConnection.state == .disconnected
             || authoritativeConnection.state == .failed {
             await refreshSmartConnectionRecommendation()
+        }
+
+        if authoritativeConnection.isSystemActive == false,
+           authoritativeConnection.state == .disconnected
+            || authoritativeConnection.state == .failed {
+            scheduleNetworkEnvironmentEnrichment(
+                for: currentNetworkContext.matchingCoarseContext
+            )
         }
     }
 
